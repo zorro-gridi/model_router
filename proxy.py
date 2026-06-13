@@ -390,8 +390,15 @@ def _check_required_keys() -> list[str]:
 # ── HTTP 服务器 ────────────────────────────────────────────────────────────────
 
 def _is_retriable(status: int) -> bool:
-    """判断 HTTP 状态是否可重试（超时/限流/服务端故障 → 切换备用模型有意义）。"""
-    return status in (429,) or (500 <= status < 600) or status == 0
+    """判断 HTTP 状态是否可重试（超时/限流/服务端故障/余额不足 → 切换备用模型有意义）。
+
+    包含的状态码：
+      402  — 上游余额不足（Insufficient Balance），重试主模型无意义，立刻切备用
+      429  — 限流，主模型配额耗尽
+      5xx  — 服务端故障
+      0    — 网络超时 / 解析失败
+    """
+    return status in (402, 429) or (500 <= status < 600) or status == 0
 
 
 class RouterHandler(http.server.BaseHTTPRequestHandler):
