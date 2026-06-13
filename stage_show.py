@@ -26,7 +26,7 @@ import json
 import sys
 from pathlib import Path
 
-STAGE_FILE = Path.home() / ".claude" / "stage"
+STAGE_FILE = Path.home() / ".claude" / "hooks/model_router/stage"
 
 STAGE_DISPLAY = {
     "brainstorm": ("💭", "头脑风暴", "deepseek-v4-flash"),
