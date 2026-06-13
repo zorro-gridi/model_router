@@ -40,7 +40,7 @@ ENV_FILE   = Path(__file__).parent / ".env"   # hooks/model_router/.env
 
 # 阶段 → (provider_base_url, model, api_key_env, protocol)
 #
-# 协议方向（端到端都是 Anthropic Messages API）：
+# 协议方向（默认端到端都是 Anthropic Messages API）：
 #   Claude Code (Anthropic 协议)
 #     → 本地代理 (Anthropic 协议，仅做 model 改写 + 转发)
 #       → 上游 (Anthropic 协议：https://api.minimaxi.com/anthropic、
@@ -49,8 +49,10 @@ ENV_FILE   = Path(__file__).parent / ".env"   # hooks/model_router/.env
 # protocol 字段：
 #   "anthropic" — 默认。上游兼容 Anthropic Messages API，透明转发，
 #                 不做请求/响应格式转换。绝大多数第三方 provider 都用这个。
-#   "openai"    — opt-in。上游是 OpenAI Chat Completions 兼容（如硅基流动），
-#                 自动做 Anthropic ↔ OpenAI 协议转换。
+#   "openai"    — opt-in。上游是 OpenAI Chat Completions 兼容端点：
+#                   • MiniMax：  https://api.minimaxi.com/v1
+#                   • DeepSeek： https://api.deepseek.com
+#                 代理会自动做 Anthropic ↔ OpenAI 协议转换。
 #
 # 环境变量：每个 provider 一个独立 key，按 stage 路由时互不污染。
 #   MINIMAX_API_KEY  → MiniMax（https://api.minimaxi.com/anthropic）
