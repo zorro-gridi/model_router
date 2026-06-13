@@ -64,7 +64,7 @@ ENV_FILE   = Path(__file__).parent / ".env"   # hooks/model_router/.env
 #   - plan / implement / default → deepseek-v4-pro（结构化主力编码）
 #   - decide / design / audit → MiniMax-M3（深度推理、架构、审计）
 # 从统一配置文件导入（hooks/model_router/stage_config.py）
-from stage_config import STAGE_MODELS
+from stage_config import STAGE_MODELS, FALLBACK_MODELS
 
 # ── 原生 Anthropic 端点白名单 ──
 # 这些端点的 extended thinking 是**真实现**的（合法 signature、再次回传能校验过），
@@ -353,6 +353,11 @@ def _check_required_keys() -> list[str]:
 
 # ── HTTP 服务器 ────────────────────────────────────────────────────────────────
 
+def _is_retriable(status: int) -> bool:
+    """判断 HTTP 状态是否可重试（超时/限流/服务端故障 → 切换备用模型有意义）。"""
+    return status in (429,) or (500 <= status < 600) or status == 0
+
+
 class RouterHandler(http.server.BaseHTTPRequestHandler):
     dry_run: bool = False
 
@@ -366,6 +371,9 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
 
         stage = read_stage()
         base_url, model, key_env, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
+        fb_base, fb_model, fb_key, fb_proto = FALLBACK_MODELS.get(
+            stage, FALLBACK_MODELS["default"]
+        )
 
         status, resp_headers, resp_body = forward_request(
             method="POST",
@@ -379,6 +387,23 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             dry_run=self.dry_run,
         )
 
+        # 主模型失败且可重试 → 切换备用模型
+        if _is_retriable(status):
+            log.warning(
+                f"主模型 {model} 返回 {status}，切换到备用 {fb_model} [{fb_base}]"
+            )
+            status, resp_headers, resp_body = forward_request(
+                method="POST",
+                path=self.path,
+                headers=headers,
+                body=body,
+                target_base=fb_base,
+                target_model=fb_model,
+                api_key_env=fb_key,
+                protocol=fb_proto,
+                dry_run=self.dry_run,
+            )
+
         self.send_response(status)
         self.send_header("Content-Type", resp_headers.get("content-type", "application/json"))
         self.send_header("Content-Length", str(len(resp_body)))
@@ -390,11 +415,13 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/health":
             stage = read_stage()
             _, model, _, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
+            _, fb_model, _, _ = FALLBACK_MODELS.get(stage, FALLBACK_MODELS["default"])
             payload = json.dumps({
                 "status": "ok",
                 "stage": stage,
                 "model": model,
                 "protocol": protocol,
+                "fallback": fb_model,
             }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

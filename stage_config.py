@@ -22,6 +22,9 @@ proxy.py、stage_show.py、stage_detector.py、stage CLI 均从此导入，
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 统一配置（唯一数据源）
+#
+# 每个 stage 配主模型 + 备用模型。备用模型选择跨 provider 的模型，
+# 避免因同一 provider token 耗尽/网络不通导致备路也失败。
 # ═══════════════════════════════════════════════════════════════════════════
 
 STAGE_CONFIG: dict[str, dict] = {
@@ -33,6 +36,11 @@ STAGE_CONFIG: dict[str, dict] = {
         "base_url":    "https://api.deepseek.com/anthropic",
         "api_key_env": "DEEPSEEK_API_KEY",
         "protocol":    "anthropic",
+        # 备用：MiniMax
+        "fb_model":       "MiniMax-M3",
+        "fb_base_url":    "https://api.minimaxi.com/anthropic",
+        "fb_api_key_env": "MINIMAX_API_KEY",
+        "fb_protocol":    "anthropic",
     },
     "decide": {
         "emoji":       "⚖️",
@@ -42,6 +50,10 @@ STAGE_CONFIG: dict[str, dict] = {
         "base_url":    "https://api.deepseek.com/anthropic",
         "api_key_env": "DEEPSEEK_API_KEY",
         "protocol":    "anthropic",
+        "fb_model":       "MiniMax-M3",
+        "fb_base_url":    "https://api.minimaxi.com/anthropic",
+        "fb_api_key_env": "MINIMAX_API_KEY",
+        "fb_protocol":    "anthropic",
     },
     "design": {
         "emoji":       "🏗️",
@@ -51,6 +63,10 @@ STAGE_CONFIG: dict[str, dict] = {
         "base_url":    "https://api.minimaxi.com/anthropic",
         "api_key_env": "MINIMAX_API_KEY",
         "protocol":    "anthropic",
+        "fb_model":       "deepseek-v4-pro",
+        "fb_base_url":    "https://api.deepseek.com/anthropic",
+        "fb_api_key_env": "DEEPSEEK_API_KEY",
+        "fb_protocol":    "anthropic",
     },
     "plan": {
         "emoji":       "📋",
@@ -60,6 +76,10 @@ STAGE_CONFIG: dict[str, dict] = {
         "base_url":    "https://api.deepseek.com/anthropic",
         "api_key_env": "DEEPSEEK_API_KEY",
         "protocol":    "anthropic",
+        "fb_model":       "MiniMax-M3",
+        "fb_base_url":    "https://api.minimaxi.com/anthropic",
+        "fb_api_key_env": "MINIMAX_API_KEY",
+        "fb_protocol":    "anthropic",
     },
     "implement": {
         "emoji":       "⚙️",
@@ -69,6 +89,10 @@ STAGE_CONFIG: dict[str, dict] = {
         "base_url":    "https://api.minimaxi.com/anthropic",
         "api_key_env": "MINIMAX_API_KEY",
         "protocol":    "anthropic",
+        "fb_model":       "deepseek-v4-pro",
+        "fb_base_url":    "https://api.deepseek.com/anthropic",
+        "fb_api_key_env": "DEEPSEEK_API_KEY",
+        "fb_protocol":    "anthropic",
     },
     "audit": {
         "emoji":       "🔍",
@@ -78,6 +102,10 @@ STAGE_CONFIG: dict[str, dict] = {
         "base_url":    "https://api.deepseek.com/anthropic",
         "api_key_env": "DEEPSEEK_API_KEY",
         "protocol":    "anthropic",
+        "fb_model":       "MiniMax-M3",
+        "fb_base_url":    "https://api.minimaxi.com/anthropic",
+        "fb_api_key_env": "MINIMAX_API_KEY",
+        "fb_protocol":    "anthropic",
     },
     "default": {
         "emoji":       "🔄",
@@ -87,6 +115,10 @@ STAGE_CONFIG: dict[str, dict] = {
         "base_url":    "https://api.minimaxi.com/anthropic",
         "api_key_env": "MINIMAX_API_KEY",
         "protocol":    "anthropic",
+        "fb_model":       "deepseek-v4-pro",
+        "fb_base_url":    "https://api.deepseek.com/anthropic",
+        "fb_api_key_env": "DEEPSEEK_API_KEY",
+        "fb_protocol":    "anthropic",
     },
 }
 
@@ -97,6 +129,12 @@ STAGE_CONFIG: dict[str, dict] = {
 # proxy.py 用：stage → (base_url, model, api_key_env, protocol)
 STAGE_MODELS: dict[str, tuple[str, str, str, str]] = {
     stage: (c["base_url"], c["model"], c["api_key_env"], c["protocol"])
+    for stage, c in STAGE_CONFIG.items()
+}
+
+# proxy.py 用：stage → 备用 (fb_base_url, fb_model, fb_api_key_env, fb_protocol)
+FALLBACK_MODELS: dict[str, tuple[str, str, str, str]] = {
+    stage: (c["fb_base_url"], c["fb_model"], c["fb_api_key_env"], c["fb_protocol"])
     for stage, c in STAGE_CONFIG.items()
 }
 
