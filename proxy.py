@@ -390,15 +390,26 @@ def _check_required_keys() -> list[str]:
 # ── HTTP 服务器 ────────────────────────────────────────────────────────────────
 
 def _is_retriable(status: int) -> bool:
-    """判断 HTTP 状态是否可重试（超时/限流/服务端故障/余额不足 → 切换备用模型有意义）。
+    """判断 HTTP 状态是否可重试（账号/限流/服务端故障 → 切备用有意义）。
 
-    包含的状态码：
-      402  — 上游余额不足（Insufficient Balance），重试主模型无意义，立刻切备用
+    参考 DeepSeek / MiniMax 错误码注释（短时不可恢复的硬错误才纳入）：
+
+    纳入的状态码：
+      401  — 认证失败（API key 错），CSDN 实测明确标"Non-retryable"
+             → 切到 key 正常的备用 provider 有意义
+      402  — 上游余额不足（Insufficient Balance），立刻切备用
+      403  — 权限禁止（key 无权访问该模型/端点）
+             → 备用 provider 的权限边界不同，切备用可能有效
       429  — 限流，主模型配额耗尽
-      5xx  — 服务端故障
+      5xx  — 服务端故障（500/502/503/504 等）
       0    — 网络超时 / 解析失败
+
+    不纳入（"重试 body 不会变好" / "切备用也无效"）:
+      400  — 请求体格式错（client bug，body 不会因 provider 不同而变好）
+      404  — 资源不存在（主 provider 没有的模型/路径，备用大概率也没有，避免 fallback 死循环）
+      422  — 参数错误（同 400）
     """
-    return status in (402, 429) or (500 <= status < 600) or status == 0
+    return status in (401, 402, 403, 429) or (500 <= status < 600) or status == 0
 
 
 class RouterHandler(http.server.BaseHTTPRequestHandler):
