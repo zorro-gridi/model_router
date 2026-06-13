@@ -216,11 +216,7 @@ def main():
     # ── Model override（最高优先级）──
     model_override = read_model_override(event)
     if model_override:
-        route_tag = "model"
-        op_val = read_operation(event)
-        if op_val:
-            route_tag = "op"
-        parts.append(f"🎯 模型覆盖: {model_override}（当前路由: {route_tag}）")
+        parts.append(f"🎯 {model_override}")
 
     stage = read_stage(event)
     emoji, label, model = STAGE_DISPLAY.get(stage, STAGE_DISPLAY["default"])
