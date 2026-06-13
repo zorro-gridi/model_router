@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# install.sh — Stage-Aware Model Router 一键安装
+# 运行：bash install.sh
+
+set -e
+
+HOOK_DIR="$HOME/.claude/hooks/model_router"
+BIN_DIR="$HOME/.local/bin"
+SETTINGS="$HOME/.claude/settings.json"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Stage-Aware Model Router 安装"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# 1. 创建目录
+mkdir -p "$HOOK_DIR" "$BIN_DIR"
+
+# 2. 复制 Hook 脚本
+cp "$SCRIPT_DIR/stage_detector.py" "$HOOK_DIR/stage_detector.py"
+cp "$SCRIPT_DIR/stage_show.py"     "$HOOK_DIR/stage_show.py"
+cp "$SCRIPT_DIR/proxy.py"          "$HOOK_DIR/proxy.py"
+chmod +x "$HOOK_DIR/stage_detector.py" "$HOOK_DIR/stage_show.py" "$HOOK_DIR/proxy.py"
+
+# 3. 安装 stage CLI
+cp "$SCRIPT_DIR/stage" "$BIN_DIR/stage"
+chmod +x "$BIN_DIR/stage"
+echo "✅ stage CLI → $BIN_DIR/stage"
+
+# 4. 更新 ~/.claude/settings.json
+if [ ! -f "$SETTINGS" ]; then
+    echo "{}" > "$SETTINGS"
+fi
+
+python3 - <<'PYEOF'
+import json, os, sys
+from pathlib import Path
+
+settings_path = Path.home() / ".claude" / "settings.json"
+# 关键：hook_dir 必须包含 model_router 子目录，与 cp 目标 HOOK_DIR 一致
+hook_dir = Path.home() / ".claude" / "hooks" / "model_router"
+
+try:
+    settings = json.loads(settings_path.read_text())
+except Exception:
+    settings = {}
+
+# 确保 hooks 键存在
+settings.setdefault("hooks", {})
+
+# UserPromptSubmit Hook：阶段检测
+settings["hooks"]["UserPromptSubmit"] = [
+    {
+        "hooks": [
+            {
+                "type": "command",
+                "command": f"python3 {hook_dir}/stage_detector.py"
+            }
+        ]
+    }
+]
+
+# Stop Hook：每轮结束显示阶段
+settings["hooks"]["Stop"] = [
+    {
+        "hooks": [
+            {
+                "type": "command",
+                "command": f"python3 {hook_dir}/stage_show.py",
+                "async": True
+            }
+        ]
+    }
+]
+
+settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False))
+print(f"✅ settings.json 已更新: {settings_path}")
+PYEOF
+
+# 5. 检查 PATH
+if ! echo "$PATH" | grep -q "$BIN_DIR"; then
+    echo ""
+    echo "⚠️  $BIN_DIR 不在 PATH 中，请添加到 ~/.zshrc 或 ~/.bashrc："
+    echo "   export PATH=\"\$HOME/.local/bin:\$PATH\""
+fi
+
+# 6. 初始化阶段文件
+echo "default" > "$HOME/.claude/stage"
+echo "✅ 阶段初始化为: default"
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  安装完成！使用方式："
+echo ""
+echo "  1. 配置 API Keys（~/.zshrc）："
+echo "     export ANTHROPIC_API_KEY=sk-ant-..."
+echo "     export DEEPSEEK_API_KEY=sk-..."
+echo ""
+echo "  2. 启动代理（新终端）："
+echo "     stage proxy"
+echo ""
+echo "  3. 配置 CC 使用代理（当前终端）："
+echo "     export ANTHROPIC_BASE_URL=http://127.0.0.1:7878"
+echo "     claude"
+echo ""
+echo "  4. 在 CC 内切换阶段（自动检测 or 手动）："
+echo "     /stage implement    ← 手动切换"
+echo "     （或直接说中文关键词，自动识别）"
+echo ""
+echo "  5. 在 shell 中查看状态："
+echo "     stage               ← 当前阶段"
+echo "     stage status        ← 代理状态"
+echo "     stage audit         ← 手动切换阶段"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
