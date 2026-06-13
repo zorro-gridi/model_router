@@ -17,10 +17,17 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 mkdir -p "$HOOK_DIR" "$BIN_DIR"
 
 # 2. 复制 Hook 脚本
-cp "$SCRIPT_DIR/stage_detector.py" "$HOOK_DIR/stage_detector.py"
-cp "$SCRIPT_DIR/stage_show.py"     "$HOOK_DIR/stage_show.py"
-cp "$SCRIPT_DIR/proxy.py"          "$HOOK_DIR/proxy.py"
-chmod +x "$HOOK_DIR/stage_detector.py" "$HOOK_DIR/stage_show.py" "$HOOK_DIR/proxy.py"
+# 注：若 SCRIPT_DIR == HOOK_DIR（如从已安装位置直接跑 install.sh），cp 会因
+# 「源 == 目标」报错并被 set -e 终止；此时文件已在位，跳过即可。
+if [ "$SCRIPT_DIR" = "$HOOK_DIR" ]; then
+    echo "ℹ️  SCRIPT_DIR 与 HOOK_DIR 相同，跳过 Hook 文件复制（已就位）"
+else
+    cp "$SCRIPT_DIR/stage_detector.py" "$HOOK_DIR/stage_detector.py"
+    cp "$SCRIPT_DIR/stage_show.py"     "$HOOK_DIR/stage_show.py"
+    cp "$SCRIPT_DIR/proxy.py"          "$HOOK_DIR/proxy.py"
+    chmod +x "$HOOK_DIR/stage_detector.py" "$HOOK_DIR/stage_show.py" "$HOOK_DIR/proxy.py"
+    echo "✅ Hook 脚本已复制 → $HOOK_DIR"
+fi
 
 # 3. 安装 stage CLI
 cp "$SCRIPT_DIR/stage" "$BIN_DIR/stage"
@@ -30,7 +37,12 @@ echo "✅ stage CLI → $BIN_DIR/stage"
 # 3.5 初始化 .env（如果不存在）
 if [ ! -f "$HOOK_DIR/.env" ]; then
     if [ -f "$SCRIPT_DIR/.env.example" ]; then
-        cp "$SCRIPT_DIR/.env.example" "$HOOK_DIR/.env"
+        if [ "$SCRIPT_DIR" = "$HOOK_DIR" ]; then
+            # 源 == 目标，cp 会报错；改用直接复制内容
+            cp "$SCRIPT_DIR/.env.example" "$HOOK_DIR/.env"
+        else
+            cp "$SCRIPT_DIR/.env.example" "$HOOK_DIR/.env"
+        fi
         chmod 600 "$HOOK_DIR/.env"   # 仅当前用户可读，保护 API key
         echo "✅ .env 模板已复制到 $HOOK_DIR/.env（请编辑填入 key）"
         NEED_ENV_FILL=1
