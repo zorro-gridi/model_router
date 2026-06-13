@@ -194,10 +194,26 @@ def forward_request(
     new_body = json.dumps(body_json).encode()
     url = target_base.rstrip("/") + target_path
 
+    # ── 调试：扫描请求体结构，辅助排查 400 ──
+    msgs = body_json.get("messages", [])
+    has_thinking_param = "thinking" in body_json
+    thinking_block_total = 0
+    thinking_with_sig = 0
+    for m in msgs:
+        c = m.get("content")
+        if isinstance(c, list):
+            for b in c:
+                if isinstance(b, dict) and b.get("type") == "thinking":
+                    thinking_block_total += 1
+                    if "signature" in b:
+                        thinking_with_sig += 1
     log.info(
         f"路由: 阶段={read_stage()!r} "
         f"原模型={original_model} → 目标={target_model} "
-        f"provider={target_base} protocol={protocol}"
+        f"provider={target_base} protocol={protocol} "
+        f"| msgs={len(msgs)} thinking_param={has_thinking_param} "
+        f"thinking_blocks={thinking_block_total}(有sig={thinking_with_sig})"
+        f" hdrs={list(headers.keys())}"
     )
 
     if dry_run:
