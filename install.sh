@@ -6,7 +6,7 @@ set -e
 
 HOOK_DIR="$HOME/.claude/hooks/model_router"
 BIN_DIR="$HOME/.local/bin"
-SETTINGS="$HOME/.claude/settings.json"
+SETTINGS="$HOME/.claude/settings.local.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -41,7 +41,7 @@ else
     echo "ℹ️  $HOOK_DIR/.env 已存在，跳过"
 fi
 
-# 4. 更新 ~/.claude/settings.json
+# 4. 更新 ~/.claude/settings.local.json（项目级 / 本地 settings，不污染全局）
 if [ ! -f "$SETTINGS" ]; then
     echo "{}" > "$SETTINGS"
 fi
@@ -50,7 +50,7 @@ python3 - <<'PYEOF'
 import json, os, sys
 from pathlib import Path
 
-settings_path = Path.home() / ".claude" / "settings.json"
+settings_path = Path.home() / ".claude" / "settings.local.json"
 # 关键：hook_dir 必须包含 model_router 子目录，与 cp 目标 HOOK_DIR 一致
 hook_dir = Path.home() / ".claude" / "hooks" / "model_router"
 
@@ -88,7 +88,7 @@ settings["hooks"]["Stop"] = [
 ]
 
 settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False))
-print(f"✅ settings.json 已更新: {settings_path}")
+print(f"✅ settings.local.json 已更新: {settings_path}")
 PYEOF
 
 # 5. 检查 PATH

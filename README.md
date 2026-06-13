@@ -46,7 +46,7 @@ bash install.sh
 
 1. 复制 hooks 到 `~/.claude/hooks/model_router/`
 2. 复制 `stage` CLI 到 `~/.local/bin/`
-3. 在 `~/.claude/settings.json` 中注册 `UserPromptSubmit` 和 `Stop` hook
+3. 在 `~/.claude/settings.local.json` 中注册 `UserPromptSubmit` 和 `Stop` hook（不污染全局 `settings.json`）
 4. 初始化 `~/.claude/stage` 为 `default`
 
 ## 配置 API Keys
@@ -170,7 +170,8 @@ STAGE_MODELS = {
 ~/.claude/
 ├── stage                    ← 当前阶段（brainstorm/decide/design/plan/implement/audit/default）
 ├── stage-router.log         ← 路由日志
-├── settings.json            ← CC 配置（含 Hook 注册）
+├── settings.json            ← CC 全局配置（install.sh 不再写入此文件）
+├── settings.local.json      ← CC 本地配置（含本插件的 Hook 注册）
 └── hooks/
     └── model_router/
         ├── .env              ← API Keys（gitignored，自动加载）
