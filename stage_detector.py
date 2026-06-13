@@ -15,6 +15,12 @@ stage_detector.py — UserPromptSubmit Hook
   active_session 指针文件存放在 ~/.claude/hooks/model_router/，存储的是
   阶段文件的完整绝对路径，供 proxy.py（无 stdin 上下文）直接读取。
 
+Operation-type（第二维度，2026-06-13 引入）：
+  与 stage 并列独立信号，由关键词或显式前缀触发：
+    /op write /op read /op search /op refactor
+  op 文件位置：<project_root>/.claude/op_<session_id>，与 stage_<sid> 同目录，
+  仅前缀不同。proxy.py 端在 stage 路由之上叠加：检出 op → 完全覆盖 stage。
+
 Claude Code settings.json 配置：
   {
     "hooks": {
@@ -119,6 +125,56 @@ def detect_stage(prompt: str) -> str | None:
     return None  # 不更改阶段
 
 
+# ────────────────────────────────────────────────────────────────────
+# Operation-type（与 stage 并列的第二维度路由信号）
+# ────────────────────────────────────────────────────────────────────
+
+# 关键词 → op 映射（按优先级排列，先匹配先赢；与 STAGE_KEYWORDS 平行独立运行）
+OPERATION_KEYWORDS: list[tuple[str, list[str]]] = [
+    ("write", [
+        "写,", "写。", "写 ", "写入", "更新", "改写", "改", "编辑", "写代码", "创建",
+        "添加", "删除", "write", "update", "edit", "create", "delete", "add", "fix", "修改",
+    ]),
+    ("read", [
+        "读一下", "阅读", "查看", "看一下", "理解", "解释", "分析", "总结", "概括",
+        "read", "view", "explain", "summarize", "understand", "分析一下",
+    ]),
+    ("search", [
+        "搜索", "查找", "找一下", "检索", "搜一下", "grep", "find", "search", "locate", "找找",
+    ]),
+    ("refactor", [
+        "重构", "整理", "优化结构", "改结构", "refactor", "restructure", "reorganize",
+        "clean up", "清理",
+    ]),
+]
+
+# 显式命令前缀（优先级最高，与 EXPLICIT_PREFIX_RE 同风格但只接 op 名）
+OPERATION_PREFIX_RE = re.compile(
+    r"^/op\s+(write|read|search|refactor)\b",
+    re.IGNORECASE,
+)
+
+
+def detect_operation(prompt: str) -> str | None:
+    """
+    返回检测到的 op 名，或 None（表示不更改当前 op）。
+    优先级：显式命令 > 关键词匹配 > 不变
+    与 detect_stage() 平行独立——两侧关键词可独立命中，proxy 端按 op 优先。
+    """
+    # 显式命令
+    m = OPERATION_PREFIX_RE.match(prompt.strip())
+    if m:
+        return m.group(1).lower()
+
+    # 关键词匹配（遍历顺序即优先级）
+    prompt_lower = prompt.lower()
+    for op, keywords in OPERATION_KEYWORDS:
+        if any(kw in prompt_lower for kw in keywords):
+            return op
+
+    return None  # 不更改 op
+
+
 # ── 项目根目录查找（参照 compact/utils.py 的 _find_project_root）──
 
 def _find_project_root(start: Path, session_id: str | None = None) -> Path:
@@ -183,6 +239,14 @@ def _stage_file_path(cwd: str | Path, session_id: str) -> Path:
     if not claude_dir.is_dir():
         claude_dir.mkdir(parents=True, exist_ok=True)
     return claude_dir / f"stage_{session_id}"
+
+
+def _op_file_path(stage_file: Path) -> Path:
+    """
+    从 stage_<sid> 路径派生 op_<sid> 路径（同目录、仅前缀替换）。
+    proxy.py 用同一规则从 active_session 指向的 stage_<sid> 路径派生。
+    """
+    return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
 
 
 def _read_stage_file(path: Path) -> str | None:
@@ -270,6 +334,46 @@ def read_stage(session_id: str | None = None,
     return "default"
 
 
+def read_operation(session_id: str | None = None,
+                   cwd: str | Path | None = None) -> str | None:
+    """
+    读取当前 op，路径解析复用 _stage_file_path() 派生 op_<sid>。
+    优先级：
+      1. 传入的 session_id+cwd → 派生 op_<sid>
+      2. active_session 指针 → 读取其指向的 stage_<sid>，再派生 op_<sid>
+    返回 None 表示"无 op 信号"（与"未检测到 op"等价，proxy 走 stage 路由）。
+    """
+    # 1. hook 场景：有 session_id+cwd
+    if session_id and cwd:
+        stage_path = _stage_file_path(cwd, session_id)
+        content = _read_stage_file(_op_file_path(stage_path))
+        if content:
+            return content
+
+    # 2. proxy / CLI 场景：从 active_session 指针拿到 stage_<sid> 路径再派生
+    try:
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            content = _read_stage_file(_op_file_path(Path(active_path)))
+            if content:
+                return content
+    except FileNotFoundError:
+        pass
+
+    return None  # 关键：返回 None 而非 "default"，让 proxy 知道"无 op 信号"
+
+
+def write_operation(op: str, session_id: str | None = None,
+                    cwd: str | Path | None = None) -> None:
+    """写入 op 文件（op_<sid>）。与 stage 写文件同模式。
+    无 session_id+cwd 时不写入（op 不设全局后备——op 是 per-prompt 临时态）。
+    """
+    if session_id and cwd:
+        stage_path = _stage_file_path(cwd, session_id)
+        stage_path.parent.mkdir(parents=True, exist_ok=True)
+        _op_file_path(stage_path).write_text(op + "\n")
+
+
 def main():
     log("INFO", "hook triggered")
     try:
@@ -295,32 +399,55 @@ def main():
             log("INFO", "empty prompt, ensure stage file exists")
             sys.exit(0)
 
+        # ── Stage 检测 ──
         new_stage = detect_stage(prompt)
 
+        # ── Operation-type 检测（与 stage 平行独立，proxy 端按 op 优先）──
+        new_op = detect_operation(prompt)
+        old_op = read_operation(session_id, cwd)
+
+        # ── Stage 写入/通知 ──
+        stage_msg: str | None = None
         if new_stage and new_stage != old_stage:
             write_stage(new_stage, session_id, cwd)
             log("INFO", f"stage: {old_stage} → {new_stage}")
-            # 从统一配置文件获取阶段描述
             from stage_config import STAGE_INFO
             info = STAGE_INFO.get(new_stage, "")
+            stage_msg = (
+                f"阶段已切换: {old_stage} → {new_stage}"
+                + (f"（{info}）" if info else "")
+            )
+        elif new_stage == old_stage:
+            log("INFO", f"stage unchanged: {old_stage}")
+        else:
+            log("INFO", "no stage signal, passthrough")
+
+        # ── Op 写入/通知（与 stage 完全独立的 if-else 链）──
+        op_msg: str | None = None
+        if new_op and new_op != old_op:
+            write_operation(new_op, session_id, cwd)
+            log("INFO", f"op: {old_op} → {new_op}")
+            from stage_config import OPERATION_INFO
+            info = OPERATION_INFO.get(new_op, "")
+            op_msg = (
+                f"操作类型: {(old_op or 'none')} → {new_op}"
+                + (f"（{info}）" if info else "")
+            )
+        elif new_op == old_op:
+            log("INFO", f"op unchanged: {old_op}")
+        else:
+            log("INFO", "no op signal, passthrough")
+
+        # ── 输出 additionalContext（stage 和 op 各自独立命中时合并提示）──
+        msgs = [m for m in (stage_msg, op_msg) if m]
+        if msgs:
             output = {
                 "hookSpecificOutput": {
                     "hookEventName": "UserPromptSubmit",
-                    # additionalContext 会注入到本次 prompt 的上下文里
-                    "additionalContext": (
-                        f"\n[Stage Router] 阶段已切换: {old_stage} → {new_stage}"
-                        + (f"（{info}）" if info else "")
-                        + "\n"
-                    ),
+                    "additionalContext": "\n[Stage Router] " + "；".join(msgs) + "\n",
                 }
             }
             print(json.dumps(output))
-        elif new_stage == old_stage:
-            # 阶段未变，静默通过
-            log("INFO", f"stage unchanged: {old_stage}")
-        else:
-            # 未检测到阶段信号，静默通过
-            log("INFO", "no stage signal, passthrough")
     except Exception as exc:
         # 兜底：任何未捕获异常都吞掉，绝不让 hook 退非零码
         log("ERROR", f"unexpected: {exc!r}; passthrough")

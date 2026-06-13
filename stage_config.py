@@ -18,6 +18,16 @@ proxy.py、stage_show.py、stage_detector.py、stage CLI 均从此导入，
   base_url   — 上游 API 基础地址
   api_key_env— 对应的环境变量名
   protocol   — "anthropic" | "openai"
+
+────────────────────────────────────────────────────────────────────
+Operation-type 路由（与 stage 并列的第二维度，2026-06-13 引入）
+────────────────────────────────────────────────────────────────────
+OPERATION_CONFIG 是与 STAGE_CONFIG 同构的 4 元组表（write/read/search/refactor），
+用于按 prompt 操作类型微调模型选择。proxy.py 端在 stage 路由之上叠加：
+  - 检出 op → 完全覆盖 stage 路由
+  - 未检出 op → 走 stage 路由（与升级前行为一致）
+base_url / api_key_env / protocol 字段与 STAGE_CONFIG 复用同 model 的现有值，
+不重复硬编码字符串。
 """
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -154,4 +164,104 @@ STAGE_DESC: dict[str, str] = {
 STAGE_INFO: dict[str, str] = {
     stage: f"{c['label']}阶段 → {c['model']}，{c['desc']}"
     for stage, c in STAGE_CONFIG.items()
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Operation-type 路由（与 stage 并列的第二维度）
+#
+# 设计原则：op 完全覆盖 stage 路由（"我说 search 就是 search"）。
+# base_url / api_key_env / protocol 复用 STAGE_CONFIG 中同 model 的现有值。
+# ═══════════════════════════════════════════════════════════════════════════
+
+OPERATION_CONFIG: dict[str, dict] = {
+    "write": {
+        "emoji":       "✏️",
+        "label":       "写入",
+        "desc":        "主 MiniMax-M3，便宜 fallback",
+        "model":       "MiniMax-M3",
+        "base_url":    "https://api.minimaxi.com/anthropic",
+        "api_key_env": "MINIMAX_API_KEY",
+        "protocol":    "anthropic",
+        # 备用：deepseek-v4-flash（便宜，写错了也不心疼）
+        "fb_model":       "deepseek-v4-flash",
+        "fb_base_url":    "https://api.deepseek.com/anthropic",
+        "fb_api_key_env": "DEEPSEEK_API_KEY",
+        "fb_protocol":    "anthropic",
+    },
+    "read": {
+        "emoji":       "👁️",
+        "label":       "读取",
+        "desc":        "主 MiniMax-M3，稳 fallback",
+        "model":       "MiniMax-M3",
+        "base_url":    "https://api.minimaxi.com/anthropic",
+        "api_key_env": "MINIMAX_API_KEY",
+        "protocol":    "anthropic",
+        # 备用：deepseek-v4-pro（读不准的成本 > 写错的成本）
+        "fb_model":       "deepseek-v4-pro",
+        "fb_base_url":    "https://api.deepseek.com/anthropic",
+        "fb_api_key_env": "DEEPSEEK_API_KEY",
+        "fb_protocol":    "anthropic",
+    },
+    "search": {
+        "emoji":       "🔎",
+        "label":       "搜索",
+        "desc":        "主 deepseek-v4-flash，备 MiniMax-M3",
+        "model":       "deepseek-v4-flash",
+        "base_url":    "https://api.deepseek.com/anthropic",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "protocol":    "anthropic",
+        # 备用：MiniMax-M3（探索任务 fallback 升档）
+        "fb_model":       "MiniMax-M3",
+        "fb_base_url":    "https://api.minimaxi.com/anthropic",
+        "fb_api_key_env": "MINIMAX_API_KEY",
+        "fb_protocol":    "anthropic",
+    },
+    "refactor": {
+        "emoji":       "🔧",
+        "label":       "重构",
+        "desc":        "主 MiniMax-M3，备 deepseek-v4-pro",
+        "model":       "MiniMax-M3",
+        "base_url":    "https://api.minimaxi.com/anthropic",
+        "api_key_env": "MINIMAX_API_KEY",
+        "protocol":    "anthropic",
+        # 备用：deepseek-v4-pro（结构改动需要稳妥的推理）
+        "fb_model":       "deepseek-v4-pro",
+        "fb_base_url":    "https://api.deepseek.com/anthropic",
+        "fb_api_key_env": "DEEPSEEK_API_KEY",
+        "fb_protocol":    "anthropic",
+    },
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 派生视图（Operation-type，与 STAGE_* 镜像同构）
+# ═══════════════════════════════════════════════════════════════════════════
+
+# proxy.py 用：op → (base_url, model, api_key_env, protocol)
+OPERATION_MODELS: dict[str, tuple[str, str, str, str]] = {
+    op: (c["base_url"], c["model"], c["api_key_env"], c["protocol"])
+    for op, c in OPERATION_CONFIG.items()
+}
+
+# proxy.py 用：op → 备用 (fb_base_url, fb_model, fb_api_key_env, fb_protocol)
+OPERATION_FALLBACK_MODELS: dict[str, tuple[str, str, str, str]] = {
+    op: (c["fb_base_url"], c["fb_model"], c["fb_api_key_env"], c["fb_protocol"])
+    for op, c in OPERATION_CONFIG.items()
+}
+
+# stage_show.py 用：op → (emoji, label, model)
+OPERATION_DISPLAY: dict[str, tuple[str, str, str]] = {
+    op: (c["emoji"], c["label"], c["model"])
+    for op, c in OPERATION_CONFIG.items()
+}
+
+# stage CLI 用：op → 格式化描述行
+OPERATION_DESC: dict[str, str] = {
+    op: f"{c['emoji']} {c['model']:20s} — {c['desc']}"
+    for op, c in OPERATION_CONFIG.items()
+}
+
+# stage_detector.py 用：op → "操作类型 → 模型，简述"
+OPERATION_INFO: dict[str, str] = {
+    op: f"{c['label']}操作 → {c['model']}，{c['desc']}"
+    for op, c in OPERATION_CONFIG.items()
 }

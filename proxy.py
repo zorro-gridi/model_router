@@ -14,6 +14,11 @@ Stage-Aware Model Router
   audit       → 工程审计：Opus（漏洞最贵）
   default     → 未指定：Sonnet
 
+Operation-type 路由（2026-06-13 引入，第二维度）：
+  检出 op 时完全覆盖 stage 路由，未检出时退回 stage 路由。
+  op 文件位置：<project_root>/.claude/op_<sid>（与 stage_<sid> 同目录、仅前缀替换）。
+  read_operation() 路径解析复用 stage_detector 的 _op_file_path() 派生规则。
+
 用法：
   python3 proxy.py                  # 启动代理（默认 :7878）
   python3 proxy.py --port 7878      # 自定义端口
@@ -70,7 +75,10 @@ ENV_FILE             = Path(__file__).parent / ".env"   # hooks/model_router/.en
 #   - plan / implement / default → deepseek-v4-pro（结构化主力编码）
 #   - decide / design / audit → MiniMax-M3（深度推理、架构、审计）
 # 从统一配置文件导入（hooks/model_router/stage_config.py）
-from stage_config import STAGE_MODELS, FALLBACK_MODELS
+from stage_config import (
+    STAGE_MODELS, FALLBACK_MODELS,
+    OPERATION_MODELS, OPERATION_FALLBACK_MODELS,
+)
 
 # ── 原生 Anthropic 端点白名单 ──
 # 这些端点的 extended thinking 是**真实现**的（合法 signature、再次回传能校验过），
@@ -144,6 +152,37 @@ def read_stage() -> str:
     # 3. 兜底
     log.info("无任何阶段文件（无 active_session、无 current_stage），使用 default")
     return "default"
+
+
+# ── Operation-type 读取（与 stage 同构，无 stdin 时也走 active_session 指针）──
+
+def _op_file_path(stage_file: Path) -> Path:
+    """从 stage_<sid> 路径派生 op_<sid> 路径（同目录、仅前缀替换）。
+    与 stage_detector._op_file_path 保持完全相同的派生规则。
+    """
+    return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
+
+
+def read_operation() -> str | None:
+    """
+    读取当前 op，路径解析复用 stage_detector 的派生规则。
+    proxy.py 是无 stdin 的 HTTP 服务器：从 active_session 指针拿到
+    stage_<sid> 完整路径，再派生 op_<sid>。
+    返回 None 表示"无 op 信号"——proxy 走 stage 路由（与升级前行为一致）。
+    """
+    try:
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            content = _read_stage_file(_op_file_path(Path(active_path)))
+            if content and content in OPERATION_MODELS:
+                return content
+            if content:
+                log.warning(
+                    f"op_<sid> 未知 op 值 '{content}'，忽略 op 走 stage 路由"
+                )
+    except FileNotFoundError:
+        pass
+    return None
 
 # ── 请求转发 ───────────────────────────────────────────────────────────────────
 
@@ -381,8 +420,9 @@ def _load_dotenv(env_path: Path) -> int:
 
 
 def _check_required_keys() -> list[str]:
-    """扫描 STAGE_MODELS，收集所有需要的 API key 环境变量名，报告缺失项。"""
+    """扫描 STAGE_MODELS + OPERATION_MODELS，收集所有需要的 API key 环境变量名，报告缺失项。"""
     needed = {entry[2] for entry in STAGE_MODELS.values()}
+    needed |= {entry[2] for entry in OPERATION_MODELS.values()}
     missing = [name for name in sorted(needed) if not os.environ.get(name, "").strip()]
     return missing
 
@@ -423,11 +463,19 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         headers = {k.lower(): v for k, v in self.headers.items()}
 
-        stage = read_stage()
-        base_url, model, key_env, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
-        fb_base, fb_model, fb_key, fb_proto = FALLBACK_MODELS.get(
-            stage, FALLBACK_MODELS["default"]
-        )
+        # ── 路由决策：op 优先 → stage 兜底 ──
+        op = read_operation()
+        if op and op in OPERATION_MODELS:
+            base_url, model, key_env, protocol = OPERATION_MODELS[op]
+            fb_base, fb_model, fb_key, fb_proto = OPERATION_FALLBACK_MODELS[op]
+            routing_source = f"op={op}"
+        else:
+            stage = read_stage()
+            base_url, model, key_env, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
+            fb_base, fb_model, fb_key, fb_proto = FALLBACK_MODELS.get(
+                stage, FALLBACK_MODELS["default"]
+            )
+            routing_source = f"stage={stage}"
 
         status, resp_headers, resp_body = forward_request(
             method="POST",
@@ -444,7 +492,8 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # 主模型失败且可重试 → 切换备用模型
         if _is_retriable(status):
             log.warning(
-                f"主模型 {model} 返回 {status}，切换到备用 {fb_model} [{fb_base}]"
+                f"[{routing_source}] 主模型 {model} 返回 {status}，"
+                f"切换到备用 {fb_model} [{fb_base}]"
             )
             status, resp_headers, resp_body = forward_request(
                 method="POST",
@@ -467,16 +516,32 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         # 健康检查
         if self.path == "/health":
-            stage = read_stage()
-            _, model, _, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
-            _, fb_model, _, _ = FALLBACK_MODELS.get(stage, FALLBACK_MODELS["default"])
-            payload = json.dumps({
-                "status": "ok",
-                "stage": stage,
-                "model": model,
-                "protocol": protocol,
-                "fallback": fb_model,
-            }).encode()
+            op = read_operation()
+            if op and op in OPERATION_MODELS:
+                _, model, _, protocol = OPERATION_MODELS[op]
+                _, fb_model, _, _ = OPERATION_FALLBACK_MODELS[op]
+                payload = json.dumps({
+                    "status": "ok",
+                    "op": op,
+                    "stage": None,
+                    "model": model,
+                    "protocol": protocol,
+                    "fallback": fb_model,
+                    "routing_source": f"op={op}",
+                }).encode()
+            else:
+                stage = read_stage()
+                _, model, _, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
+                _, fb_model, _, _ = FALLBACK_MODELS.get(stage, FALLBACK_MODELS["default"])
+                payload = json.dumps({
+                    "status": "ok",
+                    "op": None,
+                    "stage": stage,
+                    "model": model,
+                    "protocol": protocol,
+                    "fallback": fb_model,
+                    "routing_source": f"stage={stage}",
+                }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
