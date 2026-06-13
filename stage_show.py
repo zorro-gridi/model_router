@@ -8,12 +8,16 @@ stage_show.py — Stop Hook（PostToolBatch 也可用）
 Claude Code settings.json 配置：
   {
     "hooks": {
-      "Stop": [{
-        "hooks": [{
-          "type": "command",
-          "command": "python3 ~/.claude/hooks/model_router/stage_show.py"
-        }]
-      }]
+      "Stop": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python3 ~/.claude/hooks/model_router/stage_show.py"
+            }
+          ]
+        }
+      ]
     }
   }
 """

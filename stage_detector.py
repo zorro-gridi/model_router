@@ -12,12 +12,16 @@ stage_detector.py — UserPromptSubmit Hook
 Claude Code settings.json 配置：
   {
     "hooks": {
-      "UserPromptSubmit": [{
-        "hooks": [{
-          "type": "command",
-          "command": "python3 ~/.claude/hooks/model_router/stage_detector.py"
-        }]
-      }]
+      "UserPromptSubmit": [
+        {
+            "hooks": [
+                {
+                "type": "command",
+                "command": "python3 ~/.claude/hooks/model_router/stage_detector.py"
+                }
+            ]
+        }
+      ]
     }
   }
 """

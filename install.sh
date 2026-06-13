@@ -6,7 +6,6 @@ set -e
 
 HOOK_DIR="$HOME/.claude/hooks/model_router"
 BIN_DIR="$HOME/.local/bin"
-SETTINGS="$HOME/.claude/settings.local.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -50,55 +49,6 @@ else
     echo "ℹ️  $HOOK_DIR/.env 已存在，跳过"
 fi
 
-# 4. 更新 ~/.claude/settings.local.json（项目级 / 本地 settings，不污染全局）
-if [ ! -f "$SETTINGS" ]; then
-    echo "{}" > "$SETTINGS"
-fi
-
-python3 - <<'PYEOF'
-import json, os, sys
-from pathlib import Path
-
-settings_path = Path.home() / ".claude" / "settings.local.json"
-# 关键：hook_dir 必须包含 model_router 子目录，与 cp 目标 HOOK_DIR 一致
-hook_dir = Path.home() / ".claude" / "hooks" / "model_router"
-
-try:
-    settings = json.loads(settings_path.read_text())
-except Exception:
-    settings = {}
-
-# 确保 hooks 键存在
-settings.setdefault("hooks", {})
-
-# UserPromptSubmit Hook：阶段检测
-settings["hooks"]["UserPromptSubmit"] = [
-    {
-        "hooks": [
-            {
-                "type": "command",
-                "command": f"python3 {hook_dir}/stage_detector.py"
-            }
-        ]
-    }
-]
-
-# Stop Hook：每轮结束显示阶段
-settings["hooks"]["Stop"] = [
-    {
-        "hooks": [
-            {
-                "type": "command",
-                "command": f"python3 {hook_dir}/stage_show.py",
-                "async": True
-            }
-        ]
-    }
-]
-
-settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False))
-print(f"✅ settings.local.json 已更新: {settings_path}")
-PYEOF
 
 # 5. 检查 PATH
 if ! echo "$PATH" | grep -q "$BIN_DIR"; then
@@ -108,7 +58,7 @@ if ! echo "$PATH" | grep -q "$BIN_DIR"; then
 fi
 
 # 6. 初始化阶段文件
-echo "default" > "$HOME/.claude/stage"
+echo "default" > "$HOOK_DIR/stage"
 echo "✅ 阶段初始化为: default"
 
 echo ""
