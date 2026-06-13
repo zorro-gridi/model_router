@@ -28,15 +28,14 @@ else
     echo "✅ Hook 脚本已复制 → $HOOK_DIR"
 fi
 
-# 3. 安装 stage CLI
+# 3. 安装 stage CLI（符号链接，源更新即自动生效）
 # 注：源是 hooks/model_router/stage 本身（Python CLI 源文件），不是
 # stage_cli.py 之类的别名——历史上把数据文件 "default" 误写到源文件
 # 会导致 stage proxy 启动失败。源和数据文件路径天然分离：
-#   源（CLI 源）  = $HOOK_DIR/stage      ← Python 脚本，cp 到 $BIN_DIR/stage
-#   数据（阶段）  = $HOME/.claude/stage  ← 纯文本，写入当前阶段名
-# 复制源到 bin：
-cp "$SCRIPT_DIR/stage" "$BIN_DIR/stage"
-chmod +x "$BIN_DIR/stage"
+#   源（CLI 源）  = $HOOK_DIR/stage      ← Python 脚本，ln -s 到 $BIN_DIR/stage
+#   数据（阶段）  = $HOOK_DIR/current_stage ← 纯文本，写入当前阶段名
+# 符号链接（比 cp 好：源更新无需重新安装）：
+ln -sf "$SCRIPT_DIR/stage" "$BIN_DIR/stage"
 echo "✅ stage CLI → $BIN_DIR/stage"
 
 # 3.5 初始化 .env（如果不存在）
