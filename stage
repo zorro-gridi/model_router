@@ -1,1 +1,180 @@
-default
+#!/usr/bin/env python3
+"""
+stage — 阶段管理 CLI
+=====================
+用法：
+  stage              # 查看当前阶段
+  stage brainstorm   # 手动设置阶段
+  stage reset        # 重置为 default
+  stage proxy        # 启动代理服务器
+  stage status       # 查询代理健康状态
+  stage log          # 实时查看路由日志
+
+所有阶段：brainstorm | decide | design | plan | implement | audit | default
+"""
+
+import http.client
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+STAGE_FILE   = Path.home() / ".claude" / "stage"
+LOG_FILE     = Path.home() / ".claude" / "stage-router.log"
+# 注：stage CLI 装在 ~/.local/bin/，但 proxy.py 和 .env 在 ~/.claude/hooks/model_router/。
+# 不能用 Path(__file__).parent（取到的是 ~/.local/bin/，proxy.py 不在那）。
+HOOK_DIR     = Path.home() / ".claude" / "hooks" / "model_router"
+PROXY_SCRIPT = HOOK_DIR / "proxy.py"
+ENV_FILE     = HOOK_DIR / ".env"
+PROXY_PORT   = 7878
+
+VALID_STAGES = {"brainstorm", "decide", "design", "plan", "implement", "audit", "default"}
+
+# 与 proxy.py 同步的极简 .env 解析（不依赖 python-dotenv）
+_DOTENV_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
+
+
+def _load_dotenv(env_path: Path) -> int:
+    """从 .env 加载到 os.environ（已有变量不被覆盖）。返回加载数量。"""
+    if not env_path.exists():
+        return 0
+    loaded = 0
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            m = _DOTENV_LINE.match(line)
+            if not m:
+                continue
+            key, value = m.group(1), m.group(2)
+            if (value.startswith('"') and value.endswith('"')) or \
+               (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+            if key not in os.environ:
+                os.environ[key] = value
+                loaded += 1
+    except OSError as e:
+        print(f"⚠️  读取 {env_path} 失败: {e}", file=sys.stderr)
+    return loaded
+
+COLORS = {
+    "brainstorm": "\033[36m",   # cyan
+    "decide":     "\033[35m",   # magenta
+    "design":     "\033[34m",   # blue
+    "plan":       "\033[33m",   # yellow
+    "implement":  "\033[32m",   # green
+    "audit":      "\033[31m",   # red
+    "default":    "\033[37m",   # white
+    "reset":      "\033[0m",
+}
+
+STAGE_DESC = {
+    "brainstorm": "💭 deepseek-v4-flash  — 快速发散，低成本探索",
+    "decide":     "⚖️  MiniMax-M3         — 深度推理，权衡分析",
+    "design":     "🏗️  MiniMax-M3         — 系统架构，方案设计",
+    "plan":       "📋 deepseek-v4-pro    — 任务拆解，结构化输出",
+    "implement":  "⚙️  deepseek-v4-pro    — 主力编码，工程实施",
+    "audit":      "🔍 MiniMax-M3         — 严格检查，安全审计",
+    "default":    "🔄 deepseek-v4-pro    — 兜底默认",
+}
+
+
+def read_stage() -> str:
+    try:
+        return STAGE_FILE.read_text().strip()
+    except FileNotFoundError:
+        return "default"
+
+
+def write_stage(stage: str) -> None:
+    STAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STAGE_FILE.write_text(stage)
+
+
+def show_current():
+    stage = read_stage()
+    color = COLORS.get(stage, COLORS["reset"])
+    desc  = STAGE_DESC.get(stage, "")
+    print(f"当前阶段: {color}{stage}\033[0m")
+    print(f"  {desc}")
+    print(f"\n代理地址: http://127.0.0.1:{PROXY_PORT}")
+    print(f"设置方式: export ANTHROPIC_BASE_URL=http://127.0.0.1:{PROXY_PORT}")
+
+
+def set_stage(stage: str):
+    if stage not in VALID_STAGES:
+        print(f"❌ 未知阶段: {stage}")
+        print(f"   有效值: {' | '.join(sorted(VALID_STAGES))}")
+        sys.exit(1)
+    old = read_stage()
+    write_stage(stage)
+    color = COLORS.get(stage, COLORS["reset"])
+    print(f"阶段切换: {old} → {color}{stage}\033[0m")
+    print(f"  {STAGE_DESC.get(stage, '')}")
+
+
+def start_proxy():
+    print(f"启动 Stage Router 代理（端口 {PROXY_PORT}）...")
+    print(f"设置环境变量: export ANTHROPIC_BASE_URL=http://127.0.0.1:{PROXY_PORT}")
+    print("按 Ctrl+C 停止\n")
+    subprocess.run([sys.executable, str(PROXY_SCRIPT), "--port", str(PROXY_PORT)])
+
+
+def proxy_status():
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", PROXY_PORT, timeout=2)
+        conn.request("GET", "/health")
+        resp = conn.getresponse()
+        data = json.loads(resp.read())
+        stage = data.get("stage", "unknown")
+        model = data.get("model", "unknown")
+        color = COLORS.get(stage, COLORS["reset"])
+        print(f"✅ Stage Router 运行中")
+        print(f"   阶段: {color}{stage}\033[0m → {model}")
+    except Exception:
+        print(f"❌ Stage Router 未运行（端口 {PROXY_PORT}）")
+        print(f"   启动命令: stage proxy")
+
+
+def tail_log():
+    subprocess.run(["tail", "-f", str(LOG_FILE)])
+
+
+def print_help():
+    print(__doc__)
+    print("当前阶段:", read_stage())
+
+
+def main():
+    # 先加载本目录 .env（已有 shell env 不被覆盖）
+    n_loaded = _load_dotenv(ENV_FILE)
+    if n_loaded:
+        print(f"ℹ️  从 {ENV_FILE} 加载了 {n_loaded} 个环境变量", file=sys.stderr)
+
+    args = sys.argv[1:]
+
+    if not args:
+        show_current()
+    elif args[0] == "proxy":
+        start_proxy()
+    elif args[0] == "status":
+        proxy_status()
+    elif args[0] == "log":
+        tail_log()
+    elif args[0] == "reset":
+        set_stage("default")
+    elif args[0] in VALID_STAGES:
+        set_stage(args[0])
+    elif args[0] in ("-h", "--help", "help"):
+        print_help()
+    else:
+        print(f"未知命令: {args[0]}")
+        print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

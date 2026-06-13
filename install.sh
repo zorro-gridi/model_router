@@ -29,6 +29,12 @@ else
 fi
 
 # 3. 安装 stage CLI
+# 注：源是 hooks/model_router/stage 本身（Python CLI 源文件），不是
+# stage_cli.py 之类的别名——历史上把数据文件 "default" 误写到源文件
+# 会导致 stage proxy 启动失败。源和数据文件路径天然分离：
+#   源（CLI 源）  = $HOOK_DIR/stage      ← Python 脚本，cp 到 $BIN_DIR/stage
+#   数据（阶段）  = $HOME/.claude/stage  ← 纯文本，写入当前阶段名
+# 复制源到 bin：
 cp "$SCRIPT_DIR/stage" "$BIN_DIR/stage"
 chmod +x "$BIN_DIR/stage"
 echo "✅ stage CLI → $BIN_DIR/stage"
@@ -57,9 +63,12 @@ if ! echo "$PATH" | grep -q "$BIN_DIR"; then
     echo "   export PATH=\"\$HOME/.local/bin:\$PATH\""
 fi
 
-# 6. 初始化阶段文件
-echo "default" > "$HOOK_DIR/stage"
-echo "✅ 阶段初始化为: default"
+# 6. 初始化阶段数据文件（注意：写到 ~/.claude/stage，不是 $HOOK_DIR/stage）
+# 历史上误把数据写到 $HOOK_DIR/stage 会覆盖 CLI 源，导致 stage proxy 启动失败。
+STAGE_DATA="$HOME/.claude/stage"
+mkdir -p "$(dirname "$STAGE_DATA")"
+echo "default" > "$STAGE_DATA"
+echo "✅ 阶段数据初始化为: default → $STAGE_DATA"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

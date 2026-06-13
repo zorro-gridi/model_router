@@ -33,8 +33,9 @@ from pathlib import Path
 
 # ── 配置 ───────────────────────────────────────────────────────────────────────
 
-STAGE_FILE = Path.home() / ".claude" / "hooks/model_router/stage"
-LOG_FILE   = Path.home() / ".claude" / "hooks/model_router/stage-router.log"
+# 注意：这个 STAGE_FILE 的 stage 和 hooks/model_router/stage 文件不同，后者是 bin 可执行文件
+STAGE_FILE = Path.home() / ".claude" / "stage"
+LOG_FILE   = Path.home() / ".claude" / "stage-router.log"
 PORT       = 7878
 ENV_FILE   = Path(__file__).parent / ".env"   # hooks/model_router/.env
 
