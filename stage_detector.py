@@ -125,6 +125,27 @@ def _read_stage_file(path: Path) -> str | None:
         return None
 
 
+def _ensure_session_stage(session_id: str) -> str:
+    """
+    确保 stage_<session_id> 文件存在并更新 active_session 指针。
+    文件不存在时从 current_stage 拷贝初始值，都没有则初始化为 "default"。
+    每次 hook 触发都调用，保证 proxy 随时能找到当前 session 的阶段。
+
+    Returns: 当前 session 的阶段名。
+    """
+    STAGE_DIR.mkdir(parents=True, exist_ok=True)
+    stage_path = _stage_path(session_id)
+    if not stage_path.exists():
+        # 继承全局后备的值作为 session 初始阶段
+        initial = _read_stage_file(GLOBAL_STAGE_FILE) or "default"
+        stage_path.write_text(initial + "\n")
+        log("INFO", f"初始化 stage_{session_id} = {initial}")
+    # 始终刷新 active_session 指针（多 session 时最后活跃的获胜）
+    ACTIVE_SESSION_FILE.write_text(session_id)
+    content = stage_path.read_text().strip()
+    return content if content else "default"
+
+
 def write_stage(stage: str, session_id: str | None = None) -> None:
     """写入阶段。有 session_id → 写入 stage_<session_id> 并更新 active_session 指针；
     无 session_id → 写入全局后备文件。"""
@@ -181,16 +202,19 @@ def main():
         # ── 提取 session_id（分 session 管理的关键）──
         session_id: str | None = (event.get("session_id") or "").strip() or None
 
+        # ── 会话初始化：确保 stage_<session_id> 已创建 ──
+        if session_id:
+            old_stage = _ensure_session_stage(session_id)
+        else:
+            old_stage = read_stage()
+
         # UserPromptSubmit 的 prompt 字段
         prompt: str = event.get("prompt", "")
         if not prompt:
-            # prompt 为空时也确保文件存在
             log("INFO", "empty prompt, ensure stage file exists")
-            read_stage(session_id)
             sys.exit(0)
 
         new_stage = detect_stage(prompt)
-        old_stage = read_stage(session_id)
 
         if new_stage and new_stage != old_stage:
             write_stage(new_stage, session_id)
