@@ -32,9 +32,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# 注意：数据文件 current_stage 和 stage CLI 源同目录不同名
-STAGE_FILE = Path.home() / ".claude" / "hooks" / "model_router" / "current_stage"
-LOG_FILE   = Path("/tmp/stage_detector.log")
+# ── 分 session 阶段管理 ──
+# 每个 session 独立管理阶段，避免多会话互相覆盖。
+# 命名规则：stage_<session_id>（参照 hooks/session 的 session_state_<session_id> 模式）
+# 同时维护 active_session 指针文件，供 proxy.py 等无 stdin 上下文的组件查询当前活跃 session。
+STAGE_DIR         = Path.home() / ".claude" / "hooks" / "model_router"
+ACTIVE_SESSION_FILE = STAGE_DIR / "active_session"
+GLOBAL_STAGE_FILE   = STAGE_DIR / "current_stage"   # 全局后备（无 session_id 时使用）
+LOG_FILE            = Path("/tmp/stage_detector.log")
 
 
 def log(level: str, msg: str) -> None:
@@ -104,19 +109,64 @@ def detect_stage(prompt: str) -> str | None:
     return None  # 不更改阶段
 
 
-def write_stage(stage: str) -> None:
-    STAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STAGE_FILE.write_text(stage + "\n")  # 统一带换行，与 echo 一致
+def _stage_path(session_id: str | None) -> Path:
+    """返回指定 session 的阶段文件路径。无 session_id 时返回全局后备文件。"""
+    if session_id:
+        return STAGE_DIR / f"stage_{session_id}"
+    return GLOBAL_STAGE_FILE
 
 
-def read_stage() -> str:
+def _read_stage_file(path: Path) -> str | None:
+    """读取指定阶段文件，不存在时返回 None。"""
     try:
-        content = STAGE_FILE.read_text().strip()
-        return content if content else "default"
+        content = path.read_text().strip()
+        return content if content else None
     except FileNotFoundError:
-        # 文件不存在时初始化写入，避免"看起来是空的"
-        write_stage("default")
-        return "default"
+        return None
+
+
+def write_stage(stage: str, session_id: str | None = None) -> None:
+    """写入阶段。有 session_id → 写入 stage_<session_id> 并更新 active_session 指针；
+    无 session_id → 写入全局后备文件。"""
+    STAGE_DIR.mkdir(parents=True, exist_ok=True)
+    if session_id:
+        _stage_path(session_id).write_text(stage + "\n")
+        ACTIVE_SESSION_FILE.write_text(session_id)
+    else:
+        GLOBAL_STAGE_FILE.write_text(stage + "\n")
+
+
+def read_stage(session_id: str | None = None) -> str:
+    """
+    读取当前阶段，优先级：
+      1. 传入的 session_id → stage_<session_id>
+      2. active_session 指针 → stage_<session_id>
+      3. 全局后备文件 → current_stage
+      4. default
+    """
+    # 1. 指定 session
+    if session_id:
+        content = _read_stage_file(_stage_path(session_id))
+        if content:
+            return content
+
+    # 2. active_session 指针
+    try:
+        active = ACTIVE_SESSION_FILE.read_text().strip()
+        if active:
+            content = _read_stage_file(_stage_path(active))
+            if content:
+                return content
+    except FileNotFoundError:
+        pass
+
+    # 3. 全局后备
+    content = _read_stage_file(GLOBAL_STAGE_FILE)
+    if content:
+        return content
+
+    # 4. 兜底
+    return "default"
 
 
 def main():
@@ -128,19 +178,22 @@ def main():
             log("WARN", f"stdin JSON parse failed: {exc!r}; passthrough")
             sys.exit(0)
 
+        # ── 提取 session_id（分 session 管理的关键）──
+        session_id: str | None = (event.get("session_id") or "").strip() or None
+
         # UserPromptSubmit 的 prompt 字段
         prompt: str = event.get("prompt", "")
         if not prompt:
             # prompt 为空时也确保文件存在
             log("INFO", "empty prompt, ensure stage file exists")
-            read_stage()
+            read_stage(session_id)
             sys.exit(0)
 
         new_stage = detect_stage(prompt)
-        old_stage = read_stage()
+        old_stage = read_stage(session_id)
 
         if new_stage and new_stage != old_stage:
-            write_stage(new_stage)
+            write_stage(new_stage, session_id)
             log("INFO", f"stage: {old_stage} → {new_stage}")
             # 从统一配置文件获取阶段描述
             from stage_config import STAGE_INFO

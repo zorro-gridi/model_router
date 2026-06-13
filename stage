@@ -21,15 +21,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-# 注意：数据文件 current_stage 和 stage CLI 源同目录不同名
-STAGE_FILE   = Path.home() / ".claude" / "hooks" / "model_router" / "current_stage"
-LOG_FILE     = Path.home() / ".claude" / "stage-router.log"
+# ── 分 session 阶段管理 ──
+HOOK_DIR            = Path.home() / ".claude" / "hooks" / "model_router"
+ACTIVE_SESSION_FILE = HOOK_DIR / "active_session"
+GLOBAL_STAGE_FILE   = HOOK_DIR / "current_stage"
+LOG_FILE            = Path.home() / ".claude" / "stage-router.log"
 # 注：stage CLI 装在 ~/.local/bin/，但 proxy.py 和 .env 在 ~/.claude/hooks/model_router/。
 # 不能用 Path(__file__).parent（取到的是 ~/.local/bin/，proxy.py 不在那）。
-HOOK_DIR     = Path.home() / ".claude" / "hooks" / "model_router"
-PROXY_SCRIPT = HOOK_DIR / "proxy.py"
-ENV_FILE     = HOOK_DIR / ".env"
-PROXY_PORT   = 7878
+PROXY_SCRIPT        = HOOK_DIR / "proxy.py"
+ENV_FILE            = HOOK_DIR / ".env"
+PROXY_PORT          = 7878
 
 VALID_STAGES = {"brainstorm", "decide", "design", "plan", "implement", "audit", "default"}
 
@@ -77,16 +78,56 @@ sys.path.insert(0, str(HOOK_DIR))
 from stage_config import STAGE_DESC
 
 
-def read_stage() -> str:
+def _get_active_session() -> str | None:
+    """读取 active_session 指针文件。"""
     try:
-        return STAGE_FILE.read_text().strip()
+        sid = ACTIVE_SESSION_FILE.read_text().strip()
+        return sid if sid else None
     except FileNotFoundError:
-        return "default"
+        return None
+
+
+def read_stage() -> str:
+    """
+    读取当前阶段，优先级：
+      1. active_session 指针 → stage_<session_id>
+      2. 全局后备文件 → current_stage
+      3. default
+    """
+    # 1. active_session → per-session 文件
+    active = _get_active_session()
+    if active:
+        sf = HOOK_DIR / f"stage_{active}"
+        try:
+            content = sf.read_text().strip()
+            if content:
+                return content
+        except FileNotFoundError:
+            pass
+
+    # 2. 全局后备
+    try:
+        content = GLOBAL_STAGE_FILE.read_text().strip()
+        if content:
+            return content
+    except FileNotFoundError:
+        pass
+
+    return "default"
 
 
 def write_stage(stage: str) -> None:
-    STAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STAGE_FILE.write_text(stage)
+    """
+    写入阶段。
+    若存在 active_session 指针 → 写入 stage_<session_id>；
+    否则写入全局后备文件 current_stage。
+    """
+    HOOK_DIR.mkdir(parents=True, exist_ok=True)
+    active = _get_active_session()
+    if active:
+        (HOOK_DIR / f"stage_{active}").write_text(stage)
+    else:
+        GLOBAL_STAGE_FILE.write_text(stage)
 
 
 def show_current():

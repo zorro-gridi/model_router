@@ -29,12 +29,11 @@ else
 fi
 
 # 3. 安装 stage CLI（符号链接，源更新即自动生效）
-# 注：源是 hooks/model_router/stage 本身（Python CLI 源文件），不是
-# stage_cli.py 之类的别名——历史上把数据文件 "default" 误写到源文件
-# 会导致 stage proxy 启动失败。源和数据文件路径天然分离：
-#   源（CLI 源）  = $HOOK_DIR/stage      ← Python 脚本，ln -s 到 $BIN_DIR/stage
-#   数据（阶段）  = $HOOK_DIR/current_stage ← 纯文本，写入当前阶段名
-# 符号链接（比 cp 好：源更新无需重新安装）：
+# 源和数据文件分离：
+#   源（CLI）    = $HOOK_DIR/stage                ← Python 脚本，ln -s 到 $BIN_DIR/stage
+#   数据         = $HOOK_DIR/current_stage        ← 全局后备阶段名
+#                  $HOOK_DIR/stage_<session_id>   ← 分 session 阶段名
+#                  $HOOK_DIR/active_session       ← 活跃 session 指针
 ln -sf "$SCRIPT_DIR/stage" "$BIN_DIR/stage"
 echo "✅ stage CLI → $BIN_DIR/stage"
 
@@ -63,10 +62,12 @@ if ! echo "$PATH" | grep -q "$BIN_DIR"; then
 fi
 
 # 6. 初始化阶段数据文件
-# 注：数据文件叫 current_stage，跟 stage（CLI 源）同目录不同名——
-# 避免 .claude/stage 老路径和 stage CLI 源文件名混淆。
+# 分 session 管理：
+#   stage_<session_id>  — per-session 阶段文件（由 stage_detector.py hook 自动创建）
+#   active_session      — 活跃 session 指针（由 hook 自动维护）
+#   current_stage       — 全局后备（本脚本初始化）
 STAGE_DATA="$HOOK_DIR/current_stage"
-mkdir -p "$(dirname "$STAGE_DATA")"
+mkdir -p "$HOOK_DIR"
 
 # 一次性迁移：把老路径 ~/.claude/stage 的内容迁到新文件
 OLD_STAGE="$HOME/.claude/stage"
@@ -77,9 +78,9 @@ if [ -f "$OLD_STAGE" ] && [ "$OLD_STAGE" != "$STAGE_DATA" ]; then
 elif [ ! -f "$STAGE_DATA" ]; then
     # 新安装 / 数据文件丢失：初始化为 default
     echo "default" > "$STAGE_DATA"
-    echo "✅ 阶段数据初始化为: default → $STAGE_DATA"
+    echo "✅ 全局后备阶段初始化为: default → $STAGE_DATA"
 else
-    echo "ℹ️  阶段数据已存在: $(cat "$STAGE_DATA") → $STAGE_DATA"
+    echo "ℹ️  全局后备阶段: $(cat "$STAGE_DATA") → $STAGE_DATA"
 fi
 
 echo ""

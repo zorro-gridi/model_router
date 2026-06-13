@@ -33,11 +33,16 @@ from pathlib import Path
 
 # ── 配置 ───────────────────────────────────────────────────────────────────────
 
-# 注意：数据文件 current_stage 和 stage CLI 源同目录不同名
-STAGE_FILE = Path.home() / ".claude" / "hooks" / "model_router" / "current_stage"
-LOG_FILE   = Path.home() / ".claude" / "stage-router.log"
-PORT       = 7878
-ENV_FILE   = Path(__file__).parent / ".env"   # hooks/model_router/.env
+# ── 分 session 阶段管理 ──
+# proxy.py 是无 stdin 上下文的 HTTP 服务器，无法直接拿到 session_id。
+# 它依赖 stage_detector.py（UserPromptSubmit hook）在检测阶段变更时写入的
+# active_session 指针文件来定位当前活跃 session 的阶段文件。
+STAGE_DIR            = Path.home() / ".claude" / "hooks" / "model_router"
+ACTIVE_SESSION_FILE  = STAGE_DIR / "active_session"
+GLOBAL_STAGE_FILE    = STAGE_DIR / "current_stage"   # 全局后备
+LOG_FILE             = Path.home() / ".claude" / "stage-router.log"
+PORT                 = 7878
+ENV_FILE             = Path(__file__).parent / ".env"   # hooks/model_router/.env
 
 # 阶段 → (provider_base_url, model, api_key_env, protocol)
 #
@@ -92,22 +97,51 @@ logging.basicConfig(
 )
 log = logging.getLogger("stage-router")
 
-# ── 阶段读取 ───────────────────────────────────────────────────────────────────
+# ── 阶段读取（分 session 管理）─────────────────────────────────────────────────
+
+def _read_stage_file(path: Path) -> str | None:
+    """读取指定阶段文件，不存在或为空时返回 None。"""
+    try:
+        content = path.read_text().strip().lower()
+        return content if content else None
+    except FileNotFoundError:
+        return None
+
 
 def read_stage() -> str:
-    """读取当前阶段，文件不存在或内容为空则返回 'default'。"""
+    """
+    读取当前阶段，优先级：
+      1. active_session 指针 → stage_<session_id>
+      2. 全局后备文件 → current_stage
+      3. default
+
+    proxy.py 是无 stdin 的 HTTP 服务器，无法直接拿到 session_id。
+    它依赖 stage_detector.py（UserPromptSubmit hook）维护的 active_session 指针。
+    """
+    # 1. active_session 指针 → 对应 per-session 文件
     try:
-        content = STAGE_FILE.read_text().strip().lower()
-        if not content:
-            log.warning("stage 文件为空，使用 default")
-            return "default"
+        active = ACTIVE_SESSION_FILE.read_text().strip()
+        if active:
+            stage_path = STAGE_DIR / f"stage_{active}"
+            content = _read_stage_file(stage_path)
+            if content and content in STAGE_MODELS:
+                return content
+            if content:
+                log.warning(f"stage_{active} 未知阶段值 '{content}'，继续降级查找")
+    except FileNotFoundError:
+        pass
+
+    # 2. 全局后备
+    content = _read_stage_file(GLOBAL_STAGE_FILE)
+    if content:
         if content in STAGE_MODELS:
             return content
-        log.warning(f"未知阶段值 '{content}'，回退到 default")
+        log.warning(f"current_stage 未知阶段值 '{content}'，回退到 default")
         return "default"
-    except FileNotFoundError:
-        log.info(f"stage 文件不存在 ({STAGE_FILE})，使用 default")
-        return "default"
+
+    # 3. 兜底
+    log.info(f"无任何阶段文件（无 active_session、无 current_stage），使用 default")
+    return "default"
 
 # ── 请求转发 ───────────────────────────────────────────────────────────────────
 
@@ -462,7 +496,7 @@ def main():
         sys.exit(1)
 
     log.info(f"Stage Router 启动 → 监听 http://127.0.0.1:{args.port}")
-    log.info(f"阶段文件: {STAGE_FILE}")
+    log.info(f"阶段目录: {STAGE_DIR}（per-session: stage_<id>，后备: current_stage）")
     log.info(f"日志文件: {LOG_FILE}")
     log.info(
         "已配置 key: " + ", ".join(
