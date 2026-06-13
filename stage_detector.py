@@ -98,7 +98,7 @@ STAGE_KEYWORDS: list[tuple[str, list[str]]] = [
     ]),
     ("implement",  [
         "实现", "implement", "编码", "coding", "写代码", "开发", "develop",
-        "写", "build", "create", "fix", "修复", "add", "添加",
+        "写", "修", "build", "create", "fix", "修复", "add", "添加",
     ]),
     ("audit",      [
         "审计", "audit", "review", "检查", "code review", "安全",
