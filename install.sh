@@ -63,12 +63,25 @@ if ! echo "$PATH" | grep -q "$BIN_DIR"; then
     echo "   export PATH=\"\$HOME/.local/bin:\$PATH\""
 fi
 
-# 6. 初始化阶段数据文件（注意：写到 ~/.claude/stage，不是 $HOOK_DIR/stage）
-# 历史上误把数据写到 $HOOK_DIR/stage 会覆盖 CLI 源，导致 stage proxy 启动失败。
-STAGE_DATA="$HOME/.claude/stage"
+# 6. 初始化阶段数据文件
+# 注：数据文件叫 current_stage，跟 stage（CLI 源）同目录不同名——
+# 避免 .claude/stage 老路径和 stage CLI 源文件名混淆。
+STAGE_DATA="$HOOK_DIR/current_stage"
 mkdir -p "$(dirname "$STAGE_DATA")"
-echo "default" > "$STAGE_DATA"
-echo "✅ 阶段数据初始化为: default → $STAGE_DATA"
+
+# 一次性迁移：把老路径 ~/.claude/stage 的内容迁到新文件
+OLD_STAGE="$HOME/.claude/stage"
+if [ -f "$OLD_STAGE" ] && [ "$OLD_STAGE" != "$STAGE_DATA" ]; then
+    cp "$OLD_STAGE" "$STAGE_DATA"
+    rm -f "$OLD_STAGE"
+    echo "ℹ️  老数据已迁移: $OLD_STAGE → $STAGE_DATA（$(cat "$STAGE_DATA")）"
+elif [ ! -f "$STAGE_DATA" ]; then
+    # 新安装 / 数据文件丢失：初始化为 default
+    echo "default" > "$STAGE_DATA"
+    echo "✅ 阶段数据初始化为: default → $STAGE_DATA"
+else
+    echo "ℹ️  阶段数据已存在: $(cat "$STAGE_DATA") → $STAGE_DATA"
+fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

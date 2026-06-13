@@ -21,7 +21,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-STAGE_FILE   = Path.home() / ".claude" / "stage"
+# 注意：数据文件 current_stage 和 stage CLI 源同目录不同名
+STAGE_FILE   = Path.home() / ".claude" / "hooks" / "model_router" / "current_stage"
 LOG_FILE     = Path.home() / ".claude" / "stage-router.log"
 # 注：stage CLI 装在 ~/.local/bin/，但 proxy.py 和 .env 在 ~/.claude/hooks/model_router/。
 # 不能用 Path(__file__).parent（取到的是 ~/.local/bin/，proxy.py 不在那）。

@@ -26,8 +26,8 @@ import json
 import sys
 from pathlib import Path
 
-# 注意：这个 STAGE_FILE 的 stage 和 hooks/model_router/stage 文件不同，后者是 bin 可执行文件
-STAGE_FILE = Path.home() / ".claude" / "stage"
+# 注意：数据文件 current_stage 和 stage CLI 源同目录不同名
+STAGE_FILE = Path.home() / ".claude" / "hooks" / "model_router" / "current_stage"
 
 STAGE_DISPLAY = {
     "brainstorm": ("💭", "头脑风暴", "deepseek-v4-flash"),

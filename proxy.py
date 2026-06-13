@@ -2,7 +2,7 @@
 """
 Stage-Aware Model Router
 ========================
-本地代理服务，监听 CC 的 API 请求，读取 ~/.claude/stage 文件，
+本地代理服务，监听 CC 的 API 请求，读取 ~/.claude/hooks/model_router/current_stage 文件，
 按当前工作流阶段将请求转发到最合适的模型。
 
 阶段 → 模型映射：
@@ -33,8 +33,8 @@ from pathlib import Path
 
 # ── 配置 ───────────────────────────────────────────────────────────────────────
 
-# 注意：这个 STAGE_FILE 的 stage 和 hooks/model_router/stage 文件不同，后者是 bin 可执行文件
-STAGE_FILE = Path.home() / ".claude" / "stage"
+# 注意：数据文件 current_stage 和 stage CLI 源同目录不同名
+STAGE_FILE = Path.home() / ".claude" / "hooks" / "model_router" / "current_stage"
 LOG_FILE   = Path.home() / ".claude" / "stage-router.log"
 PORT       = 7878
 ENV_FILE   = Path(__file__).parent / ".env"   # hooks/model_router/.env

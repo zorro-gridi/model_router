@@ -20,7 +20,7 @@ Claude Code
     │  ANTHROPIC_BASE_URL=http://127.0.0.1:7878
     ▼
 proxy.py（本地代理，Anthropic 协议透传）
-    │  读取 ~/.claude/stage
+    │  读取 ~/.claude/hooks/model_router/current_stage
     ├─ brainstorm → DeepSeek deepseek-v4-flash       （cheap & fast）
     ├─ decide     → MiniMax MiniMax-M3               （deep reasoning）
     ├─ design     → MiniMax MiniMax-M3               （architecture）
@@ -30,11 +30,11 @@ proxy.py（本地代理，Anthropic 协议透传）
     └─ default    → DeepSeek deepseek-v4-pro         （fallback）
 
 Hooks（与代理解耦，独立运行）
-    UserPromptSubmit → stage_detector.py  → 写 ~/.claude/stage
+    UserPromptSubmit → stage_detector.py  → 写 ~/.claude/hooks/model_router/current_stage
     Stop             → stage_show.py      → 终端显示当前阶段
 ```
 
-**关键设计**：Hook 和代理完全解耦。Hook 只负责写文件，代理读文件决策。两者通过 `~/.claude/stage` 这一个文件通信，互不阻塞。
+**关键设计**：Hook 和代理完全解耦。Hook 只负责写文件，代理读文件决策。两者通过 `~/.claude/hooks/model_router/current_stage` 这一个文件通信，互不阻塞。
 
 ## 安装
 
@@ -47,7 +47,7 @@ bash install.sh
 1. 复制 hooks 到 `~/.claude/hooks/model_router/`
 2. 复制 `stage` CLI 到 `~/.local/bin/`
 3. 在 `~/.claude/settings.local.json` 中注册 `UserPromptSubmit` 和 `Stop` hook（不污染全局 `settings.json`）
-4. 初始化 `~/.claude/stage` 为 `default`
+4. 初始化 `~/.claude/hooks/model_router/current_stage` 为 `default`（如有老路径 `~/.claude/stage` 会自动迁移）
 
 ## 配置 API Keys
 
@@ -168,7 +168,6 @@ STAGE_MODELS = {
 
 ```
 ~/.claude/
-├── stage                    ← 当前阶段（brainstorm/decide/design/plan/implement/audit/default）
 ├── stage-router.log         ← 路由日志
 ├── settings.json            ← CC 全局配置（install.sh 不再写入此文件）
 ├── settings.local.json      ← CC 本地配置（含本插件的 Hook 注册）
@@ -176,6 +175,8 @@ STAGE_MODELS = {
     └── model_router/
         ├── .env              ← API Keys（gitignored，自动加载）
         ├── .env.example      ← 模板
+        ├── stage             ← 阶段管理 CLI 源（cp 到 ~/.local/bin/stage）
+        ├── current_stage     ← 当前阶段（brainstorm/decide/design/plan/implement/audit/default）
         ├── stage_detector.py ← UserPromptSubmit Hook：自动检测阶段
         ├── stage_show.py     ← Stop Hook：显示当前阶段
         └── proxy.py          ← 本地代理服务器
