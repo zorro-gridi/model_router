@@ -29,15 +29,8 @@ from pathlib import Path
 # 注意：数据文件 current_stage 和 stage CLI 源同目录不同名
 STAGE_FILE = Path.home() / ".claude" / "hooks" / "model_router" / "current_stage"
 
-STAGE_DISPLAY = {
-    "brainstorm": ("💭", "头脑风暴", "deepseek-v4-flash"),
-    "decide":     ("⚖️",  "决策分析", "MiniMax-M3"),
-    "design":     ("🏗️",  "方案设计", "MiniMax-M3"),
-    "plan":       ("📋", "任务拆解", "deepseek-v4-pro"),
-    "implement":  ("⚙️",  "工程实施", "deepseek-v4-pro"),
-    "audit":      ("🔍", "工程审计", "MiniMax-M3"),
-    "default":    ("🔄", "默认",     "deepseek-v4-pro"),
-}
+# 从统一配置文件导入（hooks/model_router/stage_config.py）
+from stage_config import STAGE_DISPLAY
 
 
 def main():

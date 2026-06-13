@@ -72,15 +72,9 @@ COLORS = {
     "reset":      "\033[0m",
 }
 
-STAGE_DESC = {
-    "brainstorm": "💭 deepseek-v4-flash  — 快速发散，低成本探索",
-    "decide":     "⚖️  MiniMax-M3         — 深度推理，权衡分析",
-    "design":     "🏗️  MiniMax-M3         — 系统架构，方案设计",
-    "plan":       "📋 deepseek-v4-pro    — 任务拆解，结构化输出",
-    "implement":  "⚙️  deepseek-v4-pro    — 主力编码，工程实施",
-    "audit":      "🔍 MiniMax-M3         — 严格检查，安全审计",
-    "default":    "🔄 deepseek-v4-pro    — 兜底默认",
-}
+# 从统一配置文件导入（需先将 HOOK_DIR 加入 sys.path）
+sys.path.insert(0, str(HOOK_DIR))
+from stage_config import STAGE_DESC
 
 
 def read_stage() -> str:

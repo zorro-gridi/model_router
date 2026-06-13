@@ -142,16 +142,9 @@ def main():
         if new_stage and new_stage != old_stage:
             write_stage(new_stage)
             log("INFO", f"stage: {old_stage} → {new_stage}")
-            # 注入上下文给 Claude，告知当前阶段和对应模型
-            stage_info = {
-                "brainstorm": "快速探索阶段 → deepseek-v4-flash（便宜快速），随意发散",
-                "decide":     "决策分析阶段 → MiniMax-M3，深度推理",
-                "design":     "方案设计阶段 → MiniMax-M3，系统架构",
-                "plan":       "任务拆解阶段 → deepseek-v4-pro，结构化输出",
-                "implement":  "工程实施阶段 → deepseek-v4-pro，主力编码",
-                "audit":      "工程审计阶段 → MiniMax-M3，严格检查",
-            }
-            info = stage_info.get(new_stage, "")
+            # 从统一配置文件获取阶段描述
+            from stage_config import STAGE_INFO
+            info = STAGE_INFO.get(new_stage, "")
             output = {
                 "hookSpecificOutput": {
                     "hookEventName": "UserPromptSubmit",
