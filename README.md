@@ -49,16 +49,41 @@ bash install.sh
 
 ## 配置 API Keys
 
-```bash
-# ~/.zshrc 或 ~/.bashrc
-export MINIMAX_API_KEY="eyJ..."          # MiniMax 的 Anthropic SDK key
-export DEEPSEEK_API_KEY="sk-..."         # DeepSeek 的 Anthropic SDK key
+`proxy.py` 和 `stage` CLI 启动时会自动从**本插件目录**下的 `.env` 文件加载环境变量，无需配置 `~/.zshrc`。
 
-# 让 CC 流量走本地代理（替换原来的 ANTHROPIC_BASE_URL 直连）
+```bash
+# 安装时已自动从 .env.example 复制为 .env（如不存在可手动复制）
+cp ~/.claude/hooks/model_router/.env.example ~/.claude/hooks/model_router/.env
+chmod 600 ~/.claude/hooks/model_router/.env   # 保护 API key
+
+# 编辑填入真实 key
+vim ~/.claude/hooks/model_router/.env
+```
+
+`.env` 文件格式（参考 `.env.example`）：
+
+```bash
+# MiniMax（https://api.minimaxi.com/anthropic）
+MINIMAX_API_KEY=eyJ...
+
+# DeepSeek（https://api.deepseek.com/anthropic）
+DEEPSEEK_API_KEY=sk-...
+```
+
+`.env` 已被 `~/.claude/.gitignore`（`hooks/**/.env`）屏蔽，不会进 git。
+
+> **加载优先级**：`shell 环境变量` > `.env`。如果两者都设了，shell 里的 export 优先。这让你可以在不修改 `.env` 的情况下临时切换 key。
+>
+> **启动校验**：`proxy.py` 启动时会检查所有 stage 需要的 key，缺一个就立即报错退出（不会跑起来后再 500）。同时日志会打印已加载 key 的**末 4 位**，方便确认配置是否正确。
+
+最后让 CC 流量走本地代理（替换原来的直连）：
+
+```bash
+# ~/.zshrc 或本终端
 export ANTHROPIC_BASE_URL="http://127.0.0.1:7878"
 ```
 
-> **迁移提示**：如果你之前是 `ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic` 直连 MiniMax，需要先把那个 key 复制到 `MINIMAX_API_KEY` 这个独立环境变量里（不同 stage 会用到不同的 key，互相隔离）。
+> **迁移提示**：如果你之前是 `ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic` 直连 MiniMax，需要把那个 key 从 `ANTHROPIC_AUTH_TOKEN` 复制到 `MINIMAX_API_KEY`（不同 stage 会用到不同的 key，互相隔离）。
 
 ## 启动
 
@@ -139,9 +164,11 @@ STAGE_MODELS = {
 ├── settings.json            ← CC 配置（含 Hook 注册）
 └── hooks/
     └── model_router/
-        ├── stage_detector.py    ← UserPromptSubmit Hook：自动检测阶段
-        ├── stage_show.py        ← Stop Hook：显示当前阶段
-        └── proxy.py             ← 本地代理服务器
+        ├── .env              ← API Keys（gitignored，自动加载）
+        ├── .env.example      ← 模板
+        ├── stage_detector.py ← UserPromptSubmit Hook：自动检测阶段
+        ├── stage_show.py     ← Stop Hook：显示当前阶段
+        └── proxy.py          ← 本地代理服务器
 
 ~/.local/bin/
 └── stage                    ← 阶段管理 CLI
@@ -176,7 +203,8 @@ curl -X POST http://127.0.0.1:7878/v1/messages \
 | 症状                                   | 排查                                                                                                                             |
 | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `curl /health` 返回 connection refused | 代理未启动，跑 `stage proxy`                                                                                                     |
-| 上游返回 401                           | 对应 stage 的 API key 环境变量未设置或错误，echo 一下看是否为空                                                                  |
+| 启动报 "缺少必需的 API key"            | 编辑 `~/.claude/hooks/model_router/.env` 填入 `MINIMAX_API_KEY` / `DEEPSEEK_API_KEY`（或 shell export）                          |
+| 上游返回 401                           | 对应 stage 的 API key 未配置/错误，启动日志会打印已加载 key 的末 4 位可对照确认                                                  |
 | 上游返回 404 / 模型不存在              | `STAGE_MODELS` 中的 model 名拼写错误，对照 provider 文档核对                                                                     |
 | 上游返回 400 + 协议错误                | 99% 是 protocol 字段配错：base_url 是 `/anthropic` 路径就要写 `anthropic`，是 `/v1` 或 `/compatible-mode/v1` 之类的才写 `openai` |
 | Hook 触发但 stage 不变                 | 看 `~/.claude/stage-router.log`，检查关键词匹配是否命中                                                                          |

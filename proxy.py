@@ -25,6 +25,7 @@ import http.server
 import json
 import logging
 import os
+import re
 import sys
 import urllib.request
 import urllib.error
@@ -35,6 +36,7 @@ from pathlib import Path
 STAGE_FILE = Path.home() / ".claude" / "stage"
 LOG_FILE   = Path.home() / ".claude" / "stage-router.log"
 PORT       = 7878
+ENV_FILE   = Path(__file__).parent / ".env"   # hooks/model_router/.env
 
 # 阶段 → (provider_base_url, model, api_key_env, protocol)
 #
@@ -294,6 +296,53 @@ def _from_openai_response(body: bytes) -> bytes:
         log.error(f"响应格式转换失败: {e}")
         return body
 
+# ── .env 加载 + 启动校验 ───────────────────────────────────────────────────────
+
+_DOTENV_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
+
+
+def _load_dotenv(env_path: Path) -> int:
+    """
+    从 .env 文件加载变量到 os.environ（仅在变量未设置时填入，避免覆盖）。
+
+    极简实现：跳过空行和 `#` 注释；值不带引号时去尾随空白；带引号时保留内部空白。
+    不依赖 python-dotenv，避免引入外部依赖。
+
+    Returns:
+        成功加载的变量数量。
+    """
+    if not env_path.exists():
+        return 0
+    loaded = 0
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            m = _DOTENV_LINE.match(line)
+            if not m:
+                continue
+            key, value = m.group(1), m.group(2)
+            # 去掉匹配的引号
+            if (value.startswith('"') and value.endswith('"')) or \
+               (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+            # 已设置的环境变量优先级更高（shell export 覆盖 .env）
+            if key not in os.environ:
+                os.environ[key] = value
+                loaded += 1
+    except OSError as e:
+        log.error(f"读取 {env_path} 失败: {e}")
+    return loaded
+
+
+def _check_required_keys() -> list[str]:
+    """扫描 STAGE_MODELS，收集所有需要的 API key 环境变量名，报告缺失项。"""
+    needed = {entry[2] for entry in STAGE_MODELS.values()}
+    missing = [name for name in sorted(needed) if not os.environ.get(name, "").strip()]
+    return missing
+
+
 # ── HTTP 服务器 ────────────────────────────────────────────────────────────────
 
 class RouterHandler(http.server.BaseHTTPRequestHandler):
@@ -358,9 +407,34 @@ def main():
 
     RouterHandler.dry_run = args.dry_run
 
+    # 1) 从本目录 .env 加载（shell 环境变量优先级更高，不会被覆盖）
+    n_loaded = _load_dotenv(ENV_FILE)
+    if n_loaded:
+        log.info(f"从 {ENV_FILE} 加载了 {n_loaded} 个环境变量")
+    elif not ENV_FILE.exists():
+        log.warning(
+            f"未找到 {ENV_FILE}，将仅依赖 shell 环境变量。"
+            f"可执行: cp {ENV_FILE}.example {ENV_FILE}  然后填入 key"
+        )
+
+    # 2) 启动期校验：缺少 API key 就直接报错退出（避免请求飞到一半才 500）
+    missing = _check_required_keys()
+    if missing:
+        log.error("=" * 60)
+        log.error(f"缺少必需的 API key 环境变量: {', '.join(missing)}")
+        log.error(f"请在 {ENV_FILE} 中填入，或在 shell 中 export。")
+        log.error("=" * 60)
+        sys.exit(1)
+
     log.info(f"Stage Router 启动 → 监听 http://127.0.0.1:{args.port}")
     log.info(f"阶段文件: {STAGE_FILE}")
     log.info(f"日志文件: {LOG_FILE}")
+    log.info(
+        "已配置 key: " + ", ".join(
+            f"{name}=***{os.environ[name][-4:]}" if len(os.environ[name]) > 4 else f"{name}=(set)"
+            for name in sorted({e[2] for e in STAGE_MODELS.values()})
+        )
+    )
     if args.dry_run:
         log.info("[DRY-RUN 模式] 请求不会实际转发")
 

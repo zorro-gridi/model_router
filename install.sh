@@ -27,6 +27,20 @@ cp "$SCRIPT_DIR/stage" "$BIN_DIR/stage"
 chmod +x "$BIN_DIR/stage"
 echo "✅ stage CLI → $BIN_DIR/stage"
 
+# 3.5 初始化 .env（如果不存在）
+if [ ! -f "$HOOK_DIR/.env" ]; then
+    if [ -f "$SCRIPT_DIR/.env.example" ]; then
+        cp "$SCRIPT_DIR/.env.example" "$HOOK_DIR/.env"
+        chmod 600 "$HOOK_DIR/.env"   # 仅当前用户可读，保护 API key
+        echo "✅ .env 模板已复制到 $HOOK_DIR/.env（请编辑填入 key）"
+        NEED_ENV_FILL=1
+    else
+        echo "⚠️  未找到 .env.example，请手动创建 $HOOK_DIR/.env"
+    fi
+else
+    echo "ℹ️  $HOOK_DIR/.env 已存在，跳过"
+fi
+
 # 4. 更新 ~/.claude/settings.json
 if [ ! -f "$SETTINGS" ]; then
     echo "{}" > "$SETTINGS"
@@ -92,11 +106,17 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  安装完成！使用方式："
 echo ""
-echo "  1. 配置 API Keys（~/.zshrc）："
-echo "     export ANTHROPIC_API_KEY=sk-ant-..."
-echo "     export DEEPSEEK_API_KEY=sk-..."
+if [ -n "$NEED_ENV_FILL" ]; then
+echo "  1. ⚠️  编辑 $HOOK_DIR/.env 填入 API Keys："
+echo "     MINIMAX_API_KEY=eyJ..."
+echo "     DEEPSEEK_API_KEY=sk-..."
 echo ""
 echo "  2. 启动代理（新终端）："
+else
+echo "  1. 确认 $HOOK_DIR/.env 已配置 API Keys"
+echo ""
+echo "  2. 启动代理（新终端）："
+fi
 echo "     stage proxy"
 echo ""
 echo "  3. 配置 CC 使用代理（当前终端）："
