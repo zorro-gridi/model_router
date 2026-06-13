@@ -121,8 +121,7 @@ def read_stage(event: dict | None = None) -> str:
     读取当前阶段，优先级：
       1. stdin 中的 session_id+cwd → <project_root>/.claude/stage_<session_id>
       2. active_session 指针 → 读取其存储的完整路径文件
-      3. 全局后备文件 → current_stage
-      4. default
+      3. default（无全局后备，每个 session 独立维护 stage_<sid>）
     """
     # 1. 从 event 中解析 session_id + cwd
     if event:
@@ -142,11 +141,6 @@ def read_stage(event: dict | None = None) -> str:
                 return content
     except FileNotFoundError:
         pass
-
-    # 3. 全局后备
-    content = _read_stage_file(GLOBAL_STAGE_FILE)
-    if content:
-        return content
 
     return "default"
 

@@ -126,10 +126,9 @@ def _read_stage_file(path: Path) -> str | None:
 
 def read_stage() -> str:
     """
-    读取当前阶段，优先级：
+    读取当前阶段：
       1. active_session 指针 → 读取其存储的完整路径文件
-      2. 全局后备文件 → current_stage
-      3. default
+      2. 返回 default（无全局后备，每个 session 独立维护 stage_<sid>）
 
     proxy.py 是无 stdin 的 HTTP 服务器，无法直接拿到 session_id。
     它依赖 stage_detector.py（UserPromptSubmit hook）维护的 active_session 指针。
@@ -144,20 +143,11 @@ def read_stage() -> str:
             if content and content in STAGE_MODELS:
                 return content
             if content:
-                log.warning(f"active_session 指向 {active_path} 未知阶段值 '{content}'，继续降级查找")
+                log.warning(f"active_session 指向 {active_path} 未知阶段值 '{content}'，回退到 default")
     except FileNotFoundError:
         pass
 
-    # 2. 全局后备
-    content = _read_stage_file(GLOBAL_STAGE_FILE)
-    if content:
-        if content in STAGE_MODELS:
-            return content
-        log.warning(f"current_stage 未知阶段值 '{content}'，回退到 default")
-        return "default"
-
-    # 3. 兜底
-    log.info("无任何阶段文件（无 active_session、无 current_stage），使用 default")
+    # 2. 兜底（无 active_session 时用 default，不继承全局后备）
     return "default"
 
 
@@ -284,6 +274,30 @@ def write_fallback(model: str) -> None:
             )
     except Exception as e:
         log.error(f"写入 fallback_<sid> 失败: {e}")
+
+def _rewrite_response_model(resp_body: bytes, display_model: str) -> bytes:
+    """
+    将响应体中的 model 字段改写为 CC 能识别的模型名。
+
+    当 proxy 使用内部别名（如 deepseek-v4-flash）作为 target_model 转发时，
+    上游返回的响应体中 model 字段也是这个别名。CC 会把它记录到 session state，
+    重启后恢复 session 时 CC 无法识别该别名而报 warning。
+
+    此函数在 anthropic 协议响应成功时执行改写：将 model 字段替换为 session-level
+    的原始模型名（如 MiniMax-M3），避免 CC 记录不可识别的别名。
+    """
+    if not resp_body or not display_model:
+        return resp_body
+    try:
+        data = json.loads(resp_body)
+        if isinstance(data, dict) and "model" in data and data["model"] != display_model:
+            original = data["model"]
+            data["model"] = display_model
+            return json.dumps(data).encode()
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return resp_body
+
 
 # ── 请求转发 ───────────────────────────────────────────────────────────────────
 
@@ -596,6 +610,8 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # ── Sticky fallback: 主模型曾失败过，交换主/备避免重复重试 ──
         # 仅在自动路由（非 model_override）下生效——用户显式指定模型时不干预
         sticky_fb = read_fallback() if not model_override else None
+        # 保存 session 级模型名（CC 能识别的原始模型名），用于响应体 model 字段回写
+        session_model = model
         if sticky_fb:
             (base_url, model, key_env, protocol,
              fb_base, fb_model, fb_key, fb_proto) = (
@@ -636,6 +652,13 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             # 备用模型成功 + 之前无 sticky + 非 model_override → 写入 sticky fallback
             if not sticky_fb and not _is_retriable(status) and not model_override:
                 write_fallback(fb_model)
+
+        # ── 响应体 model 字段回写 ──
+        # 如果上游响应中的 model 是内部别名（如 deepseek-v4-flash），CC 会记录它。
+        # 回写到 session_model（CC 能识别的原始模型名如 MiniMax-M3），
+        # 避免 CC 重启后尝试恢复该别名时报 "not a model this version recognizes"。
+        if not _is_retriable(status):
+            resp_body = _rewrite_response_model(resp_body, session_model)
 
         self.send_response(status)
         self.send_header("Content-Type", resp_headers.get("content-type", "application/json"))

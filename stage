@@ -192,10 +192,9 @@ def _get_active_stage_path() -> Path | None:
 
 def read_stage() -> str:
     """
-    读取当前阶段，优先级：
+    读取当前阶段：
       1. active_session 指针 → 读取其存储的完整路径文件
-      2. 全局后备文件 → current_stage
-      3. default
+      2. default（无全局后备，每个 session 独立维护 stage_<sid>）
     """
     # 1. active_session → 完整路径
     stage_path = _get_active_stage_path()
@@ -206,14 +205,6 @@ def read_stage() -> str:
                 return content
         except FileNotFoundError:
             pass
-
-    # 2. 全局后备
-    try:
-        content = GLOBAL_STAGE_FILE.read_text().strip()
-        if content:
-            return content
-    except FileNotFoundError:
-        pass
 
     return "default"
 

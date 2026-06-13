@@ -279,8 +279,8 @@ def _ensure_session_stage(session_id: str, cwd: str | Path) -> str:
     """
     确保 stage_<session_id> 文件存在并更新 active_session 指针。
 
-    文件不存在时从 current_stage 全局后备拷贝初始值，都没有则初始化为 "default"。
-    每次 hook 触发都调用，保证 proxy 随时能找到当前 session 的阶段。
+    新 session 始终从 "default" 初始化，stage 应从用户 prompt 中检测。
+    不继承 global current_stage，避免上一个 session 残留的责任状态污染新 session。
 
     active_session 存储的是阶段文件的**完整绝对路径**，proxy 可直接读取。
 
@@ -288,11 +288,10 @@ def _ensure_session_stage(session_id: str, cwd: str | Path) -> str:
     """
     stage_path = _stage_file_path(cwd, session_id)
     if not stage_path.exists():
-        # 继承全局后备的值作为 session 初始阶段
-        initial = _read_stage_file(GLOBAL_STAGE_FILE) or "default"
+        # 新 session 始终从 default 开始，stage 由 detect_stage() 从 prompt 检测
         stage_path.parent.mkdir(parents=True, exist_ok=True)
-        stage_path.write_text(initial + "\n")
-        log("INFO", f"初始化 stage_{session_id} = {initial} → {stage_path}")
+        stage_path.write_text("default\n")
+        log("INFO", f"初始化 stage_{session_id} = default → {stage_path}")
     # 始终刷新 active_session 指针（存储完整路径，多 session 时最后活跃的获胜）
     HOOK_DIR.mkdir(parents=True, exist_ok=True)
     ACTIVE_SESSION_FILE.write_text(str(stage_path))
@@ -304,7 +303,7 @@ def write_stage(stage: str, session_id: str | None = None,
                 cwd: str | Path | None = None) -> None:
     """写入阶段。
     有 session_id+cwd → 写入 <project_root>/.claude/stage_<session_id> 并更新指针；
-    无 → 写入全局后备文件 current_stage。
+    无 → 写入全局后备文件 current_stage（仅 stage CLI 工具的 legacy 路径）。
     """
     if session_id and cwd:
         stage_path = _stage_file_path(cwd, session_id)
@@ -320,11 +319,10 @@ def write_stage(stage: str, session_id: str | None = None,
 def read_stage(session_id: str | None = None,
                cwd: str | Path | None = None) -> str:
     """
-    读取当前阶段，优先级：
+    读取当前阶段：
       1. 传入的 session_id+cwd → <project_root>/.claude/stage_<session_id>
       2. active_session 指针 → 读取其存储的完整路径文件
-      3. 全局后备文件 → current_stage
-      4. default
+      3. 返回 default（无全局后备，每个 session 独立维护 stage_<sid>）
     """
     # 1. 指定 session（hook 场景：有 stdin 中的 session_id 和 cwd）
     if session_id and cwd:
@@ -342,12 +340,7 @@ def read_stage(session_id: str | None = None,
     except FileNotFoundError:
         pass
 
-    # 3. 全局后备
-    content = _read_stage_file(GLOBAL_STAGE_FILE)
-    if content:
-        return content
-
-    # 4. 兜底
+    # 3. 兜底（无任何 session 信息时用 default）
     return "default"
 
 
