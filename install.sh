@@ -35,14 +35,11 @@ chmod +x "$BIN_DIR/stage"
 echo "✅ stage CLI → $BIN_DIR/stage"
 
 # 3.5 初始化 .env（如果不存在）
+# 注：这里源 (.env.example) 和目标 (.env) 文件名不同，
+# 即使 SCRIPT_DIR == HOOK_DIR 也不会触发 cp "identical" 错误。
 if [ ! -f "$HOOK_DIR/.env" ]; then
     if [ -f "$SCRIPT_DIR/.env.example" ]; then
-        if [ "$SCRIPT_DIR" = "$HOOK_DIR" ]; then
-            # 源 == 目标，cp 会报错；改用直接复制内容
-            cp "$SCRIPT_DIR/.env.example" "$HOOK_DIR/.env"
-        else
-            cp "$SCRIPT_DIR/.env.example" "$HOOK_DIR/.env"
-        fi
+        cp "$SCRIPT_DIR/.env.example" "$HOOK_DIR/.env"
         chmod 600 "$HOOK_DIR/.env"   # 仅当前用户可读，保护 API key
         echo "✅ .env 模板已复制到 $HOOK_DIR/.env（请编辑填入 key）"
         NEED_ENV_FILL=1
