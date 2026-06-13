@@ -73,8 +73,8 @@ STAGE_CONFIG: dict[str, dict] = {
         "base_url":    "https://api.minimaxi.com/anthropic",
         "api_key_env": "MINIMAX_API_KEY",
         "protocol":    "anthropic",
-        # 备用：deepseek-v4-flash（方案设计成本不敏感，降级到便宜模型）
-        "fb_model":       "deepseek-v4-flash",
+        # 备用：deepseek-v4-pro（架构设计要稳妥推理）
+        "fb_model":       "deepseek-v4-pro",
         "fb_base_url":    "https://api.deepseek.com/anthropic",
         "fb_api_key_env": "DEEPSEEK_API_KEY",
         "fb_protocol":    "anthropic",
@@ -208,15 +208,15 @@ OPERATION_CONFIG: dict[str, dict] = {
     "search": {
         "emoji":       "🔎",
         "label":       "搜索",
-        "desc":        "主 deepseek-v4-flash，备 MiniMax-M3",
-        "model":       "deepseek-v4-flash",
-        "base_url":    "https://api.deepseek.com/anthropic",
-        "api_key_env": "DEEPSEEK_API_KEY",
+        "desc":        "主 MiniMax-M3，备 deepseek-v4-flash",
+        "model":       "MiniMax-M3",
+        "base_url":    "https://api.minimaxi.com/anthropic",
+        "api_key_env": "MINIMAX_API_KEY",
         "protocol":    "anthropic",
-        # 备用：MiniMax-M3（探索任务 fallback 升档）
-        "fb_model":       "MiniMax-M3",
-        "fb_base_url":    "https://api.minimaxi.com/anthropic",
-        "fb_api_key_env": "MINIMAX_API_KEY",
+        # 备用：deepseek-v4-flash（和 write 一致，便宜 fallback）
+        "fb_model":       "deepseek-v4-flash",
+        "fb_base_url":    "https://api.deepseek.com/anthropic",
+        "fb_api_key_env": "DEEPSEEK_API_KEY",
         "fb_protocol":    "anthropic",
     },
     "refactor": {
