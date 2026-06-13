@@ -30,10 +30,10 @@ fi
 
 # 3. 安装 stage CLI（符号链接，源更新即自动生效）
 # 源和数据文件分离：
-#   源（CLI）    = $HOOK_DIR/stage                ← Python 脚本，ln -s 到 $BIN_DIR/stage
-#   数据         = $HOOK_DIR/current_stage        ← 全局后备阶段名
-#                  $HOOK_DIR/stage_<session_id>   ← 分 session 阶段名
-#                  $HOOK_DIR/active_session       ← 活跃 session 指针
+#   源（CLI）         = $HOOK_DIR/stage             ← Python 脚本，ln -s 到 $BIN_DIR/stage
+#   全局后备数据       = $HOOK_DIR/current_stage      ← 全局后备阶段名
+#   分 session 阶段    = <project_root>/.claude/stage_<session_id>
+#   active_session     = $HOOK_DIR/active_session    ← 活跃 session 指针（存完整路径）
 ln -sf "$SCRIPT_DIR/stage" "$BIN_DIR/stage"
 echo "✅ stage CLI → $BIN_DIR/stage"
 
@@ -63,8 +63,8 @@ fi
 
 # 6. 初始化阶段数据文件
 # 分 session 管理：
-#   stage_<session_id>  — per-session 阶段文件（由 stage_detector.py hook 自动创建）
-#   active_session      — 活跃 session 指针（由 hook 自动维护）
+#   stage_<session_id>  — per-session 阶段文件（存于 <project_root>/.claude/，由 hook 自动创建）
+#   active_session      — 活跃 session 指针（存完整路径，由 hook 自动维护）
 #   current_stage       — 全局后备（本脚本初始化）
 STAGE_DATA="$HOOK_DIR/current_stage"
 mkdir -p "$HOOK_DIR"

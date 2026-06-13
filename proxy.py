@@ -35,11 +35,12 @@ from pathlib import Path
 
 # ── 分 session 阶段管理 ──
 # proxy.py 是无 stdin 上下文的 HTTP 服务器，无法直接拿到 session_id。
-# 它依赖 stage_detector.py（UserPromptSubmit hook）在检测阶段变更时写入的
-# active_session 指针文件来定位当前活跃 session 的阶段文件。
-STAGE_DIR            = Path.home() / ".claude" / "hooks" / "model_router"
-ACTIVE_SESSION_FILE  = STAGE_DIR / "active_session"
-GLOBAL_STAGE_FILE    = STAGE_DIR / "current_stage"   # 全局后备
+# 它依赖 stage_detector.py（UserPromptSubmit hook）维护的 active_session 指针。
+# active_session 存储的是阶段文件的**完整绝对路径**，proxy 直接读取即可，
+# 无需再拼接 STAGE_DIR。
+HOOK_DIR            = Path.home() / ".claude" / "hooks" / "model_router"
+ACTIVE_SESSION_FILE  = HOOK_DIR / "active_session"
+GLOBAL_STAGE_FILE    = HOOK_DIR / "current_stage"   # 全局后备
 LOG_FILE             = Path.home() / ".claude" / "stage-router.log"
 PORT                 = 7878
 ENV_FILE             = Path(__file__).parent / ".env"   # hooks/model_router/.env
@@ -111,23 +112,24 @@ def _read_stage_file(path: Path) -> str | None:
 def read_stage() -> str:
     """
     读取当前阶段，优先级：
-      1. active_session 指针 → stage_<session_id>
+      1. active_session 指针 → 读取其存储的完整路径文件
       2. 全局后备文件 → current_stage
       3. default
 
     proxy.py 是无 stdin 的 HTTP 服务器，无法直接拿到 session_id。
     它依赖 stage_detector.py（UserPromptSubmit hook）维护的 active_session 指针。
+    active_session 存储的是阶段文件的完整绝对路径（如
+    /Users/zorro/project/.claude/stage_aaa-bbb），直接读取即可。
     """
-    # 1. active_session 指针 → 对应 per-session 文件
+    # 1. active_session 指针 → 存储的是完整路径，直接读取
     try:
-        active = ACTIVE_SESSION_FILE.read_text().strip()
-        if active:
-            stage_path = STAGE_DIR / f"stage_{active}"
-            content = _read_stage_file(stage_path)
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            content = _read_stage_file(Path(active_path))
             if content and content in STAGE_MODELS:
                 return content
             if content:
-                log.warning(f"stage_{active} 未知阶段值 '{content}'，继续降级查找")
+                log.warning(f"active_session 指向 {active_path} 未知阶段值 '{content}'，继续降级查找")
     except FileNotFoundError:
         pass
 
@@ -140,7 +142,7 @@ def read_stage() -> str:
         return "default"
 
     # 3. 兜底
-    log.info(f"无任何阶段文件（无 active_session、无 current_stage），使用 default")
+    log.info("无任何阶段文件（无 active_session、无 current_stage），使用 default")
     return "default"
 
 # ── 请求转发 ───────────────────────────────────────────────────────────────────
@@ -496,7 +498,7 @@ def main():
         sys.exit(1)
 
     log.info(f"Stage Router 启动 → 监听 http://127.0.0.1:{args.port}")
-    log.info(f"阶段目录: {STAGE_DIR}（per-session: stage_<id>，后备: current_stage）")
+    log.info(f"阶段目录: {HOOK_DIR}（per-session 阶段文件在 <project_root>/.claude/stage_<id>）")
     log.info(f"日志文件: {LOG_FILE}")
     log.info(
         "已配置 key: " + ", ".join(

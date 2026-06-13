@@ -10,6 +10,11 @@ stage — 阶段管理 CLI
   stage status       # 查询代理健康状态
   stage log          # 实时查看路由日志
 
+阶段文件位置：
+  分 session 阶段文件：<project_root>/.claude/stage_<session_id>
+  active_session 指针：~/.claude/hooks/model_router/active_session → 完整路径
+  全局后备：          ~/.claude/hooks/model_router/current_stage
+
 所有阶段：brainstorm | decide | design | plan | implement | audit | default
 """
 
@@ -22,10 +27,11 @@ import sys
 from pathlib import Path
 
 # ── 分 session 阶段管理 ──
-HOOK_DIR            = Path.home() / ".claude" / "hooks" / "model_router"
+HOME_CLAUDE         = Path.home() / ".claude"
+HOOK_DIR            = HOME_CLAUDE / "hooks" / "model_router"
 ACTIVE_SESSION_FILE = HOOK_DIR / "active_session"
 GLOBAL_STAGE_FILE   = HOOK_DIR / "current_stage"
-LOG_FILE            = Path.home() / ".claude" / "stage-router.log"
+LOG_FILE            = HOME_CLAUDE / "stage-router.log"
 # 注：stage CLI 装在 ~/.local/bin/，但 proxy.py 和 .env 在 ~/.claude/hooks/model_router/。
 # 不能用 Path(__file__).parent（取到的是 ~/.local/bin/，proxy.py 不在那）。
 PROXY_SCRIPT        = HOOK_DIR / "proxy.py"
@@ -62,6 +68,7 @@ def _load_dotenv(env_path: Path) -> int:
         print(f"⚠️  读取 {env_path} 失败: {e}", file=sys.stderr)
     return loaded
 
+
 COLORS = {
     "brainstorm": "\033[36m",   # cyan
     "decide":     "\033[35m",   # magenta
@@ -78,28 +85,111 @@ sys.path.insert(0, str(HOOK_DIR))
 from stage_config import STAGE_DESC
 
 
-def _get_active_session() -> str | None:
-    """读取 active_session 指针文件。"""
+# ── 项目根目录查找（参照 compact/utils.py，但无 stdin——从 Path.cwd() 出发）──
+
+def _find_project_root(start: Path, session_id: str | None = None) -> Path:
+    """Walk up from ``start`` looking for a project boundary marker.
+
+    Anchor strategy:
+      1. If session_id is known, walk up looking for stage_<sid> or
+         session_state_<sid>.json under .claude/ — its parent IS the project root.
+      2. Walk up looking for .claude/ (skip global ~/.claude unless started there).
+      3. Walk up looking for .git/ as fallback.
+      4. Fall back to ~/.claude.
+    """
+    p = start
+
+    if session_id:
+        anchor_p = start
+        for _ in range(20):
+            claude_dir = anchor_p / ".claude"
+            if (claude_dir / f"stage_{session_id}").exists() or \
+               (claude_dir / f"session_state_{session_id}.json").exists():
+                return anchor_p
+            parent = anchor_p.parent
+            if parent == anchor_p:
+                break
+            anchor_p = parent
+
+    git_root = None
+    for _ in range(20):
+        cand = p / ".claude"
+        if cand.is_dir():
+            if cand != HOME_CLAUDE or str(start).startswith(str(HOME_CLAUDE) + os.sep):
+                return p
+        if git_root is None and (p / ".git").exists():
+            git_root = p
+        parent = p.parent
+        if parent == p:
+            break
+        p = parent
+
+    if git_root is not None:
+        return git_root
+    return HOME_CLAUDE if HOME_CLAUDE.is_dir() else start
+
+
+def _get_active_session_id() -> str | None:
+    """从 active_session 指针提取 session_id。
+
+    active_session 存储的是完整路径如 /path/to/.claude/stage_<sid>，
+    从中提取 <sid> 部分。若指针是老格式（仅 session_id），直接返回。
+    """
     try:
-        sid = ACTIVE_SESSION_FILE.read_text().strip()
-        return sid if sid else None
+        raw = ACTIVE_SESSION_FILE.read_text().strip()
+        if not raw:
+            return None
     except FileNotFoundError:
         return None
+
+    # 新格式：完整路径 → 提取 stage_<sid> 文件名
+    # 也可兼容老格式：纯 session_id
+    if "/" in str(raw) or raw.endswith(".json"):
+        # 完整路径 → 提取文件名
+        name = Path(raw).name
+        if name.startswith("stage_"):
+            return name[len("stage_"):]
+        # 也可能是 session_state_<sid>.json（极端情况）
+        if name.startswith("session_state_") and name.endswith(".json"):
+            return name[len("session_state_"):-len(".json")]
+        return None
+    # 老格式：纯 session_id
+    return raw
+
+
+def _get_active_stage_path() -> Path | None:
+    """读取 active_session 指针中存储的完整路径。"""
+    try:
+        raw = ACTIVE_SESSION_FILE.read_text().strip()
+        if not raw:
+            return None
+    except FileNotFoundError:
+        return None
+
+    # 新格式：完整绝对路径
+    if raw.startswith("/"):
+        return Path(raw)
+    # 老格式：纯 session_id → 用 cwd 解析
+    session_id = raw
+    project_root = _find_project_root(Path.cwd(), session_id)
+    claude_dir = project_root / ".claude"
+    if not claude_dir.is_dir():
+        claude_dir.mkdir(parents=True, exist_ok=True)
+    return claude_dir / f"stage_{session_id}"
 
 
 def read_stage() -> str:
     """
     读取当前阶段，优先级：
-      1. active_session 指针 → stage_<session_id>
+      1. active_session 指针 → 读取其存储的完整路径文件
       2. 全局后备文件 → current_stage
       3. default
     """
-    # 1. active_session → per-session 文件
-    active = _get_active_session()
-    if active:
-        sf = HOOK_DIR / f"stage_{active}"
+    # 1. active_session → 完整路径
+    stage_path = _get_active_stage_path()
+    if stage_path:
         try:
-            content = sf.read_text().strip()
+            content = stage_path.read_text().strip()
             if content:
                 return content
         except FileNotFoundError:
@@ -119,14 +209,21 @@ def read_stage() -> str:
 def write_stage(stage: str) -> None:
     """
     写入阶段。
-    若存在 active_session 指针 → 写入 stage_<session_id>；
+    若存在 active_session 指针 → 写入 <project_root>/.claude/stage_<sid>；
     否则写入全局后备文件 current_stage。
     """
-    HOOK_DIR.mkdir(parents=True, exist_ok=True)
-    active = _get_active_session()
-    if active:
-        (HOOK_DIR / f"stage_{active}").write_text(stage)
+    session_id = _get_active_session_id()
+    if session_id:
+        project_root = _find_project_root(Path.cwd(), session_id)
+        claude_dir = project_root / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        stage_path = claude_dir / f"stage_{session_id}"
+        stage_path.write_text(stage)
+        # 同步更新 active_session 指针（完整路径）
+        HOOK_DIR.mkdir(parents=True, exist_ok=True)
+        ACTIVE_SESSION_FILE.write_text(str(stage_path))
     else:
+        GLOBAL_STAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
         GLOBAL_STAGE_FILE.write_text(stage)
 
 

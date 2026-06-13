@@ -9,6 +9,12 @@ stage_detector.py — UserPromptSubmit Hook
   1. 关键词自动检测（本文件负责）
   2. 用户显式前缀，如：/stage implement → 写入 implement
 
+阶段文件存储位置：
+  分 session 阶段文件 stage_<session_id> 存放在 <项目根目录>/.claude/ 下，
+  与 session_state_<session_id>.json 路径规则一致。
+  active_session 指针文件存放在 ~/.claude/hooks/model_router/，存储的是
+  阶段文件的完整绝对路径，供 proxy.py（无 stdin 上下文）直接读取。
+
 Claude Code settings.json 配置：
   {
     "hooks": {
@@ -27,6 +33,7 @@ Claude Code settings.json 配置：
 """
 
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -35,10 +42,12 @@ from pathlib import Path
 # ── 分 session 阶段管理 ──
 # 每个 session 独立管理阶段，避免多会话互相覆盖。
 # 命名规则：stage_<session_id>（参照 hooks/session 的 session_state_<session_id> 模式）
-# 同时维护 active_session 指针文件，供 proxy.py 等无 stdin 上下文的组件查询当前活跃 session。
-STAGE_DIR         = Path.home() / ".claude" / "hooks" / "model_router"
-ACTIVE_SESSION_FILE = STAGE_DIR / "active_session"
-GLOBAL_STAGE_FILE   = STAGE_DIR / "current_stage"   # 全局后备（无 session_id 时使用）
+# 存放位置：<project_root>/.claude/stage_<session_id>
+# active_session 指针文件固定在 ~/.claude/hooks/model_router/，存储阶段文件的完整绝对路径。
+HOME_CLAUDE         = Path.home() / ".claude"
+HOOK_DIR            = HOME_CLAUDE / "hooks" / "model_router"
+ACTIVE_SESSION_FILE = HOOK_DIR / "active_session"
+GLOBAL_STAGE_FILE   = HOOK_DIR / "current_stage"   # 全局后备（无 session_id 时使用）
 LOG_FILE            = Path("/tmp/stage_detector.log")
 
 
@@ -53,6 +62,7 @@ def log(level: str, msg: str) -> None:
             f.write(f"{ts} | {level:<5} | {msg}\n")
     except Exception:
         pass
+
 
 # 关键词 → 阶段映射（按优先级排列，先匹配先赢）
 STAGE_KEYWORDS: list[tuple[str, list[str]]] = [
@@ -109,11 +119,70 @@ def detect_stage(prompt: str) -> str | None:
     return None  # 不更改阶段
 
 
-def _stage_path(session_id: str | None) -> Path:
-    """返回指定 session 的阶段文件路径。无 session_id 时返回全局后备文件。"""
+# ── 项目根目录查找（参照 compact/utils.py 的 _find_project_root）──
+
+def _find_project_root(start: Path, session_id: str | None = None) -> Path:
+    """Walk up from ``start`` looking for a project boundary marker.
+
+    Anchor strategy (the location of the first per-session file IS the lock):
+      1. If session_id is known, walk up looking for an existing
+         ``stage_<session_id>`` or ``session_state_<session_id>.json`` under
+         ``.claude/``.  The directory containing it is the locked project root.
+      2. Walk up looking for a ``.claude/`` config directory (skipping the
+         global ``~/.claude`` unless we started inside it).
+      3. Walk up looking for a ``.git/`` toplevel as fallback.
+      4. Fall back to ``~/.claude`` so stage files always land under a known
+         location instead of polluting the current working directory.
+
+    Walks at most 20 levels.
+    """
+    p = start
+
+    # 1. If session_id is available, walk up looking for an existing per-session
+    #    file.  Its parent directory IS the project-root anchor.
     if session_id:
-        return STAGE_DIR / f"stage_{session_id}"
-    return GLOBAL_STAGE_FILE
+        anchor_p = start
+        for _ in range(20):
+            claude_dir = anchor_p / ".claude"
+            if (claude_dir / f"stage_{session_id}").exists() or \
+               (claude_dir / f"session_state_{session_id}.json").exists():
+                return anchor_p
+            parent = anchor_p.parent
+            if parent == anchor_p:  # reached filesystem root
+                break
+            anchor_p = parent
+
+    # 2. No existing per-session file — walk up looking for a boundary marker.
+    git_root = None
+    for _ in range(20):
+        cand = p / ".claude"
+        if cand.is_dir():
+            # Skip the global ~/.claude unless we started inside it
+            if cand != HOME_CLAUDE or str(start).startswith(str(HOME_CLAUDE) + os.sep):
+                return p
+        if git_root is None and (p / ".git").exists():
+            git_root = p
+        parent = p.parent
+        if parent == p:  # reached filesystem root
+            break
+        p = parent
+
+    if git_root is not None:
+        return git_root
+    return HOME_CLAUDE if HOME_CLAUDE.is_dir() else start
+
+
+def _stage_file_path(cwd: str | Path, session_id: str) -> Path:
+    """
+    返回指定 session 的阶段文件路径：
+    <project_root>/.claude/stage_<session_id>
+    """
+    cwd = Path(cwd) if isinstance(cwd, str) else cwd
+    project_root = _find_project_root(cwd, session_id)
+    claude_dir = project_root / ".claude"
+    if not claude_dir.is_dir():
+        claude_dir.mkdir(parents=True, exist_ok=True)
+    return claude_dir / f"stage_{session_id}"
 
 
 def _read_stage_file(path: Path) -> str | None:
@@ -125,57 +194,68 @@ def _read_stage_file(path: Path) -> str | None:
         return None
 
 
-def _ensure_session_stage(session_id: str) -> str:
+def _ensure_session_stage(session_id: str, cwd: str | Path) -> str:
     """
     确保 stage_<session_id> 文件存在并更新 active_session 指针。
-    文件不存在时从 current_stage 拷贝初始值，都没有则初始化为 "default"。
+
+    文件不存在时从 current_stage 全局后备拷贝初始值，都没有则初始化为 "default"。
     每次 hook 触发都调用，保证 proxy 随时能找到当前 session 的阶段。
+
+    active_session 存储的是阶段文件的**完整绝对路径**，proxy 可直接读取。
 
     Returns: 当前 session 的阶段名。
     """
-    STAGE_DIR.mkdir(parents=True, exist_ok=True)
-    stage_path = _stage_path(session_id)
+    stage_path = _stage_file_path(cwd, session_id)
     if not stage_path.exists():
         # 继承全局后备的值作为 session 初始阶段
         initial = _read_stage_file(GLOBAL_STAGE_FILE) or "default"
+        stage_path.parent.mkdir(parents=True, exist_ok=True)
         stage_path.write_text(initial + "\n")
-        log("INFO", f"初始化 stage_{session_id} = {initial}")
-    # 始终刷新 active_session 指针（多 session 时最后活跃的获胜）
-    ACTIVE_SESSION_FILE.write_text(session_id)
+        log("INFO", f"初始化 stage_{session_id} = {initial} → {stage_path}")
+    # 始终刷新 active_session 指针（存储完整路径，多 session 时最后活跃的获胜）
+    HOOK_DIR.mkdir(parents=True, exist_ok=True)
+    ACTIVE_SESSION_FILE.write_text(str(stage_path))
     content = stage_path.read_text().strip()
     return content if content else "default"
 
 
-def write_stage(stage: str, session_id: str | None = None) -> None:
-    """写入阶段。有 session_id → 写入 stage_<session_id> 并更新 active_session 指针；
-    无 session_id → 写入全局后备文件。"""
-    STAGE_DIR.mkdir(parents=True, exist_ok=True)
-    if session_id:
-        _stage_path(session_id).write_text(stage + "\n")
-        ACTIVE_SESSION_FILE.write_text(session_id)
+def write_stage(stage: str, session_id: str | None = None,
+                cwd: str | Path | None = None) -> None:
+    """写入阶段。
+    有 session_id+cwd → 写入 <project_root>/.claude/stage_<session_id> 并更新指针；
+    无 → 写入全局后备文件 current_stage。
+    """
+    if session_id and cwd:
+        stage_path = _stage_file_path(cwd, session_id)
+        stage_path.parent.mkdir(parents=True, exist_ok=True)
+        stage_path.write_text(stage + "\n")
+        HOOK_DIR.mkdir(parents=True, exist_ok=True)
+        ACTIVE_SESSION_FILE.write_text(str(stage_path))
     else:
+        GLOBAL_STAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
         GLOBAL_STAGE_FILE.write_text(stage + "\n")
 
 
-def read_stage(session_id: str | None = None) -> str:
+def read_stage(session_id: str | None = None,
+               cwd: str | Path | None = None) -> str:
     """
     读取当前阶段，优先级：
-      1. 传入的 session_id → stage_<session_id>
-      2. active_session 指针 → stage_<session_id>
+      1. 传入的 session_id+cwd → <project_root>/.claude/stage_<session_id>
+      2. active_session 指针 → 读取其存储的完整路径文件
       3. 全局后备文件 → current_stage
       4. default
     """
-    # 1. 指定 session
-    if session_id:
-        content = _read_stage_file(_stage_path(session_id))
+    # 1. 指定 session（hook 场景：有 stdin 中的 session_id 和 cwd）
+    if session_id and cwd:
+        content = _read_stage_file(_stage_file_path(cwd, session_id))
         if content:
             return content
 
-    # 2. active_session 指针
+    # 2. active_session 指针 → 存储的是完整路径，直接读取
     try:
-        active = ACTIVE_SESSION_FILE.read_text().strip()
-        if active:
-            content = _read_stage_file(_stage_path(active))
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            content = _read_stage_file(Path(active_path))
             if content:
                 return content
     except FileNotFoundError:
@@ -199,12 +279,13 @@ def main():
             log("WARN", f"stdin JSON parse failed: {exc!r}; passthrough")
             sys.exit(0)
 
-        # ── 提取 session_id（分 session 管理的关键）──
+        # ── 提取 session_id 和 cwd（项目根目录解析 + 分 session 管理的关键）──
         session_id: str | None = (event.get("session_id") or "").strip() or None
+        cwd: str = event.get("cwd", str(Path.cwd()))
 
-        # ── 会话初始化：确保 stage_<session_id> 已创建 ──
+        # ── 会话初始化：确保 stage_<session_id> 在 <project_root>/.claude/ 已创建 ──
         if session_id:
-            old_stage = _ensure_session_stage(session_id)
+            old_stage = _ensure_session_stage(session_id, cwd)
         else:
             old_stage = read_stage()
 
@@ -217,7 +298,7 @@ def main():
         new_stage = detect_stage(prompt)
 
         if new_stage and new_stage != old_stage:
-            write_stage(new_stage, session_id)
+            write_stage(new_stage, session_id, cwd)
             log("INFO", f"stage: {old_stage} → {new_stage}")
             # 从统一配置文件获取阶段描述
             from stage_config import STAGE_INFO
