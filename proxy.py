@@ -19,6 +19,11 @@ Operation-type 路由（2026-06-13 引入，第二维度）：
   op 文件位置：<project_root>/.claude/op_<sid>（与 stage_<sid> 同目录、仅前缀替换）。
   read_operation() 路径解析复用 stage_detector 的 _op_file_path() 派生规则。
 
+Model-override 路由（2026-06-13 引入，最高优先级）：
+  检出 model 覆盖时完全覆盖 op/stage 路由。
+  model 文件位置：<project_root>/.claude/model_<sid>（与 stage_<sid> 同目录、仅前缀替换）。
+  路由优先级: model_override > op > stage > default。
+
 用法：
   python3 proxy.py                  # 启动代理（默认 :7878）
   python3 proxy.py --port 7878      # 自定义端口
@@ -78,6 +83,7 @@ ENV_FILE             = Path(__file__).parent / ".env"   # hooks/model_router/.en
 from stage_config import (
     STAGE_MODELS, FALLBACK_MODELS,
     OPERATION_MODELS, OPERATION_FALLBACK_MODELS,
+    STAGE_CONFIG, OPERATION_CONFIG,
 )
 
 # ── 原生 Anthropic 端点白名单 ──
@@ -182,6 +188,59 @@ def read_operation() -> str | None:
                 )
     except FileNotFoundError:
         pass
+    return None
+
+
+# ── Model-override 读取（最高路由优先级）───────────────────────────────────────
+
+def _model_file_path(stage_file: Path) -> Path:
+    """从 stage_<sid> 路径派生 model_<sid> 路径（同目录、仅前缀替换）。
+    与 stage_detector._model_file_path 保持完全相同的派生规则。
+    """
+    return stage_file.with_name(stage_file.name.replace("stage_", "model_", 1))
+
+
+def read_model_override() -> str | None:
+    """
+    读取当前 model 覆盖，路径解析复用 stage_detector 的派生规则。
+    proxy.py 是无 stdin 的 HTTP 服务器：从 active_session 指针拿到
+    stage_<sid> 完整路径，再派生 model_<sid>。
+    返回 None 表示"无 model 覆盖"——proxy 按 op > stage 路由。
+    """
+    try:
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            content = _read_stage_file(_model_file_path(Path(active_path)))
+            if content:
+                return content
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def resolve_model_routing(model_name: str) -> tuple[str, str, str, str, str, str, str] | None:
+    """
+    搜索 STAGE_CONFIG + OPERATION_CONFIG 查找 model_name 对应的路由参数。
+
+    返回 (base_url, model, api_key_env, protocol,
+          fb_base_url, fb_model, fb_api_key_env, fb_protocol)
+    或 None（未找到该 model 的配置）。
+    """
+    # 搜索所有配置，找到 model_name 作为 primary 或 fallback 的条目
+    for cfg in list(STAGE_CONFIG.values()) + list(OPERATION_CONFIG.values()):
+        if cfg["model"] == model_name:
+            return (
+                cfg["base_url"], cfg["model"], cfg["api_key_env"], cfg["protocol"],
+                cfg["fb_base_url"], cfg["fb_model"], cfg["fb_api_key_env"], cfg["fb_protocol"],
+            )
+    # 也可作为 fallback model 匹配（用户可能想直接用备选模型）
+    for cfg in list(STAGE_CONFIG.values()) + list(OPERATION_CONFIG.values()):
+        if cfg["fb_model"] == model_name:
+            # 反向：把 fb 当作 primary，原 primary 当作 fb
+            return (
+                cfg["fb_base_url"], cfg["fb_model"], cfg["fb_api_key_env"], cfg["fb_protocol"],
+                cfg["base_url"], cfg["model"], cfg["api_key_env"], cfg["protocol"],
+            )
     return None
 
 # ── 请求转发 ───────────────────────────────────────────────────────────────────
@@ -463,19 +522,34 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         headers = {k.lower(): v for k, v in self.headers.items()}
 
-        # ── 路由决策：op 优先 → stage 兜底 ──
-        op = read_operation()
-        if op and op in OPERATION_MODELS:
-            base_url, model, key_env, protocol = OPERATION_MODELS[op]
-            fb_base, fb_model, fb_key, fb_proto = OPERATION_FALLBACK_MODELS[op]
-            routing_source = f"op={op}"
-        else:
-            stage = read_stage()
-            base_url, model, key_env, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
-            fb_base, fb_model, fb_key, fb_proto = FALLBACK_MODELS.get(
-                stage, FALLBACK_MODELS["default"]
-            )
-            routing_source = f"stage={stage}"
+        # ── 路由决策：model_override > op > stage > default ──
+        model_override = read_model_override()
+        if model_override:
+            routing = resolve_model_routing(model_override)
+            if routing:
+                (base_url, model, key_env, protocol,
+                 fb_base, fb_model, fb_key, fb_proto) = routing
+                routing_source = f"model={model_override}"
+            else:
+                log.error(
+                    f"model_override={model_override!r} 无法解析路由参数，"
+                    f"降级到 op/stage 路由"
+                )
+                model_override = None  # 走下面的 op/stage 分支
+
+        if not model_override:
+            op = read_operation()
+            if op and op in OPERATION_MODELS:
+                base_url, model, key_env, protocol = OPERATION_MODELS[op]
+                fb_base, fb_model, fb_key, fb_proto = OPERATION_FALLBACK_MODELS[op]
+                routing_source = f"op={op}"
+            else:
+                stage = read_stage()
+                base_url, model, key_env, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
+                fb_base, fb_model, fb_key, fb_proto = FALLBACK_MODELS.get(
+                    stage, FALLBACK_MODELS["default"]
+                )
+                routing_source = f"stage={stage}"
 
         status, resp_headers, resp_body = forward_request(
             method="POST",
@@ -516,32 +590,80 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         # 健康检查
         if self.path == "/health":
-            op = read_operation()
-            if op and op in OPERATION_MODELS:
-                _, model, _, protocol = OPERATION_MODELS[op]
-                _, fb_model, _, _ = OPERATION_FALLBACK_MODELS[op]
-                payload = json.dumps({
-                    "status": "ok",
-                    "op": op,
-                    "stage": None,
-                    "model": model,
-                    "protocol": protocol,
-                    "fallback": fb_model,
-                    "routing_source": f"op={op}",
-                }).encode()
+            model_override = read_model_override()
+            if model_override:
+                routing = resolve_model_routing(model_override)
+                if routing:
+                    (_, model, _, protocol, _, fb_model, _, _) = routing
+                    payload = json.dumps({
+                        "status": "ok",
+                        "model_override": model_override,
+                        "op": None,
+                        "stage": None,
+                        "model": model,
+                        "protocol": protocol,
+                        "fallback": fb_model,
+                        "routing_source": f"model={model_override}",
+                    }).encode()
+                else:
+                    # 无法解析 → 降级
+                    op = read_operation()
+                    if op and op in OPERATION_MODELS:
+                        _, model, _, protocol = OPERATION_MODELS[op]
+                        _, fb_model, _, _ = OPERATION_FALLBACK_MODELS[op]
+                        payload = json.dumps({
+                            "status": "ok",
+                            "model_override": model_override,
+                            "op": op,
+                            "stage": None,
+                            "model": model,
+                            "protocol": protocol,
+                            "fallback": fb_model,
+                            "routing_source": f"op={op}",
+                        }).encode()
+                    else:
+                        stage = read_stage()
+                        _, model, _, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
+                        _, fb_model, _, _ = FALLBACK_MODELS.get(stage, FALLBACK_MODELS["default"])
+                        payload = json.dumps({
+                            "status": "ok",
+                            "model_override": model_override,
+                            "op": None,
+                            "stage": stage,
+                            "model": model,
+                            "protocol": protocol,
+                            "fallback": fb_model,
+                            "routing_source": f"stage={stage}",
+                        }).encode()
             else:
-                stage = read_stage()
-                _, model, _, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
-                _, fb_model, _, _ = FALLBACK_MODELS.get(stage, FALLBACK_MODELS["default"])
-                payload = json.dumps({
-                    "status": "ok",
-                    "op": None,
-                    "stage": stage,
-                    "model": model,
-                    "protocol": protocol,
-                    "fallback": fb_model,
-                    "routing_source": f"stage={stage}",
-                }).encode()
+                op = read_operation()
+                if op and op in OPERATION_MODELS:
+                    _, model, _, protocol = OPERATION_MODELS[op]
+                    _, fb_model, _, _ = OPERATION_FALLBACK_MODELS[op]
+                    payload = json.dumps({
+                        "status": "ok",
+                        "model_override": None,
+                        "op": op,
+                        "stage": None,
+                        "model": model,
+                        "protocol": protocol,
+                        "fallback": fb_model,
+                        "routing_source": f"op={op}",
+                    }).encode()
+                else:
+                    stage = read_stage()
+                    _, model, _, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
+                    _, fb_model, _, _ = FALLBACK_MODELS.get(stage, FALLBACK_MODELS["default"])
+                    payload = json.dumps({
+                        "status": "ok",
+                        "model_override": None,
+                        "op": None,
+                        "stage": stage,
+                        "model": model,
+                        "protocol": protocol,
+                        "fallback": fb_model,
+                        "routing_source": f"stage={stage}",
+                    }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))

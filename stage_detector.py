@@ -21,6 +21,12 @@ Operation-type（第二维度，2026-06-13 引入）：
   op 文件位置：<project_root>/.claude/op_<session_id>，与 stage_<sid> 同目录，
   仅前缀不同。proxy.py 端在 stage 路由之上叠加：检出 op → 完全覆盖 stage。
 
+Model-override（用户显式指定模型，2026-06-13 引入，最高优先级）：
+  用户可通过 !model / !m 前缀或自然语言（use / 用）指定模型简称：
+    !model ds-v4-pro   !m mm3   use deepseek-v4-flash   用 mm3
+  model 文件位置：<project_root>/.claude/model_<session_id>，与 stage_<sid>
+  同目录，仅前缀不同。proxy.py 端路由优先级：model_override > op > stage。
+
 Claude Code settings.json 配置：
   {
     "hooks": {
@@ -44,6 +50,8 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+from model_alias import detect_model_override  # 用户模型覆盖（最高路由优先级）
 
 # ── 分 session 阶段管理 ──
 # 每个 session 独立管理阶段，避免多会话互相覆盖。
@@ -249,6 +257,15 @@ def _op_file_path(stage_file: Path) -> Path:
     return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
 
 
+def _model_file_path(stage_file: Path) -> Path:
+    """
+    从 stage_<sid> 路径派生 model_<sid> 路径（同目录、仅前缀替换）。
+    model 文件存储用户显式指定的模型覆盖（最高路由优先级）。
+    proxy.py 用同一规则从 active_session 指向的 stage_<sid> 路径派生。
+    """
+    return stage_file.with_name(stage_file.name.replace("stage_", "model_", 1))
+
+
 def _read_stage_file(path: Path) -> str | None:
     """读取指定阶段文件，不存在时返回 None。"""
     try:
@@ -374,6 +391,58 @@ def write_operation(op: str, session_id: str | None = None,
         _op_file_path(stage_path).write_text(op + "\n")
 
 
+def write_model_override(model: str, session_id: str | None = None,
+                         cwd: str | Path | None = None) -> None:
+    """写入 model 覆盖文件（model_<sid>）。与 op 写文件同模式。
+    无 session_id+cwd 时不写入。
+    """
+    if session_id and cwd:
+        stage_path = _stage_file_path(cwd, session_id)
+        stage_path.parent.mkdir(parents=True, exist_ok=True)
+        _model_file_path(stage_path).write_text(model + "\n")
+
+
+def clear_model_override(session_id: str | None = None,
+                         cwd: str | Path | None = None) -> None:
+    """清除 model 覆盖文件（model_<sid>），回到自动路由。"""
+    if session_id and cwd:
+        stage_path = _stage_file_path(cwd, session_id)
+        model_file = _model_file_path(stage_path)
+        try:
+            model_file.unlink(missing_ok=True)
+        except Exception:
+            pass  # 清理失败不阻塞 hook
+
+
+def read_model_override(session_id: str | None = None,
+                        cwd: str | Path | None = None) -> str | None:
+    """
+    读取当前 model 覆盖，路径解析复用 _stage_file_path() 派生 model_<sid>。
+    优先级：
+      1. 传入的 session_id+cwd → 派生 model_<sid>
+      2. active_session 指针 → 读取其指向的 stage_<sid>，再派生 model_<sid>
+    返回 None 表示"无 model 覆盖"——proxy 走 op/stage 路由。
+    """
+    # 1. hook 场景：有 session_id+cwd
+    if session_id and cwd:
+        stage_path = _stage_file_path(cwd, session_id)
+        content = _read_stage_file(_model_file_path(stage_path))
+        if content:
+            return content
+
+    # 2. proxy / CLI 场景：从 active_session 指针拿到 stage_<sid> 路径再派生
+    try:
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            content = _read_stage_file(_model_file_path(Path(active_path)))
+            if content:
+                return content
+    except FileNotFoundError:
+        pass
+
+    return None
+
+
 def main():
     log("INFO", "hook triggered")
     try:
@@ -398,6 +467,22 @@ def main():
         if not prompt:
             log("INFO", "empty prompt, ensure stage file exists")
             sys.exit(0)
+
+        # ── Model-override 检测（最高优先级，在 stage/op 之前）──
+        new_model, is_reset = detect_model_override(prompt)
+        old_model = read_model_override(session_id, cwd)
+
+        model_msg: str | None = None
+        if is_reset and old_model:
+            clear_model_override(session_id, cwd)
+            log("INFO", f"model override cleared (was: {old_model})")
+            model_msg = f"模型覆盖已清除（原: {old_model}），恢复自动路由"
+        elif new_model and new_model != old_model:
+            write_model_override(new_model, session_id, cwd)
+            log("INFO", f"model override: {old_model} → {new_model}")
+            model_msg = f"模型覆盖: {(old_model or 'none')} → {new_model}"
+        elif new_model == old_model and new_model:
+            log("INFO", f"model override unchanged: {new_model}")
 
         # ── Stage 检测 ──
         new_stage = detect_stage(prompt)
@@ -438,8 +523,8 @@ def main():
         else:
             log("INFO", "no op signal, passthrough")
 
-        # ── 输出 additionalContext（stage 和 op 各自独立命中时合并提示）──
-        msgs = [m for m in (stage_msg, op_msg) if m]
+        # ── 输出 additionalContext（model/stage/op 各自命中时合并提示）──
+        msgs = [m for m in (model_msg, stage_msg, op_msg) if m]
         if msgs:
             output = {
                 "hookSpecificOutput": {

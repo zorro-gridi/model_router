@@ -43,6 +43,7 @@ GLOBAL_STAGE_FILE   = HOOK_DIR / "current_stage"
 
 # 从统一配置文件导入（hooks/model_router/stage_config.py）
 from stage_config import STAGE_DISPLAY, OPERATION_DISPLAY
+from model_alias import resolve_model  # 用于显示模型简称
 
 
 def _read_stage_file(path: Path) -> str | None:
@@ -110,6 +111,11 @@ def _op_file_path(stage_file: Path) -> Path:
     return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
 
 
+def _model_file_path(stage_file: Path) -> Path:
+    """从 stage_<sid> 路径派生 model_<sid> 路径（同目录、仅前缀替换）。"""
+    return stage_file.with_name(stage_file.name.replace("stage_", "model_", 1))
+
+
 def read_stage(event: dict | None = None) -> str:
     """
     读取当前阶段，优先级：
@@ -171,6 +177,32 @@ def read_operation(event: dict | None = None) -> str | None:
     return None
 
 
+def read_model_override(event: dict | None = None) -> str | None:
+    """
+    读取当前 model 覆盖，路径解析复用 stage_show 的路径逻辑。
+    返回 None 表示"无 model 覆盖"。
+    """
+    if event:
+        session_id: str | None = (event.get("session_id") or "").strip() or None
+        cwd: str | None = event.get("cwd")
+        if session_id and cwd:
+            stage_path = _stage_file_path(cwd, session_id)
+            content = _read_stage_file(_model_file_path(stage_path))
+            if content:
+                return content
+
+    try:
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            content = _read_stage_file(_model_file_path(Path(active_path)))
+            if content:
+                return content
+    except FileNotFoundError:
+        pass
+
+    return None
+
+
 def main():
     event = None
     try:
@@ -178,11 +210,21 @@ def main():
     except (json.JSONDecodeError, EOFError):
         pass  # stdin 可能为空或非 JSON（兼容老版本）
 
+    # 输出到 stderr（终端可见，不影响 CC 的 stdout 解析）
+    parts: list[str] = []
+
+    # ── Model override（最高优先级）──
+    model_override = read_model_override(event)
+    if model_override:
+        route_tag = "model"
+        op_val = read_operation(event)
+        if op_val:
+            route_tag = "op"
+        parts.append(f"🎯 模型覆盖: {model_override}（当前路由: {route_tag}）")
+
     stage = read_stage(event)
     emoji, label, model = STAGE_DISPLAY.get(stage, STAGE_DISPLAY["default"])
-
-    # 输出到 stderr（终端可见，不影响 CC 的 stdout 解析）
-    parts = [f"{emoji} {label} → {model}"]
+    parts.append(f"{emoji} {label} → {model}")
 
     op = read_operation(event)
     if op and op in OPERATION_DISPLAY:
