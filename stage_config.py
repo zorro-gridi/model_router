@@ -73,7 +73,8 @@ STAGE_CONFIG: dict[str, dict] = {
         "base_url":    "https://api.minimaxi.com/anthropic",
         "api_key_env": "MINIMAX_API_KEY",
         "protocol":    "anthropic",
-        "fb_model":       "deepseek-v4-pro",
+        # 备用：deepseek-v4-flash（方案设计成本不敏感，降级到便宜模型）
+        "fb_model":       "deepseek-v4-flash",
         "fb_base_url":    "https://api.deepseek.com/anthropic",
         "fb_api_key_env": "DEEPSEEK_API_KEY",
         "fb_protocol":    "anthropic",
@@ -99,7 +100,8 @@ STAGE_CONFIG: dict[str, dict] = {
         "base_url":    "https://api.minimaxi.com/anthropic",
         "api_key_env": "MINIMAX_API_KEY",
         "protocol":    "anthropic",
-        "fb_model":       "deepseek-v4-pro",
+        # 备用：deepseek-v4-flash（便宜，MiniMax 挂了降级到低成本模型也不心疼）
+        "fb_model":       "deepseek-v4-flash",
         "fb_base_url":    "https://api.deepseek.com/anthropic",
         "fb_api_key_env": "DEEPSEEK_API_KEY",
         "fb_protocol":    "anthropic",
@@ -125,7 +127,8 @@ STAGE_CONFIG: dict[str, dict] = {
         "base_url":    "https://api.minimaxi.com/anthropic",
         "api_key_env": "MINIMAX_API_KEY",
         "protocol":    "anthropic",
-        "fb_model":       "deepseek-v4-pro",
+        # 备用：deepseek-v4-flash（兜底场景也用低成本模型）
+        "fb_model":       "deepseek-v4-flash",
         "fb_base_url":    "https://api.deepseek.com/anthropic",
         "fb_api_key_env": "DEEPSEEK_API_KEY",
         "fb_protocol":    "anthropic",
