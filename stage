@@ -23,8 +23,11 @@ from pathlib import Path
 
 STAGE_FILE   = Path.home() / ".claude" / "stage"
 LOG_FILE     = Path.home() / ".claude" / "stage-router.log"
-PROXY_SCRIPT = Path(__file__).parent / "proxy.py"
-ENV_FILE     = Path(__file__).parent / ".env"   # hooks/model_router/.env
+# 注：stage CLI 装在 ~/.local/bin/，但 proxy.py 和 .env 在 ~/.claude/hooks/model_router/。
+# 不能用 Path(__file__).parent（取到的是 ~/.local/bin/，proxy.py 不在那）。
+HOOK_DIR     = Path.home() / ".claude" / "hooks" / "model_router"
+PROXY_SCRIPT = HOOK_DIR / "proxy.py"
+ENV_FILE     = HOOK_DIR / ".env"
 PROXY_PORT   = 7878
 
 VALID_STAGES = {"brainstorm", "decide", "design", "plan", "implement", "audit", "default"}
