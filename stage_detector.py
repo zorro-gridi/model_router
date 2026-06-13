@@ -414,6 +414,52 @@ def clear_model_override(session_id: str | None = None,
             pass  # 清理失败不阻塞 hook
 
 
+def _fallback_file_path(stage_file: Path) -> Path:
+    """从 stage_<sid> 路径派生 fallback_<sid> 路径（同目录、仅前缀替换）。"""
+    return stage_file.with_name(stage_file.name.replace("stage_", "fallback_", 1))
+
+
+def read_fallback(session_id: str | None = None,
+                  cwd: str | Path | None = None) -> str | None:
+    """
+    读取当前 session 的 sticky fallback 模型名。
+    优先级：
+      1. 传入的 session_id+cwd → 派生 fallback_<sid>
+      2. active_session 指针 → 读取其指向的 stage_<sid>，再派生 fallback_<sid>
+    返回 None 表示"无 sticky fallback"。
+    """
+    # 1. hook 场景：有 session_id+cwd
+    if session_id and cwd:
+        stage_path = _stage_file_path(cwd, session_id)
+        content = _read_stage_file(_fallback_file_path(stage_path))
+        if content:
+            return content
+
+    # 2. proxy / CLI 场景：从 active_session 指针拿到 stage_<sid> 路径再派生
+    try:
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            content = _read_stage_file(_fallback_file_path(Path(active_path)))
+            if content:
+                return content
+    except FileNotFoundError:
+        pass
+
+    return None
+
+
+def clear_fallback(session_id: str | None = None,
+                   cwd: str | Path | None = None) -> None:
+    """清除 sticky fallback 文件（fallback_<sid>），恢复主模型优先路由。"""
+    if session_id and cwd:
+        stage_path = _stage_file_path(cwd, session_id)
+        fb_file = _fallback_file_path(stage_path)
+        try:
+            fb_file.unlink(missing_ok=True)
+        except Exception:
+            pass  # 清理失败不阻塞 hook
+
+
 def read_model_override(session_id: str | None = None,
                         cwd: str | Path | None = None) -> str | None:
     """
@@ -475,10 +521,12 @@ def main():
         model_msg: str | None = None
         if is_reset and old_model:
             clear_model_override(session_id, cwd)
+            clear_fallback(session_id, cwd)  # 同时清除 sticky fallback
             log("INFO", f"model override cleared (was: {old_model})")
             model_msg = f"模型覆盖已清除（原: {old_model}），恢复自动路由"
         elif new_model and new_model != old_model:
             write_model_override(new_model, session_id, cwd)
+            clear_fallback(session_id, cwd)  # 显式指定模型时清除 sticky fallback
             log("INFO", f"model override: {old_model} → {new_model}")
             model_msg = f"模型覆盖: {(old_model or 'none')} → {new_model}"
         elif new_model == old_model and new_model:
@@ -523,8 +571,18 @@ def main():
         else:
             log("INFO", "no op signal, passthrough")
 
-        # ── 输出 additionalContext（model/stage/op 各自命中时合并提示）──
-        msgs = [m for m in (model_msg, stage_msg, op_msg) if m]
+        # ── Sticky Fallback 通知（用户未显式覆盖模型时提示）──
+        fb_msg: str | None = None
+        if not new_model and not is_reset:
+            fb_model = read_fallback(session_id, cwd)
+            if fb_model:
+                log("INFO", f"sticky fallback active: {fb_model}")
+                fb_msg = (
+                    f"主模型曾不可用，已自动切换至备用 {fb_model}"
+                )
+
+        # ── 输出 additionalContext（model/stage/op/fallback 各自命中时合并提示）──
+        msgs = [m for m in (model_msg, stage_msg, op_msg, fb_msg) if m]
         if msgs:
             output = {
                 "hookSpecificOutput": {

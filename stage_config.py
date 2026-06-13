@@ -265,3 +265,19 @@ OPERATION_INFO: dict[str, str] = {
     op: f"{c['label']}操作 → {c['model']}，{c['desc']}"
     for op, c in OPERATION_CONFIG.items()
 }
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 反向索引：model → (base_url, model, api_key_env, protocol)
+# 从 STAGE_CONFIG + OPERATION_CONFIG 的主模型和备用模型收集。
+# proxy.py 用于 sticky fallback：当主模型不可用后，直接从 fallback 模型名
+# 反查出完整的路由配置（不再需要知道原 stage/op），也用于 model_override 路由。
+# ═══════════════════════════════════════════════════════════════════════════
+
+MODEL_TO_CONFIG: dict[str, tuple[str, str, str, str]] = {}
+for c in STAGE_CONFIG.values():
+    MODEL_TO_CONFIG[c["model"]] = (c["base_url"], c["model"], c["api_key_env"], c["protocol"])
+    MODEL_TO_CONFIG[c["fb_model"]] = (c["fb_base_url"], c["fb_model"], c["fb_api_key_env"], c["fb_protocol"])
+for c in OPERATION_CONFIG.values():
+    # OPERATION_CONFIG 可能使用与 STAGE_CONFIG 相同的模型名，值应一致
+    MODEL_TO_CONFIG.setdefault(c["model"], (c["base_url"], c["model"], c["api_key_env"], c["protocol"]))
+    MODEL_TO_CONFIG.setdefault(c["fb_model"], (c["fb_base_url"], c["fb_model"], c["fb_api_key_env"], c["fb_protocol"]))

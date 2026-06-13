@@ -84,6 +84,7 @@ from stage_config import (
     STAGE_MODELS, FALLBACK_MODELS,
     OPERATION_MODELS, OPERATION_FALLBACK_MODELS,
     STAGE_CONFIG, OPERATION_CONFIG,
+    MODEL_TO_CONFIG,
 )
 
 # ── 原生 Anthropic 端点白名单 ──
@@ -242,6 +243,47 @@ def resolve_model_routing(model_name: str) -> tuple[str, str, str, str, str, str
                 cfg["base_url"], cfg["model"], cfg["api_key_env"], cfg["protocol"],
             )
     return None
+
+# ── Sticky Fallback（per-session 主模型降级记忆）───────────────────────────────
+# 当主模型调用失败、fallback 成功后，写入 fallback_<sid> 文件。
+# 后续该 session 的所有请求默认使用 fallback 模型，避免反复重试已失败的主模型。
+
+def _fallback_file_path(stage_file: Path) -> Path:
+    """从 stage_<sid> 路径派生 fallback_<sid> 路径（同目录、仅前缀替换）。"""
+    return stage_file.with_name(stage_file.name.replace("stage_", "fallback_", 1))
+
+
+def read_fallback() -> str | None:
+    """
+    读取当前 session 的 sticky fallback 模型名。
+    从 active_session 指针拿到 stage_<sid> 完整路径，再派生 fallback_<sid>。
+    返回 None 表示"无 sticky fallback"——正常走主模型路由。
+    """
+    try:
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            content = _read_stage_file(_fallback_file_path(Path(active_path)))
+            if content:
+                return content
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def write_fallback(model: str) -> None:
+    """写入 sticky fallback 模型名到 fallback_<sid>。"""
+    try:
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            fb_path = _fallback_file_path(Path(active_path))
+            fb_path.parent.mkdir(parents=True, exist_ok=True)
+            fb_path.write_text(model + "\n")
+            log.info(
+                f"sticky fallback 已激活: 主模型不可用，"
+                f"后续请求将默认使用 {model}"
+            )
+    except Exception as e:
+        log.error(f"写入 fallback_<sid> 失败: {e}")
 
 # ── 请求转发 ───────────────────────────────────────────────────────────────────
 
@@ -551,6 +593,17 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 )
                 routing_source = f"stage={stage}"
 
+        # ── Sticky fallback: 主模型曾失败过，交换主/备避免重复重试 ──
+        # 仅在自动路由（非 model_override）下生效——用户显式指定模型时不干预
+        sticky_fb = read_fallback() if not model_override else None
+        if sticky_fb:
+            (base_url, model, key_env, protocol,
+             fb_base, fb_model, fb_key, fb_proto) = (
+                fb_base, fb_model, fb_key, fb_proto,
+                base_url, model, key_env, protocol,
+            )
+            routing_source += f" [sticky-fb={sticky_fb}]"
+
         status, resp_headers, resp_body = forward_request(
             method="POST",
             path=self.path,
@@ -564,7 +617,7 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         )
 
         # 主模型失败且可重试 → 切换备用模型
-        if _is_retriable(status):
+        if _is_retriable(status) and fb_base and fb_model:
             log.warning(
                 f"[{routing_source}] 主模型 {model} 返回 {status}，"
                 f"切换到备用 {fb_model} [{fb_base}]"
@@ -580,6 +633,9 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 protocol=fb_proto,
                 dry_run=self.dry_run,
             )
+            # 备用模型成功 + 之前无 sticky + 非 model_override → 写入 sticky fallback
+            if not sticky_fb and not _is_retriable(status) and not model_override:
+                write_fallback(fb_model)
 
         self.send_response(status)
         self.send_header("Content-Type", resp_headers.get("content-type", "application/json"))
@@ -590,85 +646,65 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         # 健康检查
         if self.path == "/health":
+            payload = {"status": "ok", "sticky_fallback": read_fallback()}
+
             model_override = read_model_override()
             if model_override:
                 routing = resolve_model_routing(model_override)
                 if routing:
                     (_, model, _, protocol, _, fb_model, _, _) = routing
-                    payload = json.dumps({
-                        "status": "ok",
-                        "model_override": model_override,
-                        "op": None,
-                        "stage": None,
-                        "model": model,
-                        "protocol": protocol,
-                        "fallback": fb_model,
-                        "routing_source": f"model={model_override}",
-                    }).encode()
+                    payload.update(
+                        model_override=model_override,
+                        op=None, stage=None,
+                        model=model, protocol=protocol, fallback=fb_model,
+                        routing_source=f"model={model_override}",
+                    )
                 else:
-                    # 无法解析 → 降级
+                    # 无法解析 → 降级到 op/stage
                     op = read_operation()
                     if op and op in OPERATION_MODELS:
                         _, model, _, protocol = OPERATION_MODELS[op]
                         _, fb_model, _, _ = OPERATION_FALLBACK_MODELS[op]
-                        payload = json.dumps({
-                            "status": "ok",
-                            "model_override": model_override,
-                            "op": op,
-                            "stage": None,
-                            "model": model,
-                            "protocol": protocol,
-                            "fallback": fb_model,
-                            "routing_source": f"op={op}",
-                        }).encode()
+                        payload.update(
+                            model_override=model_override, op=op, stage=None,
+                            model=model, protocol=protocol, fallback=fb_model,
+                            routing_source=f"op={op}",
+                        )
                     else:
                         stage = read_stage()
                         _, model, _, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
                         _, fb_model, _, _ = FALLBACK_MODELS.get(stage, FALLBACK_MODELS["default"])
-                        payload = json.dumps({
-                            "status": "ok",
-                            "model_override": model_override,
-                            "op": None,
-                            "stage": stage,
-                            "model": model,
-                            "protocol": protocol,
-                            "fallback": fb_model,
-                            "routing_source": f"stage={stage}",
-                        }).encode()
+                        payload.update(
+                            model_override=model_override, op=None, stage=stage,
+                            model=model, protocol=protocol, fallback=fb_model,
+                            routing_source=f"stage={stage}",
+                        )
             else:
                 op = read_operation()
                 if op and op in OPERATION_MODELS:
                     _, model, _, protocol = OPERATION_MODELS[op]
                     _, fb_model, _, _ = OPERATION_FALLBACK_MODELS[op]
-                    payload = json.dumps({
-                        "status": "ok",
-                        "model_override": None,
-                        "op": op,
-                        "stage": None,
-                        "model": model,
-                        "protocol": protocol,
-                        "fallback": fb_model,
-                        "routing_source": f"op={op}",
-                    }).encode()
+                    payload.update(
+                        model_override=None, op=op, stage=None,
+                        model=model, protocol=protocol, fallback=fb_model,
+                        routing_source=f"op={op}",
+                    )
                 else:
                     stage = read_stage()
                     _, model, _, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
                     _, fb_model, _, _ = FALLBACK_MODELS.get(stage, FALLBACK_MODELS["default"])
-                    payload = json.dumps({
-                        "status": "ok",
-                        "model_override": None,
-                        "op": None,
-                        "stage": stage,
-                        "model": model,
-                        "protocol": protocol,
-                        "fallback": fb_model,
-                        "routing_source": f"stage={stage}",
-                    }).encode()
+                    payload.update(
+                        model_override=None, op=None, stage=stage,
+                        model=model, protocol=protocol, fallback=fb_model,
+                        routing_source=f"stage={stage}",
+                    )
+
+            encoded = json.dumps(payload).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
-            self.wfile.write(payload)
+            self.wfile.write(encoded)
         else:
             self.send_response(404)
             self.end_headers()
