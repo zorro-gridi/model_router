@@ -179,6 +179,37 @@ def forward_request(
     original_model = body_json.get("model", "unknown")
     body_json["model"] = target_model
 
+    # ── 防御式：thinking 字段降级 ──
+    # 背景：CC 默认会发送 thinking={type:enabled,budget_tokens:N}，
+    # 并在 assistant 历史消息里塞 type=thinking 的 content block（带 signature）。
+    # 但 deepseek / MiniMax 等非原生 Anthropic provider 收到这种结构时会返回 400：
+    #   "The `content[].thinking` in the thinking mode must be passed back to the API"
+    # 通常发生在多轮对话：turn1 的 deepseek 响应没产生合法 signature，
+    # turn2 CC 把这个 thinking block 原样回传，上游校验失败。
+    #
+    # 策略（不是粗暴删除，而是降级）：
+    #   1) 顶层 thinking 字段：直接删除
+    #   2) assistant 消息里的 thinking content block：转成普通 text block
+    #      保留内容（不让消息变成空 content 触发"non-empty content"错误），
+    #      同时让上游不再按 thinking 模式校验。
+    if "thinking" in body_json:
+        del body_json["thinking"]
+    for msg in body_json.get("messages", []):
+        c = msg.get("content")
+        if isinstance(c, list):
+            new_content = []
+            for b in c:
+                if isinstance(b, dict) and b.get("type") == "thinking":
+                    # thinking → text 降级，保留内容
+                    think_text = b.get("thinking", "")
+                    new_content.append({
+                        "type": "text",
+                        "text": f"[thinking: {think_text}]",
+                    })
+                else:
+                    new_content.append(b)
+            msg["content"] = new_content
+
     if protocol == "openai":
         # OpenAI 兼容路径：路径改写 + 请求/响应格式转换
         target_path = "/v1/chat/completions"
