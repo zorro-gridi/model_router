@@ -41,6 +41,7 @@ import time
 import urllib.request
 import urllib.error
 from pathlib import Path
+from typing import Optional
 
 # ── 配置 ───────────────────────────────────────────────────────────────────────
 
@@ -92,6 +93,12 @@ from stage_config import (
     STAGE_CONFIG, OPERATION_CONFIG,
     MODEL_TO_CONFIG,
 )
+
+# 模型覆盖指令解析（~model / ~m / 自然语言）
+# proxy 当前回合检测 prompt 内嵌指令——不等 stage_detector 写入 model_<sid>，
+# 避免"用户发 ~model 时当前回合仍是旧模型，下回合才生效"的一回合延迟。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from model_alias import detect_model_override  # noqa: E402
 
 # 复用 @hooks/compact/utils.py 的 project_root 查找逻辑（设计文档 §13 4 级查找
 # 的 Level 1 "Project Binding" 需要按 project_root 索引 state_index.json）。
@@ -287,6 +294,59 @@ def read_model_override() -> str | None:
     except FileNotFoundError:
         pass
     return None
+
+
+def _extract_prompt_model_override(body: bytes) -> tuple[Optional[str], bool]:
+    """
+    从 Anthropic Messages API 请求 body 中提取"最近一条 user message"的内容，
+    喂给 model_alias.detect_model_override()，返回 (canonical_model, is_reset)。
+
+    仅解析请求 body 里的最后一条 user 消息——因为 user 可能在中途改模型。
+    请求/响应都是 JSON。body 可能是：{"messages": [{"role": "user", "content": "..."}]}
+    content 可能是字符串，也可能是 [{"type": "text", "text": "..."}] 数组。
+
+    解析失败（非 JSON、空 body、无 user message）时返回 (None, False)，
+    让 proxy 继续走 op/stage 默认路由。
+    """
+    if not body:
+        return (None, False)
+    try:
+        data = json.loads(body.decode("utf-8", errors="replace"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return (None, False)
+
+    messages = data.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return (None, False)
+
+    # 反向找最近一条 user 消息
+    user_msg = None
+    for m in reversed(messages):
+        if isinstance(m, dict) and m.get("role") == "user":
+            user_msg = m
+            break
+    if user_msg is None:
+        return (None, False)
+
+    content = user_msg.get("content")
+    text_parts: list[str] = []
+    if isinstance(content, str):
+        text_parts.append(content)
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict):
+                # text block
+                if part.get("type") in ("text", None) and isinstance(part.get("text"), str):
+                    text_parts.append(part["text"])
+                # tool_result 也带内容（用户工具返回的"文本"），不参与 ~model 解析——跳过
+    else:
+        return (None, False)
+
+    user_text = "\n".join(text_parts)
+    if not user_text.strip():
+        return (None, False)
+
+    return detect_model_override(user_text)
 
 
 def resolve_model_routing(model_name: str) -> tuple[str, str, str, str, str, str, str] | None:
@@ -874,8 +934,48 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         headers = {k.lower(): v for k, v in self.headers.items()}
 
-        # ── 路由决策：model_override > op > stage > default ──
-        model_override = read_model_override()
+        # ── Prompt 内嵌 ~model 检测（消除一回合延迟）──────────
+        # 用户在 ~model ds-v4-pro 的那一回合，stage_detector 写入 model_<sid>
+        # 是在请求发起之后。当前 do_POST 收到请求时先扫一次 body 里最近的
+        # user message，命中就立刻用命中的模型作为 model_override（写回
+        # model_<sid> 文件让 stage_detector 后续也走同一覆盖）。这样用户
+        # 发 ~model 的"当前请求"就立即生效，不再等下一回合。
+        prompt_model_override, prompt_is_reset = _extract_prompt_model_override(body)
+
+        # ── 路由决策：prompt_model_override > model_override(file) > op > stage > default ──
+        # 1) prompt 内嵌 ~model 优先（消除一回合延迟）；同时把结果写回
+        #    model_<sid> 文件，让 stage_detector 下一回合也能保持一致。
+        if prompt_model_override:
+            # 找到当前 session 的 model 文件路径（如果有就覆盖）
+            try:
+                active_path = ACTIVE_SESSION_FILE.read_text().strip()
+                if active_path:
+                    mf = _model_file_path(Path(active_path))
+                    mf.parent.mkdir(parents=True, exist_ok=True)
+                    mf.write_text(prompt_model_override)
+            except (FileNotFoundError, OSError) as e:
+                log.warning(f"prompt ~model 写回 model_<sid> 失败: {e}")
+            log.info(
+                f"prompt ~model 命中: {prompt_model_override!r} "
+                f"（已写回 model_<sid>，当前请求立即生效）"
+            )
+            model_override = prompt_model_override
+        elif prompt_is_reset:
+            # ~model reset：删除 model_<sid> 文件（如果有）
+            try:
+                active_path = ACTIVE_SESSION_FILE.read_text().strip()
+                if active_path:
+                    mf = _model_file_path(Path(active_path))
+                    if mf.exists():
+                        mf.unlink()
+                log.info("prompt ~model reset：清除 model 覆盖")
+            except (FileNotFoundError, OSError) as e:
+                log.warning(f"prompt ~model reset 删除 model_<sid> 失败: {e}")
+
+        # 2) 读 model_<sid> 文件（stage_detector 上一回合写入的覆盖）
+        if not model_override:
+            model_override = read_model_override()
+
         if model_override:
             routing = resolve_model_routing(model_override)
             if routing:
