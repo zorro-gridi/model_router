@@ -258,6 +258,7 @@ STAGE_CONFIG: dict[str, dict] = {
         # §7 D7-2 修复：test 必须排在 audit 之前（避免被 audit 吞掉）。
         # 顺序遍历即优先级；权重未使用，detect_stage 只判定包含关系。
         "keywords": [
+            '测试',                # §17 V17-4 修复 2026-06-14：高优先级泛匹配，先吃掉"分析测试失败"
             '跑测试',
             '跑一下测试',
             '跑用例',
@@ -769,15 +770,30 @@ for c in OPERATION_CONFIG.values():
 # ═══════════════════════════════════════════════════════════════════════════
 
 # stage_detector.detect_stage() 用的优先级列表。
-# 顺序与 STAGE_CONFIG 字典定义顺序保持一致（Python 3.7+ dict 保序）；
-# 这样 explore → brainstorm → decide → design → plan → implement → test
-# → audit → default 顺次尝试，文档要求的关键字优先级与原 stage_detector
-# 完全一致。
-STAGE_KEYWORDS: list[tuple[str, list[str]]] = [
-    (stage, list(c.get("keywords", [])))
-    for stage, c in STAGE_CONFIG.items()
-    if c.get("keywords")  # 排除 default 等无关键词的 stage
-]
+# 顺序与 STAGE_CONFIG 字典定义顺序大致保持一致（Python 3.7+ dict 保序）；
+# 唯一例外：test 必须排在 implement 之前，否则 "帮我写一个单元测试"
+# 会被 implement 阶段的关键字 '写' / 'add' / 'fix' 等先吞掉（V17-4 修复 2026-06-14）。
+# 文档要求的关键字优先级 = explore → brainstorm → decide → design → plan
+# → test → implement → audit → default。
+STAGE_KEYWORDS: list[tuple[str, list[str]]] = []
+# 同样出于 V17-4 修复：test 阶段关键词 "测试" 会比 decide 阶段 "分析" 更先命中
+# "分析测试失败原因"，所以 test 也要排在 decide 之前。
+_PRIORITY_FIRST = {"test"}
+for stage, c in STAGE_CONFIG.items():
+    if not c.get("keywords"):
+        continue
+    if stage in _PRIORITY_FIRST:
+        # 提到所有非 _PRIORITY_FIRST 阶段之前
+        insert_idx = 0
+        for i, (s, _) in enumerate(STAGE_KEYWORDS):
+            if s not in _PRIORITY_FIRST:
+                insert_idx = i
+                break
+        else:
+            insert_idx = len(STAGE_KEYWORDS)
+        STAGE_KEYWORDS.insert(insert_idx, (stage, list(c["keywords"])))
+    else:
+        STAGE_KEYWORDS.append((stage, list(c["keywords"])))
 
 # stage_detector.detect_task_pattern() 用的加权计票表。
 # 直接把 PATTERN_CONFIG.keywords 拿出来（每个 pattern 一组 (关键词, 权重) 元组）。
