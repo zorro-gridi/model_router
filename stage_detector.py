@@ -940,6 +940,38 @@ def main():
                     f"complexity (auto): score={auto_score} "
                     f"label={auto_label} conf={auto_conf}")
 
+                # ── Workflow Plan 自动激活（设计文档 §6.5 / §10 步骤 6）──
+                # 复杂度落在 medium / complex 时，让 proxy 端在接下来的 3 条
+                # 请求里分别走 plan / execute / audit 的对应模型（详见
+                # workflow_orchestrator + proxy.py 的 step 路由分支）。
+                # simple 不激活：单模型 single 与现有行为等价，无须额外编排。
+                if auto_label in ("medium", "complex") and session_id and cwd:
+                    try:
+                        from workflow_orchestrator import activate as _wf_activate
+                        _wf_root = str(_find_project_root(
+                            Path(cwd) if not isinstance(cwd, Path) else cwd,
+                            session_id=session_id,
+                        ))
+                        wf_info = _wf_activate(auto_label, session_id, _wf_root)
+                        if wf_info:
+                            models_str = "→".join(wf_info.get("models") or [])
+                            wf_log = (
+                                f"workflow activated: {wf_info.get('plan_type')} "
+                                f"step1/{len(wf_info.get('models') or [])} "
+                                f"models=[{models_str}]"
+                            )
+                            log("INFO", wf_log)
+                            # 拼入 complexity_msg → additionalContext，让 LLM
+                            # 看到当前 plan 类型（且在终端给用户可读反馈）
+                            complexity_msg = (
+                                f"复杂度={auto_label}（score={auto_score}），"
+                                f"已激活 {wf_info.get('plan_type')} 工作流: "
+                                f"{models_str}"
+                            )
+                    except Exception as _wf_exc:
+                        # orchestrator 失败不应阻断 stage/pattern/complexity 写入
+                        log("WARN", f"workflow_orchestrator.activate 失败: {_wf_exc!r}")
+
         # ── 输出 additionalContext（model/stage/op/fallback/pattern/complexity 各自命中时合并提示）──
         msgs = [m for m in (model_msg, stage_msg, op_msg, fb_msg, pattern_msg, complexity_msg) if m]
         if msgs:

@@ -769,6 +769,39 @@ METRICS_LOG_FILE = Path("/tmp/stage_metrics.jsonl")
 METRICS_MAX_RECORDS = 500  # 环形缓冲：最多保留最近 500 条
 
 
+def _read_workflow_state_safe() -> dict | None:
+    """供 /health / /trace 使用的兜底读取器。返回精简 dict 或 None。
+
+    与 do_POST 内联的不同点：本函数**只读**、不副作用；用于 GET 端点展示
+    当前 session 的 plan 进度（type / current_step / models / step_stages）。
+
+    失败一律返回 None，绝不抛异常。
+    """
+    try:
+        from workflow_orchestrator import read_state as _wf_read
+        ap = ACTIVE_SESSION_FILE.read_text().strip()
+        if not ap:
+            return None
+        sid = _extract_session_id_from_stage_path(Path(ap))
+        if not sid:
+            return None
+        root = _find_project_root_for_stage_path(Path(ap))
+        state = _wf_read(sid, str(root))
+        if not state:
+            return None
+        return {
+            "plan_type":    state.get("plan_type"),
+            "complexity":   state.get("complexity"),
+            "current_step": state.get("current_step"),
+            "total_steps":  len(state.get("models", [])),
+            "models":       list(state.get("models", [])),
+            "step_stages":  list(state.get("step_stages", [])),
+            "steps":        list(state.get("steps", [])),
+        }
+    except Exception:
+        return None
+
+
 def _append_metric(record: dict) -> None:
     """追加一条路由指标（best-effort，失败不阻塞代理）。"""
     try:
@@ -1337,6 +1370,10 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 strong_model=STRONG_MODEL,
                 complexity_label=complexity_label,
             )
+            # workflow dict 默认不含 current_step（plan 静态描述）；
+            # 下面若命中 workflow_step_<sid> 文件，会回填到 workflow["current_step"]
+            # 以便 /metrics /_append_metric 看到真实进度。
+            workflow.setdefault("current_step", None)
             # 把 plan 也写到 metrics 用的 record 字段（兜底，per-step 字段在下方填充）
             workflow_step_applied: int | None = None
             workflow_type_applied: str | None = None
@@ -1360,7 +1397,7 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                     )
                     wf_state = _wf_read(_wf_sid, _wf_project_root) if _wf_sid else None
                 except Exception as e:
-                    log_warn(f"workflow_orchestrator 读失败: {e!r}")
+                    log.warning(f"workflow_orchestrator 读失败: {e!r}")
                     wf_state = None
 
                 if wf_state:
@@ -1388,6 +1425,11 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                             workflow_step_applied = cur
                             workflow_type_applied = wf_state["plan_type"]
                             workflow_models_applied = list(step_models)
+                            # 回填到 workflow dict，让 /metrics 看到真实进度
+                            workflow["current_step"] = cur
+                            workflow["plan_type"] = wf_state["plan_type"]
+                            workflow["models"] = list(step_models)
+                            workflow["step_stages"] = list(step_stages)
                             # §18 R18-3：若本步是强模型，查配额；超额则
                             # 退回到原 stage 主模型（用 fb 兜底）。**不**advance，
                             # 留给下一次重试或下一 request 重新尝试。
@@ -1396,7 +1438,7 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                                     STRONG_MODEL, _wf_project_root, _wf_sid
                                 )
                                 if not rl_allowed:
-                                    log_warn(
+                                    log.warning(
                                         f"rate_limited: workflow step{cur}/{n} "
                                         f"STRONG={STRONG_MODEL} "
                                         f"reason={rl_reason} "
@@ -1424,7 +1466,7 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                             try:
                                 _wf_advance(_wf_sid, _wf_project_root)
                             except Exception as e:
-                                log_warn(f"workflow_orchestrator.advance 失败: {e!r}")
+                                log.warning(f"workflow_orchestrator.advance 失败: {e!r}")
                     else:
                         # 越界（plan 已完成或数据损坏）→ deactivate 落回 stage 路由
                         try:
@@ -1572,6 +1614,8 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 "complexity_source":   complexity_source,
                 "workflow_type":       workflow.get("type"),
                 "workflow_models":     workflow.get("models"),
+                "workflow_step":       workflow.get("current_step"),
+                "workflow_step_total": len(workflow.get("models") or []),
                 "internal_request":    internal_req,
                 "batch_template":      batch.get("template") if batch else None,
                 "used_fallback":       used_fallback,
@@ -1591,7 +1635,10 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             f"[{routing_source}] target={session_model} actual={model} "
             f"status={status} pattern={pattern_label} "
             f"complexity={complexity_label}({complexity_score},src={complexity_source}) "
-            f"workflow={workflow.get('type')} batch={batch.get('template') if batch else None}"
+            f"workflow={workflow.get('type')}"
+            f"{('/step' + str(workflow.get('current_step')) + '/' + str(len(workflow.get('models') or []))) if workflow.get('current_step') else ''} "
+            f"models={workflow.get('models')} "
+            f"batch={batch.get('template') if batch else None}"
         )
         # prompt 单独行写（脱敏后），便于 grep 排错且不会让路由摘要超长
         if prompt_scrubbed:
@@ -1606,7 +1653,8 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         # 健康检查
         if self.path == "/health":
-            payload = {"status": "ok", "sticky_fallback": read_fallback()}
+            payload = {"status": "ok", "sticky_fallback": read_fallback(),
+                       "workflow": _read_workflow_state_safe()}
 
             model_override = read_model_override()
             if model_override:
@@ -1739,6 +1787,7 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                     "complexity": read_complexity(),
                     "batch":     read_batch(),
                     "sticky_fallback": read_fallback(),
+                    "workflow":  _read_workflow_state_safe(),
                 },
                 "matched": matched,
                 "total":   len(records_all),
