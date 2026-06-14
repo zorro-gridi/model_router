@@ -40,10 +40,12 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 import urllib.request
 import urllib.error
 from pathlib import Path
+from socketserver import ThreadingMixIn
 from typing import Optional
 
 # ── 配置 ───────────────────────────────────────────────────────────────────────
@@ -169,14 +171,11 @@ def read_stage() -> str:
     /Users/zorro/project/.claude/stage_aaa-bbb），从中可提取 project_root =
     /Users/zorro/project（路径去掉末尾 .claude/stage_<sid> 两段）。
     """
-    # 先解析 active_session 路径 → 拿到 project_root（作为 Level 1 查找键）
-    active_path: Path | None = None
-    try:
-        ap = ACTIVE_SESSION_FILE.read_text().strip()
-        if ap:
-            active_path = Path(ap)
-    except FileNotFoundError:
-        pass
+    # 多 session 并发修复（2026-06-14）：
+    # active_path 不再从全局 ACTIVE_SESSION_FILE 读取，改为由
+    # _active_stage_path() 从 state_index.json 解析最近活跃 session。
+    # 这样多 session 并发时每个请求独立拿到自己的 stage，互不覆盖。
+    active_path: Path | None = _active_stage_path()
 
     # Level 1: Project Binding — state_index.json[project_root]
     # project_root 通过复用 @hooks/compact/utils.py 的 _find_project_root 算得
@@ -386,18 +385,15 @@ def _model_file_path(stage_file: Path) -> Path:
 def read_model_override() -> str | None:
     """
     读取当前 model 覆盖，路径解析复用 stage_detector 的派生规则。
-    proxy.py 是无 stdin 的 HTTP 服务器：从 active_session 指针拿到
-    stage_<sid> 完整路径，再派生 model_<sid>。
+    多 session 并发修复（2026-06-14）：通过 _active_stage_path() 从
+    state_index.json 解析 session，不再依赖全局 active_session 指针。
     返回 None 表示"无 model 覆盖"——proxy 按 op > stage 路由。
     """
-    try:
-        active_path = ACTIVE_SESSION_FILE.read_text().strip()
-        if active_path:
-            content = _read_stage_file(_model_file_path(Path(active_path)))
-            if content:
-                return content
-    except FileNotFoundError:
-        pass
+    p = _active_stage_path()
+    if p:
+        content = _read_stage_file(_model_file_path(p))
+        if content:
+            return content
     return None
 
 
@@ -586,34 +582,31 @@ def _fallback_file_path(stage_file: Path) -> Path:
 def read_fallback() -> str | None:
     """
     读取当前 session 的 sticky fallback 模型名。
-    从 active_session 指针拿到 stage_<sid> 完整路径，再派生 fallback_<sid>。
+    多 session 并发修复（2026-06-14）：通过 _active_stage_path() 解析 session。
     返回 None 表示"无 sticky fallback"——正常走主模型路由。
     """
-    try:
-        active_path = ACTIVE_SESSION_FILE.read_text().strip()
-        if active_path:
-            content = _read_stage_file(_fallback_file_path(Path(active_path)))
-            if content:
-                return content
-    except FileNotFoundError:
-        pass
+    p = _active_stage_path()
+    if p:
+        content = _read_stage_file(_fallback_file_path(p))
+        if content:
+            return content
     return None
 
 
 def write_fallback(model: str) -> None:
-    """写入 sticky fallback 模型名到 fallback_<sid>。"""
-    try:
-        active_path = ACTIVE_SESSION_FILE.read_text().strip()
-        if active_path:
-            fb_path = _fallback_file_path(Path(active_path))
+    """写入 sticky fallback 模型名到 fallback_<sid>（多 session 并发安全）。"""
+    p = _active_stage_path()
+    if p:
+        try:
+            fb_path = _fallback_file_path(p)
             fb_path.parent.mkdir(parents=True, exist_ok=True)
             fb_path.write_text(model + "\n")
             log.info(
                 f"sticky fallback 已激活: 主模型不可用，"
                 f"后续请求将默认使用 {model}"
             )
-    except Exception as e:
-        log.error(f"写入 fallback_<sid> 失败: {e}")
+        except Exception as e:
+            log.error(f"写入 fallback_<sid> 失败: {e}")
 
 
 # ── Pattern / Complexity / Batch / State-Index 读取（设计文档 §6.2-6.4 / §13）──
@@ -631,10 +624,47 @@ def _batch_file_path(stage_file: Path) -> Path:
 
 
 def _active_stage_path() -> Path | None:
+    """Resolve the active session's stage file path（multi-session aware）。
+
+    设计文档 §13 + 多 session 并发修复（2026-06-14）：
+    - 主路径：state_index.json → last_active 最新者 → 派生 stage_<sid> 路径
+      （多 session 并发时每个请求独立解析，不再依赖全局 active_session 指针互踩）
+    - 回退：ACTIVE_SESSION_FILE 指针（state_index 为空/损坏时的兼容路径）
+    - stage 文件不存在则返回 None
+    """
+    # 主路径：state_index.json → 最新活跃 session
+    all_entries = _read_state_index_all()
+    if all_entries:
+        best_ts = 0
+        best_project_root = ""
+        best_sid = ""
+        for path_key, entry in all_entries.items():
+            if not isinstance(entry, dict):
+                continue
+            ts = entry.get("last_active", 0)
+            sid = entry.get("session_id", "")
+            if not sid:
+                continue
+            if ts > best_ts:
+                best_ts = ts
+                best_project_root = path_key
+                best_sid = sid
+        if best_sid:
+            stage_path = Path(best_project_root) / ".claude" / f"stage_{best_sid}"
+            if stage_path.exists():
+                return stage_path
+            # stage 文件尚未创建（新 session 的 Hook 还没写完）→ 回退
+            log.debug(
+                f"state_index 指向 {stage_path} 但文件不存在，回退到 active_session 指针"
+            )
+
+    # 回退：active_session 指针（兼容 state_index 缺失/损坏的场景）
     try:
-        active_path = ACTIVE_SESSION_FILE.read_text().strip()
-        if active_path:
-            return Path(active_path)
+        ap = ACTIVE_SESSION_FILE.read_text().strip()
+        if ap:
+            p = Path(ap)
+            if p.exists():
+                return p
     except FileNotFoundError:
         pass
     return None
@@ -1035,16 +1065,17 @@ def _read_workflow_state_safe() -> dict | None:
     当前 session 的 plan 进度（type / current_step / models / step_stages）。
 
     失败一律返回 None，绝不抛异常。
+    多 session 并发修复（2026-06-14）：通过 _active_stage_path() 解析 session。
     """
     try:
         from workflow_orchestrator import read_state as _wf_read
-        ap = ACTIVE_SESSION_FILE.read_text().strip()
+        ap = _active_stage_path()
         if not ap:
             return None
-        sid = _extract_session_id_from_stage_path(Path(ap))
+        sid = _extract_session_id_from_stage_path(ap)
         if not sid:
             return None
-        root = _find_project_root_for_stage_path(Path(ap))
+        root = _find_project_root_for_stage_path(ap)
         state = _wf_read(sid, str(root))
         if not state:
             return None
@@ -1518,14 +1549,14 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         model_override = None
         if prompt_model_override:
             # 找到当前 session 的 model 文件路径（如果有就覆盖）
-            try:
-                active_path = ACTIVE_SESSION_FILE.read_text().strip()
-                if active_path:
-                    mf = _model_file_path(Path(active_path))
+            _active_p = _active_stage_path()
+            if _active_p:
+                try:
+                    mf = _model_file_path(_active_p)
                     mf.parent.mkdir(parents=True, exist_ok=True)
                     mf.write_text(prompt_model_override)
-            except (FileNotFoundError, OSError) as e:
-                log.warning(f"prompt ~model 写回 model_<sid> 失败: {e}")
+                except OSError as e:
+                    log.warning(f"prompt ~model 写回 model_<sid> 失败: {e}")
             log.info(
                 f"prompt ~model 命中: {prompt_model_override!r} "
                 f"（已写回 model_<sid>，当前请求立即生效）"
@@ -1533,30 +1564,27 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             model_override = prompt_model_override
         elif prompt_is_reset:
             # ~model reset：删除 model_<sid> 文件（如果有）
-            try:
-                active_path = ACTIVE_SESSION_FILE.read_text().strip()
-                if active_path:
-                    mf = _model_file_path(Path(active_path))
+            _active_p = _active_stage_path()
+            if _active_p:
+                try:
+                    mf = _model_file_path(_active_p)
                     if mf.exists():
                         mf.unlink()
-                log.info("prompt ~model reset：清除 model 覆盖")
-            except (FileNotFoundError, OSError) as e:
-                log.warning(f"prompt ~model reset 删除 model_<sid> 失败: {e}")
+                    log.info("prompt ~model reset：清除 model 覆盖")
+                except OSError as e:
+                    log.warning(f"prompt ~model reset 删除 model_<sid> 失败: {e}")
 
         # ── Per-API-Request 分类：每 N 次 API 请求触发一次 LLM 重新分类 ──
         # 计数器在 UserPromptSubmit (Hook) 时重置为 0。
         # 本回合若计数器到达阈值，提取 prompt 上下文 → 调用 llm_classifier →
         # 更新 stage/pattern/complexity 文件 → 后续路由分支自动使用新分类结果。
         # 为保证分类上下文提取需要 session_id/project_root，先临时解析一次。
-        try:
-            _prx_ap = ACTIVE_SESSION_FILE.read_text().strip()
-            if _prx_ap:
-                _prx_ap_path = Path(_prx_ap)
-                _prx_sid = _extract_session_id_from_stage_path(_prx_ap_path)
-                _prx_root = str(_find_project_root_for_stage_path(_prx_ap_path))
-            else:
-                _prx_sid = _prx_root = None
-        except (FileNotFoundError, OSError):
+        # 多 session 并发修复（2026-06-14）：通过 _active_stage_path() 解析。
+        _prx_ap_path = _active_stage_path()
+        if _prx_ap_path:
+            _prx_sid = _extract_session_id_from_stage_path(_prx_ap_path)
+            _prx_root = str(_find_project_root_for_stage_path(_prx_ap_path))
+        else:
             _prx_sid = _prx_root = None
 
         if _prx_sid and _prx_root and _increment_and_should_classify():
@@ -1697,13 +1725,14 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                     from workflow_orchestrator import (  # noqa: E402
                         read_state as _wf_read,
                     )
-                    _rl_ap = ACTIVE_SESSION_FILE.read_text().strip()
+                    # 多 session 并发修复（2026-06-14）：通过 _active_stage_path() 解析。
+                    _rl_ap = _active_stage_path()
                     _wf_project_root = (
-                        str(_find_project_root_for_stage_path(Path(_rl_ap)))
+                        str(_find_project_root_for_stage_path(_rl_ap))
                         if _rl_ap else ""
                     )
                     _wf_sid = (
-                        _extract_session_id_from_stage_path(Path(_rl_ap))
+                        _extract_session_id_from_stage_path(_rl_ap)
                         if _rl_ap else ""
                     )
                     wf_state = _wf_read(_wf_sid, _wf_project_root) if _wf_sid else None
@@ -1885,20 +1914,14 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             target_model_is_strong = (session_model == STRONG_MODEL)
 
             # 设计文档 §15 D15-2：维度聚合（项目 / 会话）。
-            # proxy 是无 stdin 的 HTTP 服务器，只能从 active_session 指针反推。
-            # active_session 形如 <project_root>/.claude/stage_<sid>。
-            # proxy 端拿不到 stdin 里的 session_id，session_id 只能从
-            # active_path 文件名后缀推导；project_root 沿 .claude/ 上一级。
+            # proxy 是无 stdin 的 HTTP 服务器，从 state_index.json 解析（2026-06-14
+            # 多 session 并发修复）：不再读全局 active_session 指针。
             metric_session_id: str | None = None
             metric_project_root: str | None = None
-            try:
-                _ap = ACTIVE_SESSION_FILE.read_text().strip()
-                if _ap:
-                    _ap_path = Path(_ap)
-                    metric_session_id = _extract_session_id_from_stage_path(_ap_path)
-                    metric_project_root = str(_find_project_root_for_stage_path(_ap_path))
-            except (FileNotFoundError, OSError):
-                pass
+            _ap_path = _active_stage_path()
+            if _ap_path:
+                metric_session_id = _extract_session_id_from_stage_path(_ap_path)
+                metric_project_root = str(_find_project_root_for_stage_path(_ap_path))
 
             # retry_count：本请求由 fallback 触发（即主模型曾失败），计 1 次重试。
             # 该字段在 §18 D18-3-1 真正接入 retry/retry-budget 后会变成更细的
@@ -2153,7 +2176,15 @@ def main():
     if args.dry_run:
         log.info("[DRY-RUN 模式] 请求不会实际转发")
 
-    server = http.server.HTTPServer(("127.0.0.1", args.port), RouterHandler)
+    # 多 session 并发修复（2026-06-14）：用 ThreadingHTTPServer 替换单线程 HTTPServer。
+    # 原 HTTPServer 在 do_POST 中调用阻塞 urllib.request 做上游转发时，
+    # 第二个 CC session 的请求必须排队等待——表现为"多 session 时一个能跑、其它都阻塞"。
+    # ThreadingHTTPServer 给每个请求派生独立线程，互不阻塞。
+    class _ThreadedRouterServer(ThreadingMixIn, http.server.HTTPServer):
+        """线程化 HTTP server：每个请求一个独立线程，处理多 session 并发。"""
+        daemon_threads = True  # 主线程退出时未完成的 worker 线程自动结束
+
+    server = _ThreadedRouterServer(("127.0.0.1", args.port), RouterHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
