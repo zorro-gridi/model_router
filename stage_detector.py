@@ -783,9 +783,9 @@ def main():
                 llm_result = classify(prompt)
                 log("INFO",
                     f"LLM classifier: stage={llm_result['stage']} "
-                    f"pattern={llm_result['pattern']}"
+                    f"pattern={llm_result['pattern']} "
                     f"(conf={llm_result['pattern_confidence']}) "
-                    f"complexity={llm_result['complexity_label']}"
+                    f"complexity={llm_result['complexity_label']} "
                     f"(score={llm_result['complexity_score']}, "
                     f"conf={llm_result['complexity_confidence']}) "
                     f"reason={llm_result.get('reasoning', '')!r}"
