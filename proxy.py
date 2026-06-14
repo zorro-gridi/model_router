@@ -56,6 +56,10 @@ LOG_FILE             = Path.home() / ".claude" / "stage-router.log"
 PORT                 = 7878
 ENV_FILE             = Path(__file__).parent / ".env"   # hooks/model_router/.env
 
+# 用户服务的"内部请求"标记 header（防止 5xx 误触发 fallback）
+# 详见 _is_internal_request() 注释。Claude Code 的请求不会带这个 header。
+INTERNAL_SOURCE_HEADER = os.environ.get("STAGE_ROUTER_INTERNAL_HEADER", "X-Stage-Router-Source")
+
 # 阶段 → (provider_base_url, model, api_key_env, protocol)
 #
 # 协议方向（默认端到端都是 Anthropic Messages API）：
@@ -764,6 +768,26 @@ def _is_retriable(status: int) -> bool:
     return status in (401, 402, 403, 429) or (500 <= status < 600) or status == 0
 
 
+def _is_internal_request(headers: dict) -> bool:
+    """判断当前请求是否来自用户自己的服务（而非 Claude Code）。
+
+    用户服务需要在请求中显式携带 ``X-Stage-Router-Source`` 头（值任意非空），
+    proxy 见到此 header 时将 5xx 视为"业务错误"而非"模型故障"——
+    直接透传给调用方，不触发任何 fallback 切换、也不写 sticky fallback。
+    目的：避免用户的业务 5xx 误触发模型 SDK 调用、污染 fallback 状态、
+    浪费 budget。header 名可通过 .env 的 STAGE_ROUTER_INTERNAL_HEADER 自定义。
+
+    CC 发出的请求天然不带此 header（CC 的 SDK 不认识），所以 CC 走原 fallback 逻辑。
+    """
+    if not headers:
+        return False
+    # 自愈：即使 header 被配置改了大小写也兼容
+    for k, v in headers.items():
+        if k.lower() == INTERNAL_SOURCE_HEADER.lower() and v:
+            return True
+    return False
+
+
 class RouterHandler(http.server.BaseHTTPRequestHandler):
     dry_run: bool = False
 
@@ -849,7 +873,14 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
 
         # ── Sticky fallback: 主模型曾失败过，交换主/备避免重复重试 ──
         # 仅在自动路由（非 model_override）下生效——用户显式指定模型时不干预
-        sticky_fb = read_fallback() if not model_override else None
+        # 内部服务请求（X-Stage-Router-Source）也跳过 sticky 切换：
+        # 用户的业务 5xx 跟"主模型曾失败"无关，不应该被静默改路由。
+        internal_req = _is_internal_request(headers)
+        sticky_fb = (
+            read_fallback()
+            if (not model_override and not internal_req)
+            else None
+        )
         # 保存 session 级模型名（CC 能识别的原始模型名），用于响应体 model 字段回写
         session_model = model
         if sticky_fb:
@@ -873,7 +904,10 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         )
 
         # 主模型失败且可重试 → 切换备用模型
-        if _is_retriable(status) and fb_base and fb_model:
+        # 但内部服务请求（X-Stage-Router-Source）跳过此分支：
+        # 用户的业务 5xx 是上游问题，不应触发模型 SDK 二次调用、
+        # 也不应写入 sticky fallback（避免污染 CC 后续会话）。
+        if _is_retriable(status) and fb_base and fb_model and not internal_req:
             log.warning(
                 f"[{routing_source}] 主模型 {model} 返回 {status}，"
                 f"切换到备用 {fb_model} [{fb_base}]"
@@ -892,6 +926,11 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             # 备用模型成功 + 之前无 sticky + 非 model_override → 写入 sticky fallback
             if not sticky_fb and not _is_retriable(status) and not model_override:
                 write_fallback(fb_model)
+        elif _is_retriable(status) and internal_req:
+            log.info(
+                f"[{routing_source}] 内部请求主模型 {model} 返回 {status}，"
+                f"按业务 5xx 处理：透传响应，不触发 fallback，不写 sticky"
+            )
 
         # ── 响应体 model 字段回写 ──
         # 如果上游响应中的 model 是内部别名（如 deepseek-v4-flash），CC 会记录它。
@@ -918,6 +957,7 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 "complexity_source": complexity_source,
                 "workflow_type":    workflow.get("type"),
                 "workflow_models":  workflow.get("models"),
+                "internal_request": internal_req,
                 "batch_template":   batch.get("template") if batch else None,
                 "used_fallback":    used_fallback,
             })
