@@ -51,7 +51,7 @@ GLOBAL_STAGE_FILE   = HOOK_DIR / "current_stage"
 sys.path.insert(0, str(HOOK_DIR))
 
 # 从统一配置文件导入（hooks/model_router/stage_config.py）
-from stage_config import STAGE_DISPLAY, PATTERN_INFO  # noqa: E402
+from stage_config import STAGE_DISPLAY, PATTERN_INFO, PATTERN_CONFIG  # noqa: E402
 # OPERATION_DISPLAY 已废弃 2026-06-14（write/read/search 只是动作不是路由维度）
 from stage_config import COMPLEXITY_LEVELS  # 用于显示复杂度档位
 from model_alias import resolve_model  # 用于显示模型简称
@@ -314,11 +314,20 @@ def main():
     lines.append(f"  {s_color}{emoji} {label} → {model}{RST}")
 
     # Task Pattern (Shadow Mode)
+    # 用 PATTERN_CONFIG 查中文 label 兜底，缺失或 label==key 时回退原文。
+    # 例如 "test" → "测试建设"；自定义 pattern key 不在配置中时仍可见 key 名。
     if pattern_data and pattern_data.get("prediction"):
         p_pred = pattern_data["prediction"]
         p_conf = pattern_data.get("confidence", 0.0)
+        p_label = PATTERN_CONFIG.get(p_pred, {}).get("label", p_pred)
+        # label 和 key 一致时不再重复显示 (e.g. "test" -> "test")，
+        # 否则显示 "label (key=xxx)" 帮助区分。
+        if p_label == p_pred:
+            p_display = p_pred
+        else:
+            p_display = f"{p_label} (key={p_pred})"
         lines.append(
-            f"  {DIM}{GRY}📐 模式: {p_pred}  conf={p_conf:.2f}  [shadow]{RST}"
+            f"  {DIM}{GRY}📐 模式: {p_display}  conf={p_conf:.2f}  [shadow]{RST}"
         )
 
     # Stage Complexity
