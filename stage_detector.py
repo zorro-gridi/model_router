@@ -882,13 +882,32 @@ def main():
                 )
 
             elif batch_m:
-                # ~batch <template> — 载入预定义任务模式
+                # ~batch <template> — 载入预定义任务模式（D16-D-1 修复 2026-06-14）
+                # 不光写 batch 文件，**还要把 stage 持久化到 flow[0]**，
+                # 否则下次路由 read_stage() 拿到的还是旧 stage，
+                # flow 强制只对当次请求生效，流程"形同虚设"。
                 from stage_config import PATTERN_CONFIG
                 template = batch_m.group(1).lower()
                 flow = PATTERN_CONFIG.get(template, {}).get("default_flow", [])
                 if flow:
                     write_batch(template, flow, session_id, cwd)
                     log("INFO", f"~batch loaded: {template} → {flow}")
+                    # ── 同步把 stage 推到 flow 起点（持久化）──
+                    flow_start = flow[0]
+                    if flow_start != old_stage:
+                        write_stage(flow_start, session_id, cwd)
+                        log("INFO",
+                            f"~batch: stage forced to flow[0] "
+                            f"({old_stage} → {flow_start})")
+                        stage_msg = (
+                            f"~batch: 已载入 {template} 流程 "
+                            f"{'→'.join(flow)}，阶段已切到起点 {flow_start}"
+                        )
+                    else:
+                        stage_msg = (
+                            f"~batch: 已载入 {template} 流程 "
+                            f"{'→'.join(flow)}（当前阶段 {flow_start} 即为起点）"
+                        )
                     complexity_msg = (
                         f"~batch: 已载入 {template} 流程 {'→'.join(flow)}"
                     )
