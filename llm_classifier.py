@@ -89,6 +89,7 @@ DEFAULT_CLASSIFIER_CONFIG: dict = {
     "max_tokens":  512,      # 分类只需要很短的回答
     "temperature": 0.0,      # 零温度确保确定性
     "timeout":     15,       # 分类超时上限（秒），超时则回退 V1
+    "max_prompt_chars": 8000,  # §6 D6.1-2 修复 2026-06-14：长 prompt 截断阈值
 }
 
 # ── 分类 System Prompt ──
@@ -193,11 +194,29 @@ def classify(prompt: str, config_override: Optional[dict] = None) -> dict:
     max_tokens = cfg.get("max_tokens", 512)
     temperature = cfg.get("temperature", 0.0)
     timeout = cfg.get("timeout", 15)
+    # §6 D6.1-2 修复 2026-06-14：长 prompt 截断。
+    # 当 prompt > max_prompt_chars 时截掉中段（保留头尾+截断标记），
+    # 避免 50k+ tokens 的 prompt 触发 LLM 上下文窗口或超时。
+    max_prompt_chars = int(cfg.get("max_prompt_chars", 8000))
 
     api_key = os.environ.get(api_key_env, "")
     if not api_key:
         raise RuntimeError(
             f"LLM 分类器：环境变量 {api_key_env} 未设置，无法调用 {model}"
+        )
+
+    # ── §6 D6.1-2 长 prompt 截断 ──
+    # 截掉中段保留头尾：开头保留 head 60% / 结尾保留 tail 40%。
+    # 头尾包含"用户原始意图"和"具体代码/上下文"，中间多是堆栈/日志，
+    # 分类时不需要全部字面（LLM 自身有上下文消化能力）。
+    if len(prompt) > max_prompt_chars:
+        head_chars = int(max_prompt_chars * 0.6)
+        tail_chars = max_prompt_chars - head_chars
+        truncated_chars = len(prompt) - head_chars - tail_chars
+        prompt = (
+            prompt[:head_chars]
+            + f"\n\n... [已截断 {truncated_chars} 字符] ...\n\n"
+            + prompt[-tail_chars:]
         )
 
     # ── 构造请求体（Anthropic Messages API）──
