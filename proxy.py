@@ -102,7 +102,7 @@ from stage_config import (
 # proxy 当前回合检测 prompt 内嵌指令——不等 stage_detector 写入 model_<sid>，
 # 避免"用户发 ~model 时当前回合仍是旧模型，下回合才生效"的一回合延迟。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from model_alias import detect_model_override  # noqa: E402
+from model_alias import detect_model_override, parse_model_override  # noqa: E402
 
 # 复用 @hooks/compact/utils.py 的 project_root 查找逻辑（设计文档 §13 4 级查找
 # 的 Level 1 "Project Binding" 需要按 project_root 索引 state_index.json）。
@@ -313,28 +313,31 @@ def read_model_override() -> str | None:
     return None
 
 
-def _extract_prompt_model_override(body: bytes) -> tuple[Optional[str], bool]:
+def _extract_prompt_model_override(body: bytes) -> tuple[Optional[str], bool, Optional[str]]:
     """
     从 Anthropic Messages API 请求 body 中提取"最近一条 user message"的内容，
-    喂给 model_alias.detect_model_override()，返回 (canonical_model, is_reset)。
+    喂给 model_alias.parse_model_override()，返回 (canonical_model, is_reset, unknown_alias)。
 
     仅解析请求 body 里的最后一条 user 消息——因为 user 可能在中途改模型。
     请求/响应都是 JSON。body 可能是：{"messages": [{"role": "user", "content": "..."}]}
     content 可能是字符串，也可能是 [{"type": "text", "text": "..."}] 数组。
 
-    解析失败（非 JSON、空 body、无 user message）时返回 (None, False)，
+    解析失败（非 JSON、空 body、无 user message）时返回 (None, False, None)，
     让 proxy 继续走 op/stage 默认路由。
+
+    unknown_alias 非空时表示用户输入了显式 `~model <name>` 但 alias 未识别——
+    设计文档 §12 D12-3：必须给 warning 提示，避免静默失效。
     """
     if not body:
-        return (None, False)
+        return (None, False, None)
     try:
         data = json.loads(body.decode("utf-8", errors="replace"))
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return (None, False)
+        return (None, False, None)
 
     messages = data.get("messages")
     if not isinstance(messages, list) or not messages:
-        return (None, False)
+        return (None, False, None)
 
     # 反向找最近一条 user 消息
     user_msg = None
@@ -343,7 +346,7 @@ def _extract_prompt_model_override(body: bytes) -> tuple[Optional[str], bool]:
             user_msg = m
             break
     if user_msg is None:
-        return (None, False)
+        return (None, False, None)
 
     content = user_msg.get("content")
     text_parts: list[str] = []
@@ -357,13 +360,13 @@ def _extract_prompt_model_override(body: bytes) -> tuple[Optional[str], bool]:
                     text_parts.append(part["text"])
                 # tool_result 也带内容（用户工具返回的"文本"），不参与 ~model 解析——跳过
     else:
-        return (None, False)
+        return (None, False, None)
 
     user_text = "\n".join(text_parts)
     if not user_text.strip():
-        return (None, False)
+        return (None, False, None)
 
-    return detect_model_override(user_text)
+    return parse_model_override(user_text)
 
 
 def resolve_model_routing(model_name: str) -> tuple[str, str, str, str, str, str, str] | None:
@@ -982,7 +985,16 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # user message，命中就立刻用命中的模型作为 model_override（写回
         # model_<sid> 文件让 stage_detector 后续也走同一覆盖）。这样用户
         # 发 ~model 的"当前请求"就立即生效，不再等下一回合。
-        prompt_model_override, prompt_is_reset = _extract_prompt_model_override(body)
+        prompt_model_override, prompt_is_reset, prompt_unknown_alias = _extract_prompt_model_override(body)
+
+        # 设计文档 §12 D12-3：显式 `~model <name>` 但 alias 未识别时必须警告用户，
+        # 列出合法 alias / 规范名。否则用户以为生效、实际是静默失效。
+        if prompt_unknown_alias:
+            log.warning(
+                f"~model {prompt_unknown_alias!r} 未识别（合法 alias 示例: "
+                f"ds-v4-pro / mm3 / sonnet / opus；规范名: "
+                f"deepseek-v4-pro / MiniMax-M3 / claude-sonnet-4-6 / claude-opus-4-8）"
+            )
 
         # ── 路由决策：prompt_model_override > model_override(file) > op > stage > default ──
         # 1) prompt 内嵌 ~model 优先（消除一回合延迟）；同时把结果写回

@@ -130,8 +130,23 @@ def detect_model_override(prompt: str) -> tuple[Optional[str], bool]:
 
     优先级: 显式 ~model 指令 > 自然语言模式
     """
+    canon, is_reset, _unknown = parse_model_override(prompt)
+    return (canon, is_reset)
+
+
+def parse_model_override(prompt: str) -> tuple[Optional[str], bool, Optional[str]]:
+    """从用户 prompt 中检测模型覆盖指令，返回 (canonical, is_reset, unknown_alias)。
+
+    - canonical:        解析出的规范模型名；无指令或未识别时为 None
+    - is_reset:         用户是否要求清除覆盖（`~model reset`）
+    - unknown_alias:    用户输入但无法识别的 alias（仅显式 `~model <name>` 时设置；
+                        自然语言模式不识别时**不**回传，避免误报）
+
+    设计文档 §12 D12-3：未识别的 alias 必须显式提示用户，不能静默失效。
+    调用方拿到 unknown_alias 后应记 warning / 返回 400 / 在响应中提示合法 model 列表。
+    """
     if not prompt:
-        return (None, False)
+        return (None, False, None)
 
     stripped = prompt.strip()
     prompt_lower = stripped.lower()
@@ -142,12 +157,12 @@ def detect_model_override(prompt: str) -> tuple[Optional[str], bool]:
         raw = m.group(1).strip()
         # 检查 reset/default/auto/clear/off 关键词
         if raw.lower() in MODEL_RESET_WORDS:
-            return (None, True)  # is_reset
+            return (None, True, None)  # is_reset
         canon = resolve_model(raw)
         if canon:
-            return (canon, False)
-        # 未识别 → 返回 None（不当作 reset，也不写入覆盖）
-        return (None, False)
+            return (canon, False, None)
+        # 未识别 → 返回 None + 原始 alias（供调用方给 warning，修复 §12 D12-3 静默失效）
+        return (None, False, raw)
 
     # ── 2. 自然语言模式 ─────────────────────────────────────
     # 注意：只在 ~model 未命中时才走自然语言，避免 "~model" 被
@@ -156,6 +171,6 @@ def detect_model_override(prompt: str) -> tuple[Optional[str], bool]:
         raw = m_nat.group(1).strip()
         canon = resolve_model(raw)
         if canon:
-            return (canon, False)
+            return (canon, False, None)
 
-    return (None, False)
+    return (None, False, None)
