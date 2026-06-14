@@ -11,6 +11,12 @@ stage_show.py — Stop Hook（PostToolBatch 也可用）
   active_session 指针存于 ~/.claude/hooks/model_router/，内容为
   阶段文件的完整绝对路径。
 
+显示内容（按优先级）：
+  🎯 <model>          用户显式 ~model 覆盖（最高路由优先级）
+  <emoji> <label> → <model>  当前阶段 + 主模型
+  <emoji> <label> → <model> (op 覆盖 stage)  当 op 覆盖时
+  📐 模式: <pattern> (conf=0.x) [shadow]  Shadow Mode 任务模式标注
+
 Claude Code settings.json 配置：
   {
     "hooks": {
@@ -41,8 +47,11 @@ HOOK_DIR            = HOME_CLAUDE / "hooks" / "model_router"
 ACTIVE_SESSION_FILE = HOOK_DIR / "active_session"
 GLOBAL_STAGE_FILE   = HOOK_DIR / "current_stage"
 
+# 直接执行时把本目录加进 sys.path，确保 stage_config / model_alias 可导入
+sys.path.insert(0, str(HOOK_DIR))
+
 # 从统一配置文件导入（hooks/model_router/stage_config.py）
-from stage_config import STAGE_DISPLAY, OPERATION_DISPLAY
+from stage_config import STAGE_DISPLAY, OPERATION_DISPLAY, PATTERN_INFO  # noqa: E402
 from model_alias import resolve_model  # 用于显示模型简称
 
 
@@ -197,6 +206,42 @@ def read_model_override(event: dict | None = None) -> str | None:
     return None
 
 
+def _pattern_file_path(stage_file: Path) -> Path:
+    """从 stage_<sid> 派生 pattern_<sid> 路径（Shadow Mode 标注文件）。"""
+    return stage_file.with_name(stage_file.name.replace("stage_", "pattern_", 1))
+
+
+def read_pattern(event: dict | None = None) -> dict | None:
+    """
+    读取当前 session 的 task pattern 标注（Shadow Mode 专用）。
+    返回 dict：{"prediction": str, "confidence": float, "ts": str} 或 None。
+    """
+    if event:
+        session_id: str | None = (event.get("session_id") or "").strip() or None
+        cwd: str | None = event.get("cwd")
+        if session_id and cwd:
+            stage_path = _stage_file_path(cwd, session_id)
+            pattern_file = _pattern_file_path(stage_path)
+            try:
+                content = pattern_file.read_text().strip()
+                if content:
+                    return json.loads(content)
+            except (FileNotFoundError, json.JSONDecodeError):
+                pass
+
+    try:
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            pattern_file = _pattern_file_path(Path(active_path))
+            content = pattern_file.read_text().strip()
+            if content:
+                return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    return None
+
+
 def main():
     event = None
     try:
@@ -221,6 +266,15 @@ def main():
         op_emoji, op_label, op_model = OPERATION_DISPLAY[op]
         parts.append(f"{op_emoji} {op_label} → {op_model} (op 覆盖 stage)")
     # op 为 None 时不显示——保持与升级前相同的输出长度
+
+    # ── Task Pattern（Shadow Mode，2026-06-14 引入）──
+    #   只在已有标注时显示，明确标注 [shadow] 后缀让用户知道这是非路由信息。
+    pattern_data = read_pattern(event)
+    if pattern_data and pattern_data.get("prediction"):
+        p_pred = pattern_data["prediction"]
+        p_conf = pattern_data.get("confidence", 0.0)
+        p_label = PATTERN_INFO.get(p_pred, p_pred)
+        parts.append(f"📐 模式: {p_pred} (conf={p_conf}) [shadow]")
 
     print(
         f"\r\033[90m[Stage Router] {' │ '.join(parts)}\033[0m",

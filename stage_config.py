@@ -414,5 +414,11 @@ for c in STAGE_CONFIG.values():
     MODEL_TO_CONFIG[c["fb_model"]] = (c["fb_base_url"], c["fb_model"], c["fb_api_key_env"], c["fb_protocol"])
 for c in OPERATION_CONFIG.values():
     # OPERATION_CONFIG 可能使用与 STAGE_CONFIG 相同的模型名，值应一致
-    MODEL_TO_CONFIG.setdefault(c["model"], (c["base_url"], c["model"], c["api_key_env"], c["protocol"])
-    MODEL_TO_CONFIG.setdefault(c["fb_model"], (c["fb_base_url"], c["fb_model"], c["fb_api_key_env"], c["fb_protocol"])
+    MODEL_TO_CONFIG.setdefault(
+        c["model"],
+        (c["base_url"], c["model"], c["api_key_env"], c["protocol"]),
+    )
+    MODEL_TO_CONFIG.setdefault(
+        c["fb_model"],
+        (c["fb_base_url"], c["fb_model"], c["fb_api_key_env"], c["fb_protocol"]),
+    )

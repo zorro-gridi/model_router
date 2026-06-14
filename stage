@@ -15,14 +15,23 @@ stage — 阶段管理 CLI
   stage op reset     # 清除 op 信号（退回 stage 路由）
   stage op list      # 列出所有有效 op 名称
 
+任务模式子命令（第三维度，2026-06-14 引入，Shadow Mode）：
+  stage pattern              # 查看当前 session 的 pattern 标注
+  stage pattern <name>       # 手动设置 pattern（写入 JSON）
+  stage pattern reset        # 清除 pattern 标注
+  stage pattern list         # 列出所有有效 pattern 名称
+
 所有阶段：brainstorm | decide | design | plan | implement | audit | default
 所有 op：  write | read | search | refactor
+所有 pattern：feature | bugfix | refactor | test | research | migration |
+              architecture | docs | audit
 
 阶段文件位置：
   分 session 阶段文件：<project_root>/.claude/stage_<session_id>
   分 session op 文件： <project_root>/.claude/op_<session_id>（op_<sid> 与 stage_<sid> 同目录）
+  分 session pattern： <project_root>/.claude/pattern_<session_id>（JSON）
   active_session 指针：~/.claude/hooks/model_router/active_session → 完整路径
-  全局后备：          ~/.claude/hooks/model_router/current_stage（仅 stage，op 无全局后备）
+  全局后备：          ~/.claude/hooks/model_router/current_stage（仅 stage，op/pattern 无全局后备）
 """
 
 import http.client
@@ -31,6 +40,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # ── 分 session 阶段管理 ──
@@ -45,15 +55,17 @@ PROXY_SCRIPT        = HOOK_DIR / "proxy.py"
 ENV_FILE            = HOOK_DIR / ".env"
 PROXY_PORT          = 7878
 
-VALID_STAGES = {"brainstorm", "decide", "design", "plan", "implement", "audit", "default"}
-# op 有效值：与 stage_config.OPERATION_CONFIG 同源
-sys.path.insert(0, str(HOOK_DIR))
-from stage_config import STAGE_CONFIG, OPERATION_CONFIG  # noqa: E402
-VALID_STAGES = set(STAGE_CONFIG.keys())
-VALID_OPS    = set(OPERATION_CONFIG.keys())
-
 # 与 proxy.py 同步的极简 .env 解析（不依赖 python-dotenv）
 _DOTENV_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
+
+# stage / op / pattern 有效值：与 stage_config 同源（避免重复硬编码）
+sys.path.insert(0, str(HOOK_DIR))
+from stage_config import (                          # noqa: E402
+    STAGE_CONFIG, OPERATION_CONFIG, PATTERN_CONFIG,
+)
+VALID_STAGES    = set(STAGE_CONFIG.keys())
+VALID_OPS       = set(OPERATION_CONFIG.keys())
+VALID_PATTERNS  = set(PATTERN_CONFIG.keys())
 
 
 def _load_dotenv(env_path: Path) -> int:
@@ -278,6 +290,58 @@ def clear_operation() -> bool:
         return False
 
 
+# ── Pattern 读 / 写 / 清（Shadow Mode，2026-06-14 引入）──
+
+def _pattern_file_path(stage_path: Path) -> Path:
+    """从 stage_<sid> 派生 pattern_<sid> 路径（同目录、仅前缀替换）。"""
+    return stage_path.with_name(stage_path.name.replace("stage_", "pattern_", 1))
+
+
+def read_pattern() -> dict | None:
+    """读取当前 session 的 pattern 标注（JSON 格式）。
+    返回 None 或 `{"prediction": str, "confidence": float, "ts": str}`。
+    """
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return None
+    pattern_file = _pattern_file_path(stage_path)
+    try:
+        content = pattern_file.read_text().strip()
+        if not content:
+            return None
+        return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def write_pattern(prediction: str, confidence: float = 1.0) -> bool:
+    """写入 pattern 标注到 pattern_<sid>（JSON 格式）。"""
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return False
+    pattern_file = _pattern_file_path(stage_path)
+    pattern_file.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "prediction": prediction,
+        "confidence": round(float(confidence), 2),
+        "ts":         datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    pattern_file.write_text(json.dumps(payload, ensure_ascii=False))
+    return True
+
+
+def clear_pattern() -> bool:
+    """清除 pattern_<sid> 标注。"""
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return False
+    try:
+        _pattern_file_path(stage_path).unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def show_current():
     stage = read_stage()
     color = COLORS.get(stage, COLORS["reset"])
@@ -291,6 +355,19 @@ def show_current():
         print(f"  {op_desc}")
     else:
         print(f"当前 op:   \033[90mnone\033[0m (走 stage 路由)")
+
+    # ── Pattern（Shadow Mode，仅标注不影响路由）──
+    pat = read_pattern()
+    if pat and pat.get("prediction"):
+        from stage_config import PATTERN_INFO
+        p = pat["prediction"]
+        c = pat.get("confidence", 0.0)
+        info = PATTERN_INFO.get(p, p)
+        print(f"当前模式: \033[1;36m{p}\033[0m (conf={c}, [shadow])")
+        print(f"  {info}")
+    else:
+        print(f"当前模式: \033[90mnone\033[0m (shadow mode, 不影响路由)")
+
     print(f"\n代理地址: http://127.0.0.1:{PROXY_PORT}")
     print(f"设置方式: export ANTHROPIC_BASE_URL=http://127.0.0.1:{PROXY_PORT}")
 
@@ -332,6 +409,48 @@ def list_ops():
     print("可用 op 名称（第二维度路由信号，op 覆盖 stage）：")
     for op in sorted(VALID_OPS):
         print(f"  {OPERATION_DESC.get(op, op)}")
+
+
+def set_pattern(pattern: str):
+    if pattern not in VALID_PATTERNS:
+        print(f"❌ 未知 pattern: {pattern}")
+        print(f"   有效值: {' | '.join(sorted(VALID_PATTERNS))}")
+        sys.exit(1)
+    if not write_pattern(pattern, 1.0):
+        print("❌ 无法写入 pattern：无活跃 session（active_session 指针不存在）")
+        print("   先发起一次 Claude Code 会话触发 UserPromptSubmit hook 创建 session")
+        sys.exit(1)
+    from stage_config import PATTERN_INFO
+    print(f"模式标注: \033[1;36m{pattern}\033[0m (conf=1.0) [shadow]")
+    print(f"  {PATTERN_INFO.get(pattern, pattern)}")
+
+
+def reset_pattern():
+    if not clear_pattern():
+        print("ℹ️  当前没有 pattern 标注（文件不存在或无 session）")
+        return
+    print("✅ pattern 标注已清除")
+
+
+def list_patterns():
+    print("可用 pattern 名称（第三维度，Shadow Mode 标注，不影响路由）：")
+    for p in sorted(VALID_PATTERNS):
+        from stage_config import PATTERN_INFO
+        print(f"  {PATTERN_INFO.get(p, p)}")
+
+
+def show_pattern():
+    pat = read_pattern()
+    if not pat or not pat.get("prediction"):
+        print("ℹ️  当前没有 pattern 标注（文件不存在或无 session）")
+        return
+    from stage_config import PATTERN_INFO
+    p = pat["prediction"]
+    c = pat.get("confidence", 0.0)
+    ts = pat.get("ts", "?")
+    print(f"当前 pattern: \033[1;36m{p}\033[0m (conf={c}, [shadow])")
+    print(f"  标注时间: {ts}")
+    print(f"  详情:     {PATTERN_INFO.get(p, p)}")
 
 
 def start_proxy():
@@ -407,6 +526,22 @@ def main():
         else:
             print(f"❌ 未知 op 子命令: {sub}")
             print(f"   有效值: {' | '.join(sorted(VALID_OPS))} | reset | list")
+            sys.exit(1)
+    elif args[0] == "pattern":
+        # stage pattern [<name> | reset | list]
+        if len(args) < 2:
+            show_pattern()
+            sys.exit(0)
+        sub = args[1]
+        if sub == "reset":
+            reset_pattern()
+        elif sub == "list":
+            list_patterns()
+        elif sub in VALID_PATTERNS:
+            set_pattern(sub)
+        else:
+            print(f"❌ 未知 pattern 子命令: {sub}")
+            print(f"   有效值: {' | '.join(sorted(VALID_PATTERNS))} | reset | list")
             sys.exit(1)
     elif args[0] in VALID_STAGES:
         set_stage(args[0])
