@@ -103,6 +103,9 @@ from stage_config import (
 # 避免"用户发 ~model 时当前回合仍是旧模型，下回合才生效"的一回合延迟。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from model_alias import detect_model_override, parse_model_override  # noqa: E402
+# 高阶模型 rate limit（设计文档 §18 R18-3 / D18-3-1 修复 2026-06-14）：
+# complex 任务强制跳到 STRONG_MODEL 前，先查配额；超额则降级回原 stage 主模型。
+from rate_limit import check_rate_limit, consume as rate_limit_consume      # noqa: E402
 
 # 复用 @hooks/compact/utils.py 的 project_root 查找逻辑（设计文档 §13 4 级查找
 # 的 Level 1 "Project Binding" 需要按 project_root 索引 state_index.json）。
@@ -1343,15 +1346,46 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             # complex 任务：把强模型 (STRONG_MODEL = deepseek-v4-pro) 当主，
             # 常规 stage 模型当 fb —— 体现"高阶推理优先"。
             if complexity_label == "complex":
-                strong_routing = resolve_model_routing(STRONG_MODEL)
-                if strong_routing and strong_routing[1] != model:
-                    s_base, s_model, s_key, s_proto, _, _, _, _ = strong_routing
-                    # 把原 stage 模型存为 fb，strong 路由设为主
-                    fb_base, fb_model, fb_key, fb_proto = (
-                        base_url, model, key_env, protocol
+                # §18 R18-3 / D18-3-1 修复 2026-06-14：跳强模型前先查配额。
+                # 超额则降级回原 stage 主模型（MiniMax-M3）—— 高阶模型不能
+                # 因为任务复杂就无限烧钱。
+                #
+                # project_root / current_sid 与 183-184 行的 resolve_state
+                # 同源派生（active_session 指针 → stage_<sid> 路径），
+                # 不依赖外部模块暴露，保持 do_POST 自洽。
+                _rl_ap = ACTIVE_SESSION_FILE.read_text().strip()
+                _rl_project_root = (
+                    str(_find_project_root_for_stage_path(Path(_rl_ap)))
+                    if _rl_ap else ""
+                )
+                _rl_sid = (
+                    _extract_session_id_from_stage_path(Path(_rl_ap))
+                    if _rl_ap else ""
+                )
+                rl_allowed, rl_reason = check_rate_limit(
+                    STRONG_MODEL, _rl_project_root, _rl_sid
+                )
+                if not rl_allowed:
+                    log_warn(
+                        f"rate_limited: {STRONG_MODEL} "
+                        f"reason={rl_reason} project={_rl_project_root} "
+                        f"session={_rl_sid}; fall back to {model}"
                     )
-                    base_url, model, key_env, protocol = s_base, s_model, s_key, s_proto
-                    routing_source += f" [workflow=complex→{STRONG_MODEL}]"
+                    routing_source += f" [workflow=complex→rate_limited({rl_reason})→{model}]"
+                else:
+                    strong_routing = resolve_model_routing(STRONG_MODEL)
+                    if strong_routing and strong_routing[1] != model:
+                        s_base, s_model, s_key, s_proto, _, _, _, _ = strong_routing
+                        # 把原 stage 模型存为 fb，strong 路由设为主
+                        fb_base, fb_model, fb_key, fb_proto = (
+                            base_url, model, key_env, protocol
+                        )
+                        base_url, model, key_env, protocol = (
+                            s_base, s_model, s_key, s_proto
+                        )
+                        # 配额允许时扣 1 次（必须真的切到强模型才计）
+                        rate_limit_consume(STRONG_MODEL, _rl_project_root, _rl_sid)
+                        routing_source += f" [workflow=complex→{STRONG_MODEL}]"
         else:
             # model_override 路径无 workflow 编排（用户已显式指定）
             workflow = {
