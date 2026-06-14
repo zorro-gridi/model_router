@@ -153,53 +153,66 @@ def detect_stage(prompt: str) -> str | None:
 
 
 # ────────────────────────────────────────────────────────────────────
-# Operation-type（与 stage 并列的第二维度路由信号）
+# Operation-type — [已废弃 2026-06-14]
+# ────────────────────────────────────────────────────────────────────
+# 废弃原因：write/read/search 只是"动作"不是"路由维度"。
+# Complexity 分类器（设计文档 §6.4）已吞掉 op 的原始职责。
+# 下方所有 op 相关函数均已替换为 no-op stub，调用方不会出错。
+# 原有实现以注释形式保留，便于未来参考或回退。
+#
+# OPERATION_KEYWORDS: list[tuple[str, list[str]]] = [
+#     ("write", [
+#         "写,", "写。", "写 ", "写入", "更新", "改写", "改", "编辑", "写代码", "创建",
+#         "添加", "删除", "write", "update", "edit", "create", "delete", "add", "fix", "修改",
+#     ]),
+#     ("read", [
+#         "读一下", "阅读", "查看", "看一下", "理解", "解释", "分析", "总结", "概括",
+#         "read", "view", "explain", "summarize", "understand", "分析一下",
+#     ]),
+#     ("search", [
+#         "搜索", "查找", "找一下", "检索", "搜一下", "grep", "find", "search", "locate", "找找",
+#     ]),
+#     ("refactor", [
+#         "重构", "整理", "优化结构", "改结构", "refactor", "restructure", "reorganize",
+#         "clean up", "清理",
+#     ]),
+# ]
+#
+# OPERATION_PREFIX_RE = re.compile(
+#     r"(?:^|\s)~(write|read|search|refactor)\b",
+#     re.IGNORECASE,
+# )
 # ────────────────────────────────────────────────────────────────────
 
-# 关键词 → op 映射（按优先级排列，先匹配先赢；与 STAGE_KEYWORDS 平行独立运行）
-OPERATION_KEYWORDS: list[tuple[str, list[str]]] = [
-    ("write", [
-        "写,", "写。", "写 ", "写入", "更新", "改写", "改", "编辑", "写代码", "创建",
-        "添加", "删除", "write", "update", "edit", "create", "delete", "add", "fix", "修改",
-    ]),
-    ("read", [
-        "读一下", "阅读", "查看", "看一下", "理解", "解释", "分析", "总结", "概括",
-        "read", "view", "explain", "summarize", "understand", "分析一下",
-    ]),
-    ("search", [
-        "搜索", "查找", "找一下", "检索", "搜一下", "grep", "find", "search", "locate", "找找",
-    ]),
-    ("refactor", [
-        "重构", "整理", "优化结构", "改结构", "refactor", "restructure", "reorganize",
-        "clean up", "清理",
-    ]),
-]
 
-# 显式命令前缀（优先级最高，使用 ~<op> 格式）
-OPERATION_PREFIX_RE = re.compile(
-    r"(?:^|\s)~(write|read|search|refactor)\b",
-    re.IGNORECASE,
-)
+# detect_operation — [已废弃 2026-06-14]
+# 原实现以注释保留：
+# def detect_operation(prompt: str) -> str | None:
+#     """
+#     返回检测到的 op 名，或 None（表示不更改当前 op）。
+#     优先级：显式命令 > 关键词匹配 > 不变
+#     与 detect_stage() 平行独立——两侧关键词可独立命中，proxy 端按 op 优先。
+#     """
+#     # 显式命令
+#     m = OPERATION_PREFIX_RE.search(prompt.strip())
+#     if m:
+#         return m.group(1).lower()
+#
+#     # 关键词匹配（遍历顺序即优先级）
+#     prompt_lower = prompt.lower()
+#     for op, keywords in OPERATION_KEYWORDS:
+#         if any(kw in prompt_lower for kw in keywords):
+#             return op
+#
+#     return None  # 不更改 op
 
 
 def detect_operation(prompt: str) -> str | None:
+    """[已废弃 2026-06-14] 始终返回 None。
+    op 路由已由 Complexity（§6.4）替代。
     """
-    返回检测到的 op 名，或 None（表示不更改当前 op）。
-    优先级：显式命令 > 关键词匹配 > 不变
-    与 detect_stage() 平行独立——两侧关键词可独立命中，proxy 端按 op 优先。
-    """
-    # 显式命令
-    m = OPERATION_PREFIX_RE.search(prompt.strip())
-    if m:
-        return m.group(1).lower()
+    return None
 
-    # 关键词匹配（遍历顺序即优先级）
-    prompt_lower = prompt.lower()
-    for op, keywords in OPERATION_KEYWORDS:
-        if any(kw in prompt_lower for kw in keywords):
-            return op
-
-    return None  # 不更改 op
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -372,12 +385,19 @@ def _stage_file_path(cwd: str | Path, session_id: str) -> Path:
     return claude_dir / f"stage_{session_id}"
 
 
+# _op_file_path — [已废弃 2026-06-14]
+# 原实现：
+# def _op_file_path(stage_file: Path) -> Path:
+#     """从 stage_<sid> 路径派生 op_<sid> 路径。"""
+#     return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
+
+
 def _op_file_path(stage_file: Path) -> Path:
-    """
-    从 stage_<sid> 路径派生 op_<sid> 路径（同目录、仅前缀替换）。
-    proxy.py 用同一规则从 active_session 指向的 stage_<sid> 路径派生。
+    """[已废弃 2026-06-14] op 路由已由 Complexity 替代。
+    保留 stub 确保调用方（_reset_session_files）不报错。
     """
     return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
+
 
 
 def _model_file_path(stage_file: Path) -> Path:
@@ -511,44 +531,34 @@ def read_stage(session_id: str | None = None,
     return "default"
 
 
+# read_operation — [已废弃 2026-06-14]
+# 原实现：
+# def read_operation(session_id: str | None = None,
+#                    cwd: str | Path | None = None) -> str | None:
+#     """...""" (完整实现见 git history)
+
+
 def read_operation(session_id: str | None = None,
                    cwd: str | Path | None = None) -> str | None:
+    """[已废弃 2026-06-14] 始终返回 None。
+    op 路由已由 Complexity（§6.4）替代。
     """
-    读取当前 op，路径解析复用 _stage_file_path() 派生 op_<sid>。
-    优先级：
-      1. 传入的 session_id+cwd → 派生 op_<sid>
-      2. active_session 指针 → 读取其指向的 stage_<sid>，再派生 op_<sid>
-    返回 None 表示"无 op 信号"（与"未检测到 op"等价，proxy 走 stage 路由）。
-    """
-    # 1. hook 场景：有 session_id+cwd
-    if session_id and cwd:
-        stage_path = _stage_file_path(cwd, session_id)
-        content = _read_stage_file(_op_file_path(stage_path))
-        if content:
-            return content
+    return None
 
-    # 2. proxy / CLI 场景：从 active_session 指针拿到 stage_<sid> 路径再派生
-    try:
-        active_path = ACTIVE_SESSION_FILE.read_text().strip()
-        if active_path:
-            content = _read_stage_file(_op_file_path(Path(active_path)))
-            if content:
-                return content
-    except FileNotFoundError:
-        pass
 
-    return None  # 关键：返回 None 而非 "default"，让 proxy 知道"无 op 信号"
+# write_operation — [已废弃 2026-06-14]
+# 原实现：
+# def write_operation(op: str, session_id: str | None = None,
+#                     cwd: str | Path | None = None) -> None:
+#     """...""" (完整实现见 git history)
 
 
 def write_operation(op: str, session_id: str | None = None,
                     cwd: str | Path | None = None) -> None:
-    """写入 op 文件（op_<sid>）。与 stage 写文件同模式。
-    无 session_id+cwd 时不写入（op 不设全局后备——op 是 per-prompt 临时态）。
+    """[已废弃 2026-06-14] no-op。
+    op 路由已由 Complexity（§6.4）替代。
     """
-    if session_id and cwd:
-        stage_path = _stage_file_path(cwd, session_id)
-        stage_path.parent.mkdir(parents=True, exist_ok=True)
-        _op_file_path(stage_path).write_text(op + "\n")
+    pass
 
 
 def write_model_override(model: str, session_id: str | None = None,
@@ -766,7 +776,9 @@ def main():
         # ── Stage 检测 ──
         new_stage = detect_stage(prompt)
 
-        # ── Operation-type 检测（与 stage 平行独立，proxy 端按 op 优先）──
+        # ── Operation-type 检测 — [已废弃 2026-06-14] ──
+        # write/read/search 只是动作不是路由维度，Complexity（§6.4）已接管。
+        # detect_operation() 始终返回 None，write_operation() 是 no-op。
         new_op = detect_operation(prompt)
         old_op = read_operation(session_id, cwd)
 
@@ -786,21 +798,27 @@ def main():
         else:
             log("INFO", "no stage signal, passthrough")
 
-        # ── Op 写入/通知（与 stage 完全独立的 if-else 链）──
+        # ── Op 写入/通知 — [已废弃 2026-06-14] ──
+        # 原逻辑：new_op != old_op 时写 op_<sid> + 通知用户。
+        # detect_operation() 始终返回 None，此块永远走 "no op signal"。
+        # op_msg 固定为 None，下方用户通知拼接直接跳过。
+        # 原实现：
+        # op_msg: str | None = None
+        # if new_op and new_op != old_op:
+        #     write_operation(new_op, session_id, cwd)
+        #     log("INFO", f"op: {old_op} → {new_op}")
+        #     from stage_config import OPERATION_INFO
+        #     info = OPERATION_INFO.get(new_op, "")
+        #     op_msg = (
+        #         f"操作类型: {(old_op or 'none')} → {new_op}"
+        #         + (f"（{info}）" if info else "")
+        #     )
+        # elif new_op == old_op:
+        #     log("INFO", f"op unchanged: {old_op}")
+        # else:
+        #     log("INFO", "no op signal, passthrough")
         op_msg: str | None = None
-        if new_op and new_op != old_op:
-            write_operation(new_op, session_id, cwd)
-            log("INFO", f"op: {old_op} → {new_op}")
-            from stage_config import OPERATION_INFO
-            info = OPERATION_INFO.get(new_op, "")
-            op_msg = (
-                f"操作类型: {(old_op or 'none')} → {new_op}"
-                + (f"（{info}）" if info else "")
-            )
-        elif new_op == old_op:
-            log("INFO", f"op unchanged: {old_op}")
-        else:
-            log("INFO", "no op signal, passthrough")
+        log("INFO", "op detection disabled (deprecated 2026-06-14), passthrough")
 
         # ── Sticky Fallback 通知（用户未显式覆盖模型时提示）──
         fb_msg: str | None = None

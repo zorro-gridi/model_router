@@ -61,11 +61,12 @@ _DOTENV_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
 # stage / op / pattern 有效值：与 stage_config 同源（避免重复硬编码）
 sys.path.insert(0, str(HOOK_DIR))
 from stage_config import (                          # noqa: E402
-    STAGE_CONFIG, OPERATION_CONFIG, PATTERN_CONFIG,
+    STAGE_CONFIG, PATTERN_CONFIG,
     COMPLEXITY_LEVELS, shift_complexity,
 )
+# OPERATION_CONFIG 已废弃 2026-06-14（write/read/search 只是动作不是路由维度）
 VALID_STAGES    = set(STAGE_CONFIG.keys())
-VALID_OPS       = set(OPERATION_CONFIG.keys())
+VALID_OPS: set[str] = set()        # 已废弃，永远为空
 VALID_PATTERNS  = set(PATTERN_CONFIG.keys())
 
 
@@ -107,7 +108,7 @@ COLORS = {
 
 # 从统一配置文件导入（需先将 HOOK_DIR 加入 sys.path）
 sys.path.insert(0, str(HOOK_DIR))
-from stage_config import STAGE_DESC, OPERATION_DESC
+from stage_config import STAGE_DESC  # OPERATION_DESC 已废弃 2026-06-14
 
 
 # ── 项目根目录查找（参照 compact/utils.py，但无 stdin——从 Path.cwd() 出发）──
@@ -248,47 +249,21 @@ def _op_file_path(stage_path: Path) -> Path:
     return stage_path.with_name(stage_path.name.replace("stage_", "op_", 1))
 
 
+# read_operation / write_operation / clear_operation — [已废弃 2026-06-14]
+# op 路由已由 Complexity（§6.4）替代。原实现见 git history。
 def read_operation() -> str | None:
-    """
-    读取当前 op（与 read_stage() 平行独立的第二维度）。
-    返回 None 表示"无 op 信号"（proxy 走 stage 路由）。
-    """
-    stage_path = _get_active_stage_path()
-    if stage_path:
-        try:
-            content = _op_file_path(stage_path).read_text().strip()
-            if content:
-                return content
-        except FileNotFoundError:
-            pass
+    """[已废弃] 始终返回 None。"""
     return None
 
 
 def write_operation(op: str) -> bool:
-    """
-    写入 op 到 op_<sid>（与 stage_<sid> 同目录）。
-    无 active_session 时不写入——op 不设全局后备。
-    """
-    stage_path = _get_active_stage_path()
-    if not stage_path:
-        return False
-    op_path = _op_file_path(stage_path)
-    op_path.parent.mkdir(parents=True, exist_ok=True)
-    op_path.write_text(op)
-    return True
+    """[已废弃] no-op，始终返回 False（表示"无活跃 session"）。"""
+    return False
 
 
 def clear_operation() -> bool:
-    """清除 op 信号（删除 op_<sid> 文件），proxy 退回 stage 路由。"""
-    stage_path = _get_active_stage_path()
-    if not stage_path:
-        return False
-    op_path = _op_file_path(stage_path)
-    try:
-        op_path.unlink()
-        return True
-    except FileNotFoundError:
-        return False
+    """[已废弃] no-op。"""
+    return False
 
 
 # ── Pattern 读 / 写 / 清（Shadow Mode，2026-06-14 引入）──
@@ -349,13 +324,13 @@ def show_current():
     desc  = STAGE_DESC.get(stage, "")
     print(f"当前阶段: {color}{stage}\033[0m")
     print(f"  {desc}")
+    # op 路由已废弃（2026-06-14）
     op = read_operation()
     if op:
-        op_desc = OPERATION_DESC.get(op, "")
-        print(f"当前 op:   \033[1;33m{op}\033[0m (覆盖 stage 路由)")
-        print(f"  {op_desc}")
+        # 废弃：OPERATION_DESC 已移除，不会再进入此分支
+        print(f"当前 op:   \033[1;33m{op}\033[0m (覆盖 stage 路由) [已废弃]")
     else:
-        print(f"当前 op:   \033[90mnone\033[0m (走 stage 路由)")
+        print(f"当前 op:   \033[90mnone（已废弃）\033[0m")
 
     # ── Pattern（Shadow Mode，仅标注不影响路由）──
     pat = read_pattern()
@@ -411,31 +386,20 @@ def set_stage(stage: str):
     print(f"  {STAGE_DESC.get(stage, '')}")
 
 
+# set_op / reset_op / list_ops — [已废弃 2026-06-14]
+# op 路由已由 Complexity（§6.4）替代。write/read/search 只是动作不是路由维度。
 def set_op(op: str):
-    if op not in VALID_OPS:
-        print(f"❌ 未知 op: {op}")
-        print(f"   有效值: {' | '.join(sorted(VALID_OPS))}")
-        sys.exit(1)
-    if not write_operation(op):
-        print(f"❌ 无法写入 op：无活跃 session（active_session 指针不存在）")
-        print(f"   先发起一次 Claude Code 会话触发 UserPromptSubmit hook 创建 session")
-        sys.exit(1)
-    old = read_operation() or "none"
-    print(f"op 切换:   {old} → \033[1;33m{op}\033[0m (覆盖 stage 路由)")
-    print(f"  {OPERATION_DESC.get(op, '')}")
+    print("⚠️  op 路由已废弃（2026-06-14）。write/read/search 只是动作不是路由维度。")
+    print("   模型选择现已由 Stage × Complexity（§6.4）接管。")
 
 
 def reset_op():
-    if not clear_operation():
-        print("ℹ️  当前没有 op 信号（文件不存在或无 session）")
-        return
-    print("✅ op 已清除，下一次请求将退回 stage 路由")
+    print("⚠️  op 路由已废弃（2026-06-14），无需清除。")
 
 
 def list_ops():
-    print("可用 op 名称（第二维度路由信号，op 覆盖 stage）：")
-    for op in sorted(VALID_OPS):
-        print(f"  {OPERATION_DESC.get(op, op)}")
+    print("⚠️  op 路由已废弃（2026-06-14）。write/read/search 只是动作不是路由维度。")
+    print("   原支持的操作类型（已移除）：write read search refactor")
 
 
 def set_pattern(pattern: str):
@@ -725,8 +689,9 @@ def main():
         elif sub in VALID_OPS:
             set_op(sub)
         else:
-            print(f"❌ 未知 op 子命令: {sub}")
-            print(f"   有效值: {' | '.join(sorted(VALID_OPS))} | reset | list")
+            # op 路由已废弃（2026-06-14）
+            print(f"⚠️  op 路由已废弃: write/read/search 只是动作不是路由维度。")
+            print(f"   模型选择现已由 Stage × Complexity（§6.4）接管。")
             sys.exit(1)
     elif args[0] == "pattern":
         # stage pattern [<name> | reset | list]

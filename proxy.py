@@ -14,15 +14,18 @@ Stage-Aware Model Router
   audit       → 工程审计：Opus（漏洞最贵）
   default     → 未指定：Sonnet
 
-Operation-type 路由（2026-06-13 引入，第二维度）：
-  检出 op 时完全覆盖 stage 路由，未检出时退回 stage 路由。
-  op 文件位置：<project_root>/.claude/op_<sid>（与 stage_<sid> 同目录、仅前缀替换）。
-  read_operation() 路径解析复用 stage_detector 的 _op_file_path() 派生规则。
+Operation-type 路由 — [已废弃 2026-06-14]
+  废弃原因：write/read/search 只是"动作"，不是"任务属性"。
+  真正影响模型选择的是"任务类型 + 任务复杂度 + 当前阶段"。
+  Complexity 分类器（设计文档 §6.4）已吞掉 op 的原始职责。
+  兼容策略：OPERATION_CONFIG = {}，所有 `if op in OPERATION_MODELS` 自然为 False，
+  自动退化到 stage 路由，无需逐一修改下游消费代码。
+  下方 _op_file_path() / read_operation() 及相关路由分支已注释保留，用于追溯。
 
 Model-override 路由（2026-06-13 引入，最高优先级）：
-  检出 model 覆盖时完全覆盖 op/stage 路由。
+  检出 model 覆盖时完全覆盖 stage 路由。
   model 文件位置：<project_root>/.claude/model_<sid>（与 stage_<sid> 同目录、仅前缀替换）。
-  路由优先级: model_override > op > stage > default。
+  路由优先级: model_override > stage > default[+workflow+batch]。
 
 用法：
   python3 proxy.py                  # 启动代理（默认 :7878）
@@ -238,34 +241,47 @@ def _read_state_index_for_project(project_root: str) -> dict | None:
     return data.get(project_root)
 
 
-# ── Operation-type 读取（与 stage 同构，无 stdin 时也走 active_session 指针）──
+# ── Operation-type 读取 — [已废弃 2026-06-14] ──
+# 废弃原因：write/read/search 只是"动作"不是路由维度。
+# Complexity 分类器（设计文档 §6.4）已吞掉 op 的原始职责。
+# OPERATION_CONFIG = {} 使得 `op in OPERATION_MODELS` 永远为 False，
+# 下游分支自然退化到 stage 路由。
+# 函数体注释保留以备未来参考或回退。
 
-def _op_file_path(stage_file: Path) -> Path:
-    """从 stage_<sid> 路径派生 op_<sid> 路径（同目录、仅前缀替换）。
-    与 stage_detector._op_file_path 保持完全相同的派生规则。
-    """
-    return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
+# def _op_file_path(stage_file: Path) -> Path:
+#     """从 stage_<sid> 路径派生 op_<sid> 路径（同目录、仅前缀替换）。
+#     与 stage_detector._op_file_path 保持完全相同的派生规则。
+#     """
+#     return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
+#
+#
+# def read_operation() -> str | None:
+#     """
+#     读取当前 op，路径解析复用 stage_detector 的派生规则。
+#     proxy.py 是无 stdin 的 HTTP 服务器：从 active_session 指针拿到
+#     stage_<sid> 完整路径，再派生 op_<sid>。
+#     返回 None 表示"无 op 信号"——proxy 走 stage 路由（与升级前行为一致）。
+#     """
+#     try:
+#         active_path = ACTIVE_SESSION_FILE.read_text().strip()
+#         if active_path:
+#             content = _read_stage_file(_op_file_path(Path(active_path)))
+#             if content and content in OPERATION_MODELS:
+#                 return content
+#             if content:
+#                 log.warning(
+#                     f"op_<sid> 未知 op 值 '{content}'，忽略 op 走 stage 路由"
+#                 )
+#     except FileNotFoundError:
+#         pass
+#     return None
 
 
-def read_operation() -> str | None:
+def read_operation() -> Optional[str]:
+    """[已废弃 2026-06-14] 始终返回 None。
+    write/read/search 只是动作不是路由维度，
+    模型选择现由 Complexity 分类器（§6.4）接管。
     """
-    读取当前 op，路径解析复用 stage_detector 的派生规则。
-    proxy.py 是无 stdin 的 HTTP 服务器：从 active_session 指针拿到
-    stage_<sid> 完整路径，再派生 op_<sid>。
-    返回 None 表示"无 op 信号"——proxy 走 stage 路由（与升级前行为一致）。
-    """
-    try:
-        active_path = ACTIVE_SESSION_FILE.read_text().strip()
-        if active_path:
-            content = _read_stage_file(_op_file_path(Path(active_path)))
-            if content and content in OPERATION_MODELS:
-                return content
-            if content:
-                log.warning(
-                    f"op_<sid> 未知 op 值 '{content}'，忽略 op 走 stage 路由"
-                )
-    except FileNotFoundError:
-        pass
     return None
 
 
@@ -1031,6 +1047,8 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         complexity_source = complexity.get("source", "auto") if complexity else "auto"
 
         if not model_override:
+            # op 路由已废弃（2026-06-14）：OPERATION_MODELS = {}，
+            # read_operation() 始终返回 None，此分支自动退化到 stage。
             op = read_operation()
             if op and op in OPERATION_MODELS:
                 base_url, model, key_env, protocol = OPERATION_MODELS[op]

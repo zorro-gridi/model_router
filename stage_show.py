@@ -51,7 +51,8 @@ GLOBAL_STAGE_FILE   = HOOK_DIR / "current_stage"
 sys.path.insert(0, str(HOOK_DIR))
 
 # 从统一配置文件导入（hooks/model_router/stage_config.py）
-from stage_config import STAGE_DISPLAY, OPERATION_DISPLAY, PATTERN_INFO  # noqa: E402
+from stage_config import STAGE_DISPLAY, PATTERN_INFO  # noqa: E402
+# OPERATION_DISPLAY 已废弃 2026-06-14（write/read/search 只是动作不是路由维度）
 from stage_config import COMPLEXITY_LEVELS  # 用于显示复杂度档位
 from model_alias import resolve_model  # 用于显示模型简称
 
@@ -116,8 +117,14 @@ def _stage_file_path(cwd: str | Path, session_id: str) -> Path:
     return project_root / ".claude" / f"stage_{session_id}"
 
 
+# _op_file_path — [已废弃 2026-06-14]
+# 原实现见 git history。
+# def _op_file_path(stage_file: Path) -> Path:
+#     return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
+
+
 def _op_file_path(stage_file: Path) -> Path:
-    """从 stage_<sid> 路径派生 op_<sid> 路径（同目录、仅前缀替换）。"""
+    """[已废弃] stub，确保引用方不报错。"""
     return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
 
 
@@ -155,29 +162,10 @@ def read_stage(event: dict | None = None) -> str:
     return "default"
 
 
+# read_operation — [已废弃 2026-06-14]
+# op 路由已由 Complexity（§6.4）替代。原实现见 git history。
 def read_operation(event: dict | None = None) -> str | None:
-    """
-    读取当前 op，路径解析复用 _stage_file_path() 派生 op_<sid>。
-    返回 None 表示"无 op 信号"（与"未检测到 op"等价）。
-    """
-    if event:
-        session_id: str | None = (event.get("session_id") or "").strip() or None
-        cwd: str | None = event.get("cwd")
-        if session_id and cwd:
-            stage_path = _stage_file_path(cwd, session_id)
-            content = _read_stage_file(_op_file_path(stage_path))
-            if content:
-                return content
-
-    try:
-        active_path = ACTIVE_SESSION_FILE.read_text().strip()
-        if active_path:
-            content = _read_stage_file(_op_file_path(Path(active_path)))
-            if content:
-                return content
-    except FileNotFoundError:
-        pass
-
+    """[已废弃] 始终返回 None。"""
     return None
 
 
@@ -298,11 +286,12 @@ def main():
     emoji, label, model = STAGE_DISPLAY.get(stage, STAGE_DISPLAY["default"])
     parts.append(f"{emoji} {label} → {model}")
 
+    # op 路由已废弃（2026-06-14），read_operation() 始终返回 None
     op = read_operation(event)
-    if op and op in OPERATION_DISPLAY:
-        op_emoji, op_label, op_model = OPERATION_DISPLAY[op]
-        parts.append(f"{op_emoji} {op_label} → {op_model} (op 覆盖 stage)")
-    # op 为 None 时不显示——保持与升级前相同的输出长度
+    # 废弃代码保留，便于未来回退：
+    # if op and op in OPERATION_DISPLAY:
+    #     op_emoji, op_label, op_model = OPERATION_DISPLAY[op]
+    #     parts.append(f"{op_emoji} {op_label} → {op_model} (op 覆盖 stage)")
 
     # ── Task Pattern（Shadow Mode，2026-06-14 引入）──
     #   只在已有标注时显示，明确标注 [shadow] 后缀让用户知道这是非路由信息。
