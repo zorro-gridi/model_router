@@ -451,6 +451,98 @@ def _extract_prompt_model_override(body: bytes) -> tuple[Optional[str], bool, Op
     return parse_model_override(user_text)
 
 
+# ── Prompt 文本提取 + 脱敏（设计文档 §15 D15-6）─────────────────────
+# 日志写完整 prompt 有泄露风险（密码 / API key / token 可能被用户塞进 prompt）。
+# 但完全脱敏又让排错困难——所以只对敏感键名作值替换，其它内容原样写。
+
+# 敏感键名单：出现在 key= 形式或 "key": "value" JSON 形式时整段值替换为 [REDACTED]
+# 注意：authorization / Authorization 由下面的 _BEARER_RE 单独处理（避免两种规则
+# 同时命中同一行导致 token 残留在外面）。
+# 用 re.split 抓 key，再单独处理 val，比 re.sub 替换整段更精确（保留 key 名作为提示）。
+_SECRET_KEY_NAMES = (
+    r'password|passwd|pwd|'
+    r'api[_-]?key|access[_-]?key|secret[_-]?key|'
+    r'token|access[_-]?token|refresh[_-]?token|jwt|'
+    r'private[_-]?key|client[_-]?secret|'
+    r'sk-[A-Za-z0-9]{8,}|'   # OpenAI/Anthropic 风格 key
+    r'sk-ant-[A-Za-z0-9_-]+|'
+    r'sk-or-[A-Za-z0-9_-]+'
+)
+_SECRET_KV_RE = re.compile(
+    r'(?ix)(?P<key>' + _SECRET_KEY_NAMES + r')'
+    r'\s*[:=]\s*'
+    r'(?P<val>"[^"]*"|\'[^\']*\'|[^\s,;]+)'
+)
+
+# Bearer xxx 形式的 Authorization 头
+_BEARER_RE = re.compile(
+    r'(?i)(authorization\s*:\s*bearer\s+)[A-Za-z0-9._\-+/=]+',
+)
+
+
+def _scrub_secrets(text: str, max_len: int = 4000) -> str:
+    """
+    把 prompt 里的敏感字段值替换为 [REDACTED]，并截断到 max_len。
+
+    设计文档 §15 D15-6：避免在 stage_router.log 中持久化 password / api_key /
+    token / secret_key 等敏感值。其它内容原样写以保留排错信号。
+
+    规则：
+      - 匹配 "key=value" / "key: value" / "key":"value" → **仅 val** 部分替换，
+        保留 key 名作为视觉提示（"password=[REDACTED]"）
+      - 匹配 "Authorization: Bearer xxx" → xxx 替换
+      - 文本超过 max_len 截断（按 §6 D6-1 防止日志爆盘）
+    """
+    if not text:
+        return text
+    # 先处理 Authorization Bearer（必须在 SECRET_KV_RE 之前，避免被它误吞）
+    out = _BEARER_RE.sub(r'\1[REDACTED]', text)
+
+    def _replace_val(m: "re.Match[str]") -> str:
+        val = m.group("val")
+        if val[:1] in ('"', "'"):
+            # 引号包裹：保留首字符引号 + [REDACTED] + 收尾引号（如 "m[REDACTED]"）
+            return m.group("key") + "=" + val[:1] + "[REDACTED]" + val[-1:]
+        return m.group("key") + "=[REDACTED]"
+
+    out = _SECRET_KV_RE.sub(_replace_val, out)
+    if len(out) > max_len:
+        out = out[:max_len] + f"…[truncated {len(text) - max_len} chars]"
+    return out
+
+
+def _extract_prompt_text(body: bytes) -> str:
+    """
+    从 Anthropic Messages API 请求体里提取最后一条 user message 的纯文本。
+    用于日志脱敏。失败/无 user message 时返回空串。
+    """
+    if not body:
+        return ""
+    try:
+        data = json.loads(body.decode("utf-8", errors="replace"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return ""
+    messages = data.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return ""
+    user_msg = None
+    for m in reversed(messages):
+        if isinstance(m, dict) and m.get("role") == "user":
+            user_msg = m
+            break
+    if user_msg is None:
+        return ""
+    content = user_msg.get("content")
+    text_parts: list[str] = []
+    if isinstance(content, str):
+        text_parts.append(content)
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                text_parts.append(part["text"])
+    return "\n".join(text_parts)
+
+
 def resolve_model_routing(model_name: str) -> tuple[str, str, str, str, str, str, str] | None:
     """
     搜索 STAGE_CONFIG + OPERATION_CONFIG 查找 model_name 对应的路由参数。
@@ -704,14 +796,25 @@ def _read_metrics(limit: int = 50) -> list[dict]:
 
 
 def _summarize_metrics(records: list[dict]) -> dict:
-    """汇总指标：按 model/pattern/complexity 分组计数 + fallback 总数。"""
+    """汇总指标（设计文档 §15）：
+    - 全局统计：模型调用量 / 强模型占比 / 平均 token / 复杂任务成功率 / 返工率
+    - 维度聚合：项目 / 会话 / pattern
+    """
     from collections import Counter
     model_counter: Counter = Counter()
     pattern_counter: Counter = Counter()
     complexity_counter: Counter = Counter()
     routing_source_counter: Counter = Counter()
-    fallback_total = 0
+    project_counter: Counter = Counter()
+    session_counter: Counter = Counter()
     status_counter: Counter = Counter()
+    strong_call_count = 0           # target_model_is_strong=True 的请求数
+    complex_total = 0               # 标记为 complex 的请求数
+    complex_success = 0             # 其中 status 2xx 的请求数
+    retry_total = 0                 # retry_count > 0 的请求数
+    token_sum = 0
+    token_count = 0
+    fallback_total = 0
     for r in records:
         if r.get("target_model"):
             model_counter[r["target_model"]] += 1
@@ -721,18 +824,53 @@ def _summarize_metrics(records: list[dict]) -> dict:
             complexity_counter[r["complexity_label"]] += 1
         if r.get("routing_source"):
             routing_source_counter[r["routing_source"]] += 1
+        if r.get("project_root"):
+            project_counter[r["project_root"]] += 1
+        if r.get("session_id"):
+            session_counter[r["session_id"]] += 1
         if r.get("used_fallback"):
             fallback_total += 1
+        if r.get("target_model_is_strong"):
+            strong_call_count += 1
+        if r.get("complexity_label") == "complex":
+            complex_total += 1
+            if 200 <= r.get("status", 0) < 300:
+                complex_success += 1
+        if (r.get("retry_count") or 0) > 0:
+            retry_total += 1
+        if r.get("token_estimate") is not None:
+            token_sum += int(r["token_estimate"])
+            token_count += 1
         s = r.get("status", 0)
         status_counter[s] += 1
+
+    total = len(records)
     return {
-        "total":              len(records),
-        "fallback_total":     fallback_total,
-        "by_model":           dict(model_counter),
-        "by_pattern":         dict(pattern_counter),
-        "by_complexity":      dict(complexity_counter),
-        "by_routing_source":  dict(routing_source_counter),
-        "by_status":          dict(status_counter),
+        # ── 基础计数（兼容旧版）──
+        "total":                total,
+        "fallback_total":       fallback_total,
+        "by_model":             dict(model_counter),
+        "by_pattern":           dict(pattern_counter),
+        "by_complexity":        dict(complexity_counter),
+        "by_routing_source":    dict(routing_source_counter),
+        "by_status":            dict(status_counter),
+        # ── §15 D15-1 必须指标 ──
+        # 强模型占比：target_model == STRONG_MODEL（deepseek-v4-pro）的请求占比
+        "strong_model_ratio":   round(strong_call_count / total, 4) if total else 0.0,
+        "strong_call_count":    strong_call_count,
+        # 复杂任务成功率：complex 任务中 2xx 占比
+        "complex_task_success_rate": round(complex_success / complex_total, 4)
+                                    if complex_total else 0.0,
+        "complex_total":        complex_total,
+        "complex_success":      complex_success,
+        # 返工率：retry_count > 0 的请求占比（§18 D18-3-1 retry 落地后才有非零值）
+        "retry_rate":           round(retry_total / total, 4) if total else 0.0,
+        "retry_total":          retry_total,
+        # 平均每任务 token
+        "avg_tokens_per_task":  round(token_sum / token_count, 1) if token_count else 0,
+        # ── §15 D15-2 维度聚合 ──
+        "by_project":           dict(project_counter),
+        "by_session":           dict(session_counter),
     }
 
 def _rewrite_response_model(resp_body: bytes, display_model: str) -> bytes:
@@ -1307,33 +1445,76 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             #     之前的 `status >= 400` 会把 400/404/422 全算成"用了 fallback"，
             #     导致 /metrics 统计严重虚高。
             used_fallback = bool(sticky_fb) or fallback_invoked
+            is_success = 200 <= status < 300
+
+            # 设计文档 §15 D15-1：强模型标记。
+            # session_model 是 CC 能识别的原始模型名（已经过 alias→canonical 解析），
+            # 与 stage_config.STRONG_MODEL 字符串比对即可。
+            target_model_is_strong = (session_model == STRONG_MODEL)
+
+            # 设计文档 §15 D15-2：维度聚合（项目 / 会话）。
+            # proxy 是无 stdin 的 HTTP 服务器，只能从 active_session 指针反推。
+            # active_session 形如 <project_root>/.claude/stage_<sid>。
+            # proxy 端拿不到 stdin 里的 session_id，session_id 只能从
+            # active_path 文件名后缀推导；project_root 沿 .claude/ 上一级。
+            metric_session_id: str | None = None
+            metric_project_root: str | None = None
+            try:
+                _ap = ACTIVE_SESSION_FILE.read_text().strip()
+                if _ap:
+                    _ap_path = Path(_ap)
+                    metric_session_id = _extract_session_id_from_stage_path(_ap_path)
+                    metric_project_root = str(_find_project_root_for_stage_path(_ap_path))
+            except (FileNotFoundError, OSError):
+                pass
+
+            # retry_count：本请求由 fallback 触发（即主模型曾失败），计 1 次重试。
+            # 该字段在 §18 D18-3-1 真正接入 retry/retry-budget 后会变成更细的
+            # "重试次数"。这里先用 "used_fallback 触发" 作为最小可用定义。
+            retry_count = 1 if used_fallback else 0
+
+            # token_estimate：粗估，从 body 长度按 4 字符/token 算（业内常见近似）。
+            token_estimate = max(1, len(body) // 4) if body else 0
+
             _append_metric({
-                "ts":               time.time(),
-                "path":             self.path,
-                "routing_source":   routing_source,
-                "target_model":     session_model,
-                "actual_model":     model,
-                "status":           status,
-                "pattern":          pattern_label,
-                "complexity_label": complexity_label,
-                "complexity_score": complexity_score,
-                "complexity_source": complexity_source,
-                "workflow_type":    workflow.get("type"),
-                "workflow_models":  workflow.get("models"),
-                "internal_request": internal_req,
-                "batch_template":   batch.get("template") if batch else None,
-                "used_fallback":    used_fallback,
+                "ts":                  time.time(),
+                "path":                self.path,
+                "routing_source":      routing_source,
+                "target_model":        session_model,
+                "actual_model":        model,
+                "target_model_is_strong": target_model_is_strong,  # §15 D15-1
+                "status":              status,
+                "is_success":          is_success,                 # §15 D15-1
+                "pattern":             pattern_label,
+                "complexity_label":    complexity_label,
+                "complexity_score":    complexity_score,
+                "complexity_source":   complexity_source,
+                "workflow_type":       workflow.get("type"),
+                "workflow_models":     workflow.get("models"),
+                "internal_request":    internal_req,
+                "batch_template":      batch.get("template") if batch else None,
+                "used_fallback":       used_fallback,
+                "retry_count":         retry_count,                # §15 D15-1
+                "token_estimate":      token_estimate,             # §15 D15-1
+                "session_id":          metric_session_id,          # §15 D15-2
+                "project_root":        metric_project_root,        # §15 D15-2
             })
         except Exception:
             pass
 
         # ── 结构化路由日志（设计文档 §15）──
+        # D15-6：先脱敏（password / api_key / token / Authorization: Bearer ...）
+        # 再写日志；脱敏后文本超 4000 字符自动截断，避免日志爆盘。
+        prompt_scrubbed = _scrub_secrets(_extract_prompt_text(body))
         log.info(
             f"[{routing_source}] target={session_model} actual={model} "
             f"status={status} pattern={pattern_label} "
             f"complexity={complexity_label}({complexity_score},src={complexity_source}) "
             f"workflow={workflow.get('type')} batch={batch.get('template') if batch else None}"
         )
+        # prompt 单独行写（脱敏后），便于 grep 排错且不会让路由摘要超长
+        if prompt_scrubbed:
+            log.info(f"[{routing_source}] prompt(scrubbed)={prompt_scrubbed}")
 
         self.send_response(status)
         self.send_header("Content-Type", resp_headers.get("content-type", "application/json"))
@@ -1416,11 +1597,59 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
             self.wfile.write(encoded)
-        elif self.path == "/trace":
-            # 单条最新路由决策的完整 trace（设计文档 §6.8 / §15）
-            records = _read_metrics(limit=1)
-            latest = records[-1] if records else {}
+        elif self.path == "/trace" or self.path.startswith("/trace?"):
+            # 单条/多条最新路由决策的完整 trace（设计文档 §6.8 / §15）
+            #
+            # 支持查询参数（设计文档 §15 D15-5）：
+            #   ?limit=N           — 返回最近 N 条，默认 1，最大 200
+            #   ?session_id=<sid>  — 按 session_id 过滤
+            #   ?project_root=<p>  — 按 project_root 过滤（字符串包含匹配）
+            #
+            # 返回结构：
+            #   {
+            #     "filter":   { "limit": N, "session_id": ..., "project_root": ... },
+            #     "current_session": {
+            #         "stage": ..., "op": ..., "model_override": ...,
+            #         "pattern": ..., "complexity": ..., "batch": ...,
+            #         "sticky_fallback": ...,
+            #     },
+            #     "matched":  <int>,    // 实际匹配并返回的记录数
+            #     "total":    <int>,    // /tmp/stage_metrics.jsonl 中读到的总数
+            #     "records":  [ {ts, routing_source, target_model, ...}, ... ]
+            #   }
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                limit = int(q.get("limit", ["1"])[0])
+            except (ValueError, TypeError):
+                limit = 1
+            limit = max(1, min(limit, 200))
+            session_filter = q.get("session_id", [None])[0]
+            project_filter = q.get("project_root", [None])[0]
+
+            records_all = _read_metrics(limit=500)
+            if session_filter is not None or project_filter is not None:
+                filtered: list[dict] = []
+                for r in records_all:
+                    if session_filter is not None and r.get("session_id") != session_filter:
+                        continue
+                    if project_filter is not None:
+                        pr = r.get("project_root") or ""
+                        if project_filter not in pr:
+                            continue
+                    filtered.append(r)
+                records = filtered[-limit:]
+                matched = len(filtered)
+            else:
+                records = records_all[-limit:]
+                matched = len(records)
+
             payload = {
+                "filter": {
+                    "limit":        limit,
+                    "session_id":   session_filter,
+                    "project_root": project_filter,
+                },
                 "current_session": {
                     "stage":     read_stage(),
                     "op":        read_operation(),
@@ -1430,7 +1659,9 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                     "batch":     read_batch(),
                     "sticky_fallback": read_fallback(),
                 },
-                "latest_request": latest,
+                "matched": matched,
+                "total":   len(records_all),
+                "records": records,
             }
             encoded = json.dumps(payload, ensure_ascii=False).encode()
             self.send_response(200)
