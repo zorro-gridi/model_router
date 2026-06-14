@@ -79,7 +79,7 @@ KNOWN_MODEL_NAMES: set[str] = _collect_known_models()
 
 # ~model <alias> 或 ~m <alias>
 MODEL_OVERRIDE_PREFIX_RE = re.compile(
-    r"^~(?:model|m)\s+(\S+)",
+    r"(?:^|\s)~(?:model|m)\s+(\S+)",
     re.IGNORECASE,
 )
 
@@ -137,7 +137,7 @@ def detect_model_override(prompt: str) -> tuple[Optional[str], bool]:
     prompt_lower = stripped.lower()
 
     # ── 1. 显式指令（最高优先级）──────────────────────────────
-    m = MODEL_OVERRIDE_PREFIX_RE.match(stripped)
+    m = MODEL_OVERRIDE_PREFIX_RE.search(stripped)
     if m:
         raw = m.group(1).strip()
         # 检查 reset/default/auto/clear/off 关键词

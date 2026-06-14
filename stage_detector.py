@@ -97,7 +97,7 @@ STAGE_KEYWORDS: list[tuple[str, list[str]]] = [
         "todo", "roadmap", "分解", "milestone", "任务清单", "怎么做",
     ]),
     ("implement",  [
-        "实现", "implement", "编码", "coding", "写代码", "开发", "develop",
+        "实现", "实施", "implement", "写代码", "开发", "develop",
         "写", "修", "build", "create", "fix", "修复", "add", "添加",
     ]),
     ("audit",      [
@@ -109,7 +109,7 @@ STAGE_KEYWORDS: list[tuple[str, list[str]]] = [
 
 # 显式命令前缀（优先级最高）
 EXPLICIT_PREFIX_RE = re.compile(
-    r"^~stage\s+(brainstorm|decide|design|plan|implement|audit|default)\b",
+    r"(?:^|\s)~stage\s+(brainstorm|decide|design|plan|implement|audit|default)\b",
     re.IGNORECASE,
 )
 
@@ -120,7 +120,7 @@ def detect_stage(prompt: str) -> str | None:
     优先级：显式命令 > 关键词匹配 > 不变
     """
     # 显式命令
-    m = EXPLICIT_PREFIX_RE.match(prompt.strip())
+    m = EXPLICIT_PREFIX_RE.search(prompt.strip())
     if m:
         return m.group(1).lower()
 
@@ -158,7 +158,7 @@ OPERATION_KEYWORDS: list[tuple[str, list[str]]] = [
 
 # 显式命令前缀（优先级最高，使用 ~<op> 格式）
 OPERATION_PREFIX_RE = re.compile(
-    r"^~(write|read|search|refactor)\b",
+    r"(?:^|\s)~(write|read|search|refactor)\b",
     re.IGNORECASE,
 )
 
@@ -170,7 +170,7 @@ def detect_operation(prompt: str) -> str | None:
     与 detect_stage() 平行独立——两侧关键词可独立命中，proxy 端按 op 优先。
     """
     # 显式命令
-    m = OPERATION_PREFIX_RE.match(prompt.strip())
+    m = OPERATION_PREFIX_RE.search(prompt.strip())
     if m:
         return m.group(1).lower()
 
