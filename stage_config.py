@@ -332,6 +332,29 @@ COMPLEXITY_THRESHOLDS: dict[str, int] = {
     "complex": 100,
 }
 
+# ═══════════════════════════════════════════════════════════════════════════
+# LLM 分类器配置（设计文档 §6.2 / §6.4 / §10 合并实现）
+#
+# 将原来三次独立的关键词分类（stage / pattern / complexity）合并为一次 LLM
+# 调用。llm_classifier.py 读取此配置确定使用哪个模型做分类。
+#
+# 模型选择建议：
+#   MiniMax-M3           — 推荐，分类准确、稳定、速度快
+#   deepseek-v4-flash    — 备选，成本更低、响应更快
+#
+# 调用方优先级：传入 config > 本配置 > llm_classifier.DEFAULT_CLASSIFIER_CONFIG
+# ═══════════════════════════════════════════════════════════════════════════
+
+LLM_CLASSIFIER_CONFIG: dict[str, object] = {
+    "model":       "MiniMax-M3",
+    "base_url":    "https://api.minimaxi.com/anthropic",
+    "api_key_env": "MINIMAX_API_KEY",
+    "protocol":    "anthropic",
+    "max_tokens":  512,
+    "temperature": 0.0,
+    "timeout":     15,
+}
+
 
 def complexity_rank(level: str) -> int:
     """返回复杂度等级的数字序号（用于 ~careful/~quick 升档降档）。"""

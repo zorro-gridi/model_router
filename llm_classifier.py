@@ -1,0 +1,353 @@
+#!/usr/bin/env python3
+"""
+llm_classifier.py — LLM 轻量分类器（设计文档 §6.2 / §6.4 / §10 合并实现）
+======================================================================
+
+将原来三次独立的关键词分类（stage / pattern / complexity）合并为**一次 LLM 调用**，
+一轮提交获取所有分类和评分。
+
+设计目标：
+  1. 单次 LLM 调用 → 统一返回 stage + pattern + complexity 三维分类结果
+  2. 模型可配置（默认 MiniMax-M3，可切换为 deepseek-v4-flash 等）
+  3. 如果 LLM 调用失败（网络/超时/解析），抛异常让调用方回退到 V1 关键词启发式
+  4. 不引入第三方依赖，用 stdlib urllib（与 proxy.py 一致）走 Anthropic Messages API
+
+用法：
+  from llm_classifier import classify
+
+  result = classify("帮我写一个用户登录功能", classifier_config)
+  # → {
+  #     "stage": "implement",
+  #     "pattern": "feature",
+  #     "pattern_confidence": 0.92,
+  #     "complexity_score": 45,
+  #     "complexity_label": "medium",
+  #     "complexity_confidence": 0.88,
+  #     "reasoning": "实现新功能，中等复杂度",
+  #     "source": "llm",
+  #   }
+
+配置来源：
+  优先级：调用方传入 config > stage_config.LLM_CLASSIFIER_CONFIG > 内置默认
+"""
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Optional
+
+# 将同目录加入 sys.path，确保直接执行或 Hook 调用都能 import stage_config
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# ── 默认配置（MiniMax-M3，Anthropic 协议）──
+DEFAULT_CLASSIFIER_CONFIG: dict = {
+    "model":       "MiniMax-M3",
+    "base_url":    "https://api.minimaxi.com/anthropic",
+    "api_key_env": "MINIMAX_API_KEY",
+    "protocol":    "anthropic",
+    "max_tokens":  512,      # 分类只需要很短的回答
+    "temperature": 0.0,      # 零温度确保确定性
+    "timeout":     15,       # 分类超时上限（秒），超时则回退 V1
+}
+
+# ── 分类 System Prompt ──
+# 要求 LLM 在一次回复中返回三维分类结果，纯 JSON，无额外文字。
+CLASSIFIER_SYSTEM_PROMPT = """\
+You are a task classifier for a code assistant model routing system.
+Analyze the user's request and classify it along THREE dimensions.
+Return ONLY valid JSON (no markdown fences, no extra text).
+
+## Dimension 1 — stage (current work phase):
+- "brainstorm": exploring ideas, creative thinking, possibilities, "what if"
+- "decide": making decisions, comparing options, evaluating trade-offs
+- "design": system architecture, designing solutions, data models, interfaces
+- "plan": breaking down tasks, creating roadmaps, step-by-step planning
+- "implement": coding, building, fixing bugs, developing, refactoring
+- "audit": reviewing, testing, security checking, code review, quality assurance
+- "default": none of the above clearly matches / general chat
+
+## Dimension 2 — pattern (task type):
+- "feature": adding new functionality, building new things
+- "bugfix": fixing bugs, errors, crashes, unexpected behavior
+- "refactor": restructuring code, cleaning up, improving structure
+- "test": writing tests, analyzing test results, test infrastructure
+- "research": investigating, comparing approaches, exploring options
+- "migration": migrating, upgrading versions, porting to new systems
+- "architecture": system-level design, technology selection, module design
+- "docs": documentation, comments, README, explanations
+- "audit": security review, performance review, code review
+
+## Dimension 3 — complexity:
+- score: integer 0-100
+  - 0-10: trivial (typo fix, one-line change, simple question)
+  - 11-30: simple (single file, clear requirements)
+  - 31-70: medium (multiple files, some design needed)
+  - 71-100: complex (cross-module, architectural, high risk)
+- label: "simple" (0-30), "medium" (31-70), "complex" (71-100)
+
+## Confidence scoring:
+- pattern_confidence: 0.0-1.0 (how sure you are about the pattern)
+- complexity_confidence: 0.0-1.0 (how sure you are about the complexity)
+
+## Response format (JSON only, no fences):
+{
+  "stage": "implement",
+  "pattern": "feature",
+  "pattern_confidence": 0.92,
+  "complexity_score": 45,
+  "complexity_label": "medium",
+  "complexity_confidence": 0.88,
+  "reasoning": "brief one-line explanation in Chinese"
+}"""
+
+
+def _load_config(override: Optional[dict] = None) -> dict:
+    """加载分类器配置：调用方传入 > stage_config > 内置默认。"""
+    cfg = dict(DEFAULT_CLASSIFIER_CONFIG)  # shallow copy
+
+    # 尝试从 stage_config 导入
+    try:
+        from stage_config import LLM_CLASSIFIER_CONFIG  # noqa: E402
+        cfg.update(LLM_CLASSIFIER_CONFIG)
+    except ImportError:
+        pass  # stage_config 中还没定义这个字段，用默认值
+
+    if override:
+        cfg.update(override)
+
+    return cfg
+
+
+def classify(prompt: str, config_override: Optional[dict] = None) -> dict:
+    """
+    单次 LLM 调用的轻量分类器。
+
+    Args:
+        prompt: 用户原始 prompt 文本
+        config_override: 可选配置覆盖（model / base_url / api_key_env / ...）
+
+    Returns:
+        {
+            "stage": str,                    # 阶段名
+            "pattern": str,                  # 任务模式
+            "pattern_confidence": float,     # 模式置信度 0~1
+            "complexity_score": int,         # 复杂度分数 0~100
+            "complexity_label": str,         # simple | medium | complex
+            "complexity_confidence": float,  # 复杂度置信度 0~1
+            "reasoning": str,                # 分类理由简述
+            "source": "llm",                 # 标记来源
+        }
+
+    Raises:
+        RuntimeError: LLM 调用失败（网络/超时/API 错误/JSON 解析失败），
+                      调用方应回退到 V1 关键词启发式。
+    """
+    cfg = _load_config(config_override)
+
+    model = cfg["model"]
+    base_url = cfg["base_url"]
+    api_key_env = cfg["api_key_env"]
+    max_tokens = cfg.get("max_tokens", 512)
+    temperature = cfg.get("temperature", 0.0)
+    timeout = cfg.get("timeout", 15)
+
+    api_key = os.environ.get(api_key_env, "")
+    if not api_key:
+        raise RuntimeError(
+            f"LLM 分类器：环境变量 {api_key_env} 未设置，无法调用 {model}"
+        )
+
+    # ── 构造请求体（Anthropic Messages API）──
+    body = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "system": CLASSIFIER_SYSTEM_PROMPT,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+    }
+
+    url = base_url.rstrip("/") + "/v1/messages"
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+    }
+
+    raw_body = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=raw_body, headers=headers, method="POST")
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp_body = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"LLM 分类器 HTTP {e.code}: {err_body}"
+        ) from e
+    except OSError as e:
+        raise RuntimeError(
+            f"LLM 分类器网络/超时错误: {e!r}"
+        ) from e
+
+    # ── 解析 Anthropic Messages 响应 ──
+    try:
+        data = json.loads(resp_body)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"LLM 分类器响应非 JSON: {resp_body[:300]!r}"
+        ) from e
+
+    # 提取 content text
+    content_blocks = data.get("content", [])
+    text = ""
+    for block in content_blocks:
+        if isinstance(block, dict) and block.get("type") == "text":
+            text += block.get("text", "")
+    text = text.strip()
+
+    if not text:
+        raise RuntimeError(
+            f"LLM 分类器返回空文本: {json.dumps(data, ensure_ascii=False)[:500]}"
+        )
+
+    # ── 解析 LLM 返回的 JSON ──
+    # 先尝试直接解析；如果被 markdown fence 包裹则去除
+    result = _parse_classifier_json(text)
+
+    # ── 校验 & 规范化 ──
+    result = _validate_and_normalize(result, prompt)
+
+    result["source"] = "llm"
+    return result
+
+
+def _parse_classifier_json(text: str) -> dict:
+    """解析分类器返回的文本，处理可能的 markdown fence 包裹。"""
+    # 1. 直接解析
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. 去除 ```json ... ``` 包裹
+    import re
+    m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # 3. 尝试找到第一个 { 到最后一个 }
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace >= 0 and last_brace > first_brace:
+        try:
+            return json.loads(text[first_brace:last_brace + 1])
+        except json.JSONDecodeError:
+            pass
+
+    raise RuntimeError(
+        f"LLM 分类器无法解析 JSON: {text[:300]!r}"
+    )
+
+
+# ── 合法的 stage / pattern 枚举值 ──
+VALID_STAGES = {
+    "brainstorm", "decide", "design", "plan",
+    "implement", "audit", "default",
+}
+VALID_PATTERNS = {
+    "feature", "bugfix", "refactor", "test", "research",
+    "migration", "architecture", "docs", "audit",
+}
+VALID_COMPLEXITY_LABELS = {"simple", "medium", "complex"}
+
+
+def _validate_and_normalize(raw: dict, prompt: str) -> dict:
+    """校验 LLM 返回的分类结果，不合法的字段回退到合理默认值。"""
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"LLM 分类器返回非 dict: {type(raw).__name__}")
+
+    # ── stage ──
+    stage = str(raw.get("stage", "")).strip().lower()
+    if stage not in VALID_STAGES:
+        stage = "default"
+
+    # ── pattern ──
+    pattern = str(raw.get("pattern", "")).strip().lower()
+    if pattern not in VALID_PATTERNS:
+        pattern = "feature"  # 最常见的默认
+
+    # ── pattern_confidence ──
+    try:
+        pattern_confidence = float(raw.get("pattern_confidence", 0.5))
+    except (ValueError, TypeError):
+        pattern_confidence = 0.5
+    pattern_confidence = max(0.0, min(1.0, round(pattern_confidence, 2)))
+
+    # ── complexity_score ──
+    try:
+        complexity_score = int(raw.get("complexity_score", 50))
+    except (ValueError, TypeError):
+        complexity_score = 50
+    complexity_score = max(0, min(100, complexity_score))
+
+    # ── complexity_label ──
+    complexity_label = str(raw.get("complexity_label", "")).strip().lower()
+    if complexity_label not in VALID_COMPLEXITY_LABELS:
+        # 从分数推导
+        if complexity_score <= 30:
+            complexity_label = "simple"
+        elif complexity_score <= 70:
+            complexity_label = "medium"
+        else:
+            complexity_label = "complex"
+
+    # ── complexity_confidence ──
+    try:
+        complexity_confidence = float(raw.get("complexity_confidence", 0.5))
+    except (ValueError, TypeError):
+        complexity_confidence = 0.5
+    complexity_confidence = max(0.0, min(1.0, round(complexity_confidence, 2)))
+
+    # ── reasoning ──
+    reasoning = str(raw.get("reasoning", "")).strip()
+
+    return {
+        "stage":                  stage,
+        "pattern":                pattern,
+        "pattern_confidence":     pattern_confidence,
+        "complexity_score":       complexity_score,
+        "complexity_label":       complexity_label,
+        "complexity_confidence":  complexity_confidence,
+        "reasoning":              reasoning,
+    }
+
+
+# ── CLI 入口（调试用）──
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) < 2:
+        print("用法: python3 llm_classifier.py '<prompt>'", file=sys.stderr)
+        sys.exit(1)
+
+    test_prompt = sys.argv[1]
+    try:
+        result = classify(test_prompt)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    except RuntimeError as e:
+        print(f"分类失败: {e}", file=sys.stderr)
+        sys.exit(1)

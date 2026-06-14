@@ -773,8 +773,39 @@ def main():
         elif new_model == old_model and new_model:
             log("INFO", f"model override unchanged: {new_model}")
 
+        # ── LLM 轻量分类器（设计文档 §6.2/§6.4/§10 合并实现）──
+        # 一次 LLM 调用获取 stage + pattern + complexity 三维分类。
+        # 网络/超时/解析失败时静默回退到 V1 关键词启发式，不阻塞 hook。
+        llm_result: dict | None = None
+        if session_id and cwd:
+            try:
+                from llm_classifier import classify  # noqa: E402
+                llm_result = classify(prompt)
+                log("INFO",
+                    f"LLM classifier: stage={llm_result['stage']} "
+                    f"pattern={llm_result['pattern']}"
+                    f"(conf={llm_result['pattern_confidence']}) "
+                    f"complexity={llm_result['complexity_label']}"
+                    f"(score={llm_result['complexity_score']}, "
+                    f"conf={llm_result['complexity_confidence']}) "
+                    f"reason={llm_result.get('reasoning', '')!r}"
+                )
+            except Exception as e:
+                log("WARN", f"LLM classifier failed, fallback to V1 heuristic: {e!r}")
+                # llm_result 保持 None → 下游走 V1 关键词分支
+
         # ── Stage 检测 ──
+        # 优先级：显式 ~stage > LLM 分类器 > V1 关键词
         new_stage = detect_stage(prompt)
+        if new_stage is None and llm_result:
+            # 无显式 ~stage 指令时，用 LLM 分类结果
+            llm_stage = llm_result.get("stage", "")
+            if llm_stage in {
+                "brainstorm", "decide", "design", "plan",
+                "implement", "audit", "default",
+            }:
+                new_stage = llm_stage
+                log("INFO", f"stage from LLM: {new_stage}")
 
         # ── Operation-type 检测 — [已废弃 2026-06-14] ──
         # write/read/search 只是动作不是路由维度，Complexity（§6.4）已接管。
@@ -833,9 +864,19 @@ def main():
         # ── Task Pattern 检测（Shadow Mode，2026-06-14 引入）──
         #   - 仅记录到 pattern_<sid> + 日志，**不影响路由**
         #   - 阶段 B 启用 Adaptive Routing 后才进入 proxy 决策
+        # 优先级：显式 ~pattern > LLM 分类器 > V1 关键词
         pattern_msg: str | None = None
         if session_id and cwd:
-            new_pattern, new_conf = detect_task_pattern(prompt)
+            # 检查显式 ~pattern 指令
+            pm = PATTERN_PREFIX_RE.search(prompt.strip())
+            if pm:
+                new_pattern, new_conf = pm.group(1).lower(), 1.0
+            elif llm_result and llm_result.get("pattern"):
+                new_pattern = llm_result["pattern"]
+                new_conf = llm_result.get("pattern_confidence", 0.5)
+                log("INFO", f"pattern from LLM: {new_pattern} (conf={new_conf})")
+            else:
+                new_pattern, new_conf = detect_task_pattern(prompt)
             old_pattern_data = read_pattern(session_id, cwd)
             old_pattern = old_pattern_data.get("prediction") if old_pattern_data else None
             if new_pattern:
@@ -913,19 +954,30 @@ def main():
                     log("WARN", f"~batch: unknown template {template}")
 
             else:
-                # auto 检测：基于 prompt 关键词 + 已识别 pattern
-                if new_pattern:
+                # auto 检测：优先 LLM，失败回退 V1 关键词
+                if llm_result:
+                    auto_score = llm_result["complexity_score"]
+                    auto_label = llm_result["complexity_label"]
+                    auto_conf = llm_result["complexity_confidence"]
+                    log("INFO", "complexity from LLM")
+                elif new_pattern:
                     auto = detect_complexity(prompt, new_pattern)
+                    auto_score = auto["score"]
+                    auto_label = auto["label"]
+                    auto_conf = auto["confidence"]
                 else:
                     auto = detect_complexity(prompt, None)
+                    auto_score = auto["score"]
+                    auto_label = auto["label"]
+                    auto_conf = auto["confidence"]
                 write_complexity(
-                    auto["score"], auto["label"],
-                    confidence=auto["confidence"], source="auto",
+                    auto_score, auto_label,
+                    confidence=auto_conf, source="auto",
                     session_id=session_id, cwd=cwd,
                 )
                 log("INFO",
-                    f"complexity (auto): score={auto['score']} "
-                    f"label={auto['label']} conf={auto['confidence']}")
+                    f"complexity (auto): score={auto_score} "
+                    f"label={auto_label} conf={auto_conf}")
 
         # ── 输出 additionalContext（model/stage/op/fallback/pattern/complexity 各自命中时合并提示）──
         msgs = [m for m in (model_msg, stage_msg, op_msg, fb_msg, pattern_msg, complexity_msg) if m]
