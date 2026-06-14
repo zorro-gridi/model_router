@@ -274,55 +274,99 @@ def main():
     except (json.JSONDecodeError, EOFError):
         pass  # stdin 可能为空或非 JSON（兼容老版本）
 
-    # 输出到 stderr（终端可见，不影响 CC 的 stdout 解析）
-    parts: list[str] = []
-
-    # ── Model override（最高优先级）──
+    # ── Data gathering (same as before) ──────────────────────────────
     model_override = read_model_override(event)
-    if model_override:
-        parts.append(f"🎯 {model_override}")
-
     stage = read_stage(event)
     emoji, label, model = STAGE_DISPLAY.get(stage, STAGE_DISPLAY["default"])
-    parts.append(f"{emoji} {label} → {model}")
 
-    # op 路由已废弃（2026-06-14），read_operation() 始终返回 None
-    op = read_operation(event)
-    # 废弃代码保留，便于未来回退：
-    # if op and op in OPERATION_DISPLAY:
-    #     op_emoji, op_label, op_model = OPERATION_DISPLAY[op]
-    #     parts.append(f"{op_emoji} {op_label} → {op_model} (op 覆盖 stage)")
-
-    # ── Task Pattern（Shadow Mode，2026-06-14 引入）──
-    #   只在已有标注时显示，明确标注 [shadow] 后缀让用户知道这是非路由信息。
     pattern_data = read_pattern(event)
+    complexity_data = read_complexity(event)
+
+    # ── ANSI palette ────────────────────────────────────────────────
+    RST  = '\033[0m'
+    BLD  = '\033[1m'
+    DIM  = '\033[2m'
+    GRY  = '\033[90m'
+    YLW  = '\033[33m'
+    GRN  = '\033[32m'
+    RED  = '\033[31m'
+    CYN  = '\033[36m'
+    BLU  = '\033[34m'
+    WHT  = '\033[97m'
+    MGN  = '\033[35m'
+
+    def _stage_color(s: str) -> str:
+        return {
+            'brainstorm': CYN, 'decide': MGN, 'design': BLU, 'plan': WHT,
+            'implement': GRN, 'audit': RED, 'test': YLW, 'explore': BLU,
+            'default': GRY,
+        }.get(s, WHT)
+
+    # ── Build content lines ─────────────────────────────────────────
+    lines: list[str] = []
+
+    # Model override (highest routing priority)
+    if model_override:
+        lines.append(f"  {YLW}{BLD}🎯 {model_override}{RST}")
+
+    # Stage
+    s_color = _stage_color(stage)
+    lines.append(f"  {s_color}{emoji} {label} → {model}{RST}")
+
+    # Task Pattern (Shadow Mode)
     if pattern_data and pattern_data.get("prediction"):
         p_pred = pattern_data["prediction"]
         p_conf = pattern_data.get("confidence", 0.0)
-        p_label = PATTERN_INFO.get(p_pred, p_pred)
-        parts.append(f"📐 模式: {p_pred} (conf={p_conf}) [shadow]")
+        lines.append(
+            f"  {DIM}{GRY}📐 模式: {p_pred}  conf={p_conf:.2f}  [shadow]{RST}"
+        )
 
-    # ── Stage Complexity（设计文档 §6.4，2026-06-14 引入）──
-    #   标注当前任务复杂度档位（simple/medium/complex）和分数。
-    complexity_data = read_complexity(event)
+    # Stage Complexity
     if complexity_data and complexity_data.get("label"):
         c_label = complexity_data["label"]
         c_score = complexity_data.get("score", 0)
-        c_source = complexity_data.get("source", "auto")
-        c_conf = complexity_data.get("confidence", 0.0)
-        # 简单档用绿色 emoji，中等黄色，复杂红色
         c_emoji = {"simple": "🟢", "medium": "🟡", "complex": "🔴"}.get(
             c_label, "⚪"
         )
-        parts.append(
-            f"{c_emoji} 复杂度: {c_label} (score={c_score}, "
-            f"conf={c_conf}, src={c_source})"
+        c_color = {"simple": GRN, "medium": YLW, "complex": RED}.get(
+            c_label, GRY
+        )
+        lines.append(
+            f"  {c_emoji} {c_color}复杂度: {c_label}{RST}"
+            f"{GRY}  score={c_score}{RST}"
         )
 
-    print(
-        f"\r\033[90m[Stage Router] {' │ '.join(parts)}\033[0m",
-        file=sys.stderr,
-    )
+    # ── Box drawing ─────────────────────────────────────────────────
+    import re as _re
+    import unicodedata as _ucd
+    _ansi_re = _re.compile(r'\x1b\[[0-9;]*m')
+
+    def _vlen(s: str) -> int:
+        """Visible terminal-cell count (strip ANSI escapes, wide chars = 2)."""
+        clean = _ansi_re.sub('', s)
+        w = 0
+        for ch in clean:
+            w += 2 if _ucd.east_asian_width(ch) in ('W', 'F') else 1
+        return w
+
+    # Compute box width from longest visible line (+ padding)
+    max_v = max((_vlen(ln) for ln in lines), default=40)
+    BOX_W = max(max_v + 4, 44)  # minimum 44 cols
+
+    def _pad(ln: str) -> str:
+        """Right-pad a line to BOX_W visible characters."""
+        need = BOX_W - _vlen(ln)
+        return ln + (' ' * max(need, 0))
+
+    # Print box to stderr (each line starts with \r for clean overwrite)
+    title = f"📡 Stage Router"
+    top = f"\r{GRY}╭── {WHT}{BLD}{title}{RST} {GRY}{'─' * max(BOX_W - _vlen(title) - 5, 0)}╮{RST}"
+    bot = f"\r{GRY}╰{'─' * BOX_W}╯{RST}"
+
+    print(top, file=sys.stderr)
+    for ln in lines:
+        print(f"\r{GRY}│{RST}{_pad(ln)}{GRY}│{RST}", file=sys.stderr)
+    print(bot, file=sys.stderr)
     sys.exit(0)
 
 
