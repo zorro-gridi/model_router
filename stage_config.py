@@ -145,71 +145,94 @@ STAGE_CONFIG: dict[str, dict] = {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Operation-type 路由（与 stage 并列的第二维度）
+# Operation-type 路由 — [已废弃 2026-06-14]
+# ═══════════════════════════════════════════════════════════════════════════
 #
-# 设计原则：op 完全覆盖 stage 路由（"我说 search 就是 search"）。
-# 升级（2026-06-14）：op 默认主模型统一为 MiniMax-M3（设计文档第 11 章
-# 默认策略 + 第 7 章 Stage 表），仅 fallback 视任务性质选择 deepseek。
+# 废弃原因（决策分析）：
+#   write / read / search 只是"动作"，不是"任务属性"。
+#   同一个 write 可以对应"写测试"、"写架构"、"写文档"、"写代码"，
+#   但它们的复杂度天差地别——write 无法作为路由决策信号。
+#
+#   真正影响模型选择的是"任务类型 + 任务复杂度 + 当前阶段"：
+#     测试任务内部就有：策略设计 → 用例生成 → 执行 → 结果分析 →
+#     根因定位 → 回归验证，每一步复杂度都不同。
+#   到这一步 write/read 已经没有决策价值。
+#
+#   同时，Complexity 分类器（设计文档 §6.4）的引入已吞掉 op 的原始职责
+#   ——系统已经从"关键词动作路由"进化到"上下文复杂度路由"。
+#
+# 兼容策略：
+#   OPERATION_CONFIG 保留为空 dict。所有消费方（proxy / stage_detector /
+#   stage_show / stage CLI）通过 `if op in OPERATION_CONFIG` 自然退化到
+#   不匹配分支，无需逐个修改条件判断。
+#
+#   原有四类 op 完整配置保留在下方的注释块中，便于：
+#     - 事后追溯"曾经存在这个设计"
+#     - 如果未来发现 Complexity 路由不如预期，可快速回退
+#
+# 原设计原则（已失效）：
+#   op 完全覆盖 stage 路由（"我说 search 就是 search"）。
+#   升级（2026-06-14）：op 默认主模型统一为 MiniMax-M3（设计文档第 11 章
+#   默认策略 + 第 7 章 Stage 表），仅 fallback 视任务性质选择 deepseek。
+#
+# 原有 OPERATION_CONFIG（write / read / search / refactor）完整定义：
+#   OPERATION_CONFIG: dict[str, dict] = {
+#       "write": {
+#           "emoji":       "✏️",
+#           "label":       "写入",
+#           "desc":        "主 MiniMax-M3，便宜 fallback",
+#           "model":       "MiniMax-M3",
+#           "base_url":    "https://api.minimaxi.com/anthropic",
+#           "api_key_env": "MINIMAX_API_KEY",
+#           "protocol":    "anthropic",
+#           "fb_model":       "deepseek-v4-flash",
+#           "fb_base_url":    "https://api.deepseek.com/anthropic",
+#           "fb_api_key_env": "DEEPSEEK_API_KEY",
+#           "fb_protocol":    "anthropic",
+#       },
+#       "read": {
+#           "emoji":       "👁️",
+#           "label":       "读取",
+#           "desc":        "主 MiniMax-M3，稳 fallback",
+#           "model":       "MiniMax-M3",
+#           "base_url":    "https://api.minimaxi.com/anthropic",
+#           "api_key_env": "MINIMAX_API_KEY",
+#           "protocol":    "anthropic",
+#           "fb_model":       "deepseek-v4-pro",
+#           "fb_base_url":    "https://api.deepseek.com/anthropic",
+#           "fb_api_key_env": "DEEPSEEK_API_KEY",
+#           "fb_protocol":    "anthropic",
+#       },
+#       "search": {
+#           "emoji":       "🔎",
+#           "label":       "搜索",
+#           "desc":        "主 MiniMax-M3，备 deepseek-v4-flash",
+#           "model":       "MiniMax-M3",
+#           "base_url":    "https://api.minimaxi.com/anthropic",
+#           "api_key_env": "MINIMAX_API_KEY",
+#           "protocol":    "anthropic",
+#           "fb_model":       "deepseek-v4-flash",
+#           "fb_base_url":    "https://api.deepseek.com/anthropic",
+#           "fb_api_key_env": "DEEPSEEK_API_KEY",
+#           "fb_protocol":    "anthropic",
+#       },
+#       "refactor": {
+#           "emoji":       "🔧",
+#           "label":       "重构",
+#           "desc":        "主 MiniMax-M3，备 deepseek-v4-pro",
+#           "model":       "MiniMax-M3",
+#           "base_url":    "https://api.minimaxi.com/anthropic",
+#           "api_key_env": "MINIMAX_API_KEY",
+#           "protocol":    "anthropic",
+#           "fb_model":       "deepseek-v4-pro",
+#           "fb_base_url":    "https://api.deepseek.com/anthropic",
+#           "fb_api_key_env": "DEEPSEEK_API_KEY",
+#           "fb_protocol":    "anthropic",
+#       },
+#   }
 # ═══════════════════════════════════════════════════════════════════════════
 
-OPERATION_CONFIG: dict[str, dict] = {
-    "write": {
-        "emoji":       "✏️",
-        "label":       "写入",
-        "desc":        "主 MiniMax-M3，便宜 fallback",
-        "model":       "MiniMax-M3",
-        "base_url":    "https://api.minimaxi.com/anthropic",
-        "api_key_env": "MINIMAX_API_KEY",
-        "protocol":    "anthropic",
-        # 降级：deepseek-v4-flash（便宜，写错了也不心疼）
-        "fb_model":       "deepseek-v4-flash",
-        "fb_base_url":    "https://api.deepseek.com/anthropic",
-        "fb_api_key_env": "DEEPSEEK_API_KEY",
-        "fb_protocol":    "anthropic",
-    },
-    "read": {
-        "emoji":       "👁️",
-        "label":       "读取",
-        "desc":        "主 MiniMax-M3，稳 fallback",
-        "model":       "MiniMax-M3",
-        "base_url":    "https://api.minimaxi.com/anthropic",
-        "api_key_env": "MINIMAX_API_KEY",
-        "protocol":    "anthropic",
-        # 升级：deepseek-v4-pro（读不准的成本 > 写错的成本）
-        "fb_model":       "deepseek-v4-pro",
-        "fb_base_url":    "https://api.deepseek.com/anthropic",
-        "fb_api_key_env": "DEEPSEEK_API_KEY",
-        "fb_protocol":    "anthropic",
-    },
-    "search": {
-        "emoji":       "🔎",
-        "label":       "搜索",
-        "desc":        "主 MiniMax-M3，备 deepseek-v4-flash",
-        "model":       "MiniMax-M3",
-        "base_url":    "https://api.minimaxi.com/anthropic",
-        "api_key_env": "MINIMAX_API_KEY",
-        "protocol":    "anthropic",
-        # 降级：deepseek-v4-flash（和 write 一致，便宜 fallback）
-        "fb_model":       "deepseek-v4-flash",
-        "fb_base_url":    "https://api.deepseek.com/anthropic",
-        "fb_api_key_env": "DEEPSEEK_API_KEY",
-        "fb_protocol":    "anthropic",
-    },
-    "refactor": {
-        "emoji":       "🔧",
-        "label":       "重构",
-        "desc":        "主 MiniMax-M3，备 deepseek-v4-pro",
-        "model":       "MiniMax-M3",
-        "base_url":    "https://api.minimaxi.com/anthropic",
-        "api_key_env": "MINIMAX_API_KEY",
-        "protocol":    "anthropic",
-        # 升级：deepseek-v4-pro（结构改动需要稳妥的推理）
-        "fb_model":       "deepseek-v4-pro",
-        "fb_base_url":    "https://api.deepseek.com/anthropic",
-        "fb_api_key_env": "DEEPSEEK_API_KEY",
-        "fb_protocol":    "anthropic",
-    },
-}
+OPERATION_CONFIG: dict[str, dict] = {}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Pattern Library（设计文档第 8 章）
