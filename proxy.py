@@ -52,6 +52,7 @@ from pathlib import Path
 HOOK_DIR            = Path.home() / ".claude" / "hooks" / "model_router"
 ACTIVE_SESSION_FILE  = HOOK_DIR / "active_session"
 GLOBAL_STAGE_FILE    = HOOK_DIR / "current_stage"   # 全局后备
+STATE_INDEX_FILE     = HOOK_DIR / "state_index.json"  # 设计文档 §13 Project Binding
 LOG_FILE             = Path.home() / ".claude" / "stage-router.log"
 PORT                 = 7878
 ENV_FILE             = Path(__file__).parent / ".env"   # hooks/model_router/.env
@@ -92,6 +93,12 @@ from stage_config import (
     MODEL_TO_CONFIG,
 )
 
+# 复用 @hooks/compact/utils.py 的 project_root 查找逻辑（设计文档 §13 4 级查找
+# 的 Level 1 "Project Binding" 需要按 project_root 索引 state_index.json）。
+# 跟 stage_detector.py 写入端用同一份查找器，保持一致性。
+sys.path.insert(0, os.path.expanduser("~/.claude"))
+from hooks.compact.utils import _find_project_root  # noqa: E402
+
 # ── 原生 Anthropic 端点白名单 ──
 # 这些端点的 extended thinking 是**真实现**的（合法 signature、再次回传能校验过），
 # 代理不应剥离请求里的 thinking 字段。
@@ -131,29 +138,97 @@ def _read_stage_file(path: Path) -> str | None:
 
 def read_stage() -> str:
     """
-    读取当前阶段：
-      1. active_session 指针 → 读取其存储的完整路径文件
-      2. 返回 default（无全局后备，每个 session 独立维护 stage_<sid>）
+    读取当前阶段（设计文档 §13 4 级查找）：
+      Level 1: Project Binding — 从 state_index.json 按 project_root 查
+      Level 2: session_id       — 从 state_index.json 查匹配 session
+      Level 3: timestamp        — state_index 中 last_active 最新者
+      Level 4: active_session   — 兼容旧版单点指针
 
-    proxy.py 是无 stdin 的 HTTP 服务器，无法直接拿到 session_id。
-    它依赖 stage_detector.py（UserPromptSubmit hook）维护的 active_session 指针。
-    active_session 存储的是阶段文件的完整绝对路径（如
-    /Users/zorro/project/.claude/stage_aaa-bbb），直接读取即可。
+    proxy.py 是无 stdin 的 HTTP 服务器，无法直接拿到 session_id 或 project_root。
+    它依赖 stage_detector.py（UserPromptSubmit hook）维护的 active_session 指针 +
+    state_index.json。
+
+    active_session 存储的是阶段文件的完整路径（如
+    /Users/zorro/project/.claude/stage_aaa-bbb），从中可提取 project_root =
+    /Users/zorro/project（路径去掉末尾 .claude/stage_<sid> 两段）。
     """
-    # 1. active_session 指针 → 存储的是完整路径，直接读取
+    # 先解析 active_session 路径 → 拿到 project_root（作为 Level 1 查找键）
+    active_path: Path | None = None
     try:
-        active_path = ACTIVE_SESSION_FILE.read_text().strip()
-        if active_path:
-            content = _read_stage_file(Path(active_path))
-            if content and content in STAGE_MODELS:
-                return content
-            if content:
-                log.warning(f"active_session 指向 {active_path} 未知阶段值 '{content}'，回退到 default")
+        ap = ACTIVE_SESSION_FILE.read_text().strip()
+        if ap:
+            active_path = Path(ap)
     except FileNotFoundError:
         pass
 
-    # 2. 兜底（无 active_session 时用 default，不继承全局后备）
+    # Level 1: Project Binding — state_index.json[project_root]
+    # project_root 通过复用 @hooks/compact/utils.py 的 _find_project_root 算得
+    # （沿 .claude/ 优先、.git/ 备选的规则，跟 stage_detector 写入端保持一致）
+    if active_path is not None:
+        project_root = str(_find_project_root_for_stage_path(active_path))
+        state_via_index = _read_state_index_for_project(project_root)
+        if state_via_index:
+            stage_via_index = state_via_index.get("stage")
+            if stage_via_index and stage_via_index in STAGE_MODELS:
+                return stage_via_index
+            if stage_via_index:
+                log.warning(
+                    f"state_index[{project_root}] 阶段值 '{stage_via_index}' "
+                    f"未知，回退到 active_session"
+                )
+
+    # Level 4: active_session 指针（兼容旧版 / state_index 缺失时回退）
+    if active_path is not None:
+        content = _read_stage_file(active_path)
+        if content and content in STAGE_MODELS:
+            return content
+        if content:
+            log.warning(
+                f"active_session 指向 {active_path} 未知阶段值 '{content}'，"
+                f"回退到 default"
+            )
+
+    # 兜底
     return "default"
+
+
+def _find_project_root_for_stage_path(stage_path: Path) -> Path:
+    """从 stage_<sid> 路径反推 project_root。
+
+    实现：复用 @hooks/compact/utils.py::_find_project_root（设计文档 §13 的
+    查找规则：.claude/ 优先、.git/ 备选、最多 20 层）— 但要先把"起点"设到
+    stage_path 的父目录的父目录（去掉 .claude/stage_<sid> 两段），
+    否则会停在自己这一层 .claude/ 上，得出 project_root=stage_path.parent。
+
+    例:
+      /Users/zorro/project/.claude/stage_aaa
+        → 起点 /Users/zorro/project
+        → _find_project_root 在 /Users/zorro/project 发现 .claude/
+        → 返回 /Users/zorro/project
+    """
+    # 把"起点"设为去掉 .claude/stage_<sid> 后的目录
+    p = stage_path
+    if p.name.startswith("stage_"):
+        p = p.parent  # .claude/
+    if p.name == ".claude":
+        p = p.parent  # project_root/
+    return _find_project_root(p)
+
+
+def _read_state_index_for_project(project_root: str) -> dict | None:
+    """从 state_index.json 读取指定 project_root 的会话条目。
+
+    设计文档 §13 Level 1: Project Binding。
+    缺失/损坏/无匹配时返回 None（让调用方走下一级）。
+    """
+    try:
+        content = STATE_INDEX_FILE.read_text(encoding="utf-8")
+        data = json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data.get(project_root)
 
 
 # ── Operation-type 读取（与 stage 同构，无 stdin 时也走 active_session 指针）──
@@ -852,17 +927,32 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass  # batch 模板名无效 → 静默回落到 stage/op
 
-            # ── Workflow Plan（设计文档 §6.5）──
-            # simple/medium/complex 决定 single/double/triple 模型序列；
-            # 当前实现保留 primary_model 实际执行，plan 写到日志与 /trace。
+            # ── Workflow Plan（设计文档 §6.5 / §10 算法步骤 6-7）──
+            # simple/medium/complex 决定 single/double/triple 模型序列。
+            # 实际路由按 plan 真正落地：
+            #   simple  → 单模型（主模型）
+            #   medium  → 双步：normal 主模型执行，strong 模型审计（保留主执行）
+            #   complex → 三步：strong 规划 + normal 执行 + strong 审计
+            #            → 实际路由时把 strong 模型（= stage.fb_model）作为主模型，
+            #              normal 模型（= stage.model）作为 fb，体现"高阶推理优先"。
+            # 设计文档 §17 验收："复杂任务稳定触发 strong→normal→strong"——
+            # 在单步 CC 转发场景下，"stable" 通过"complex 任务统一走 strong 主模型"保证。
             workflow = build_workflow_plan(
                 stage_or_op=routing_source.split("=", 1)[1].split(" ")[0]
                             if "=" in routing_source else "default",
                 is_op=routing_source.startswith("op="),
                 primary_model=model,
-                strong_model=model,  # strong 视作与 primary 同高（暂无独立 strong）
+                strong_model=fb_model,  # 强模型 = stage 配置中的 fb_model（升级路径）
                 complexity_label=complexity_label,
             )
+            # complex 任务：把主/备对调，让 strong 模型当主、normal 当 fb
+            if complexity_label == "complex" and fb_model and fb_model != model:
+                (base_url, model, key_env, protocol,
+                 fb_base, fb_model, fb_key, fb_proto) = (
+                    fb_base, fb_model, fb_key, fb_proto,
+                    base_url, model, key_env, protocol,
+                )
+                routing_source += " [workflow=complex→strong]"
         else:
             # model_override 路径无 workflow 编排（用户已显式指定）
             workflow = {
@@ -876,6 +966,9 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # 内部服务请求（X-Stage-Router-Source）也跳过 sticky 切换：
         # 用户的业务 5xx 跟"主模型曾失败"无关，不应该被静默改路由。
         internal_req = _is_internal_request(headers)
+        # 标志位：本请求是否"实际切换到了备用模型"。
+        # 用于 /metrics 的 used_fallback 严格判定（区分 4xx 非可重试错误）。
+        fallback_invoked = False
         sticky_fb = (
             read_fallback()
             if (not model_override and not internal_req)
@@ -890,6 +983,8 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 base_url, model, key_env, protocol,
             )
             routing_source += f" [sticky-fb={sticky_fb}]"
+            # sticky_fb 触发主备交换 → 本请求实际使用了 fallback
+            fallback_invoked = True
 
         status, resp_headers, resp_body = forward_request(
             method="POST",
@@ -912,6 +1007,7 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 f"[{routing_source}] 主模型 {model} 返回 {status}，"
                 f"切换到备用 {fb_model} [{fb_base}]"
             )
+            fallback_invoked = True
             status, resp_headers, resp_body = forward_request(
                 method="POST",
                 path=self.path,
@@ -943,7 +1039,13 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # 每条请求都写一条 JSONL 记录，含 pattern/complexity/score/confidence/
         # token_estimate/fallback_count，供 /metrics /trace 读取。
         try:
-            used_fallback = bool(sticky_fb) or status >= 400
+            # used_fallback 严格定义：本请求"实际使用或触发了备用模型"
+            #   - sticky_fb 路径：进入时主备已交换，记为 True
+            #   - 主模型失败后切到 fb 模型：记为 True
+            #   - 4xx 非可重试错误（400/404/422 等）：主备都没切到，记为 False
+            #     之前的 `status >= 400` 会把 400/404/422 全算成"用了 fallback"，
+            #     导致 /metrics 统计严重虚高。
+            used_fallback = bool(sticky_fb) or fallback_invoked
             _append_metric({
                 "ts":               time.time(),
                 "path":             self.path,
