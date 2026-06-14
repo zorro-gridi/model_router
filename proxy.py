@@ -96,6 +96,7 @@ from stage_config import (
     STAGE_CONFIG, OPERATION_CONFIG,
     MODEL_TO_CONFIG,
     STRONG_MODEL, NORMAL_MODEL,   # 设计文档 §10 路由算法：全局强/常规模型
+    RECLASSIFY_INTERVAL,          # per-API-request 动态分类间隔
 )
 
 # 模型覆盖指令解析（~model / ~m / 自然语言）
@@ -103,6 +104,8 @@ from stage_config import (
 # 避免"用户发 ~model 时当前回合仍是旧模型，下回合才生效"的一回合延迟。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from model_alias import detect_model_override, parse_model_override  # noqa: E402
+# per-API-request LLM 重新分类（设计文档 §6.2 / §6.4 间隔触发）
+from llm_classifier import classify as _proxy_llm_classify  # noqa: E402
 # 高阶模型 rate limit（设计文档 §18 R18-3 / D18-3-1 修复 2026-06-14）：
 # complex 任务强制跳到 STRONG_MODEL 前，先查配额；超额则降级回原 stage 主模型。
 from rate_limit import check_rate_limit, consume as rate_limit_consume      # noqa: E402
@@ -715,7 +718,10 @@ def read_batch() -> dict | None:
 # 计数文件: <project_root>/.claude/reqcnt_<sid>.json
 # 间隔可通过 STAGE_ROUTER_RECLASSIFY_INTERVAL 环境变量配置，默认 3。
 
-RECLASSIFY_INTERVAL = int(os.environ.get("STAGE_ROUTER_RECLASSIFY_INTERVAL", "3"))
+RECLASSIFY_INTERVAL = int(os.environ.get(
+    "STAGE_ROUTER_RECLASSIFY_INTERVAL",
+    str(RECLASSIFY_INTERVAL),
+))
 
 
 def _reqcnt_file_path(stage_file: Path) -> Path:
@@ -799,9 +805,10 @@ def _extract_classification_context(body: bytes) -> str:
     返回包含以下内容的拼接文本（优先保留头部和尾部，中段截断）：
     - 系统提示（前 600 字符）
     - 最后一条 user message（完整）
-    - 倒数 2 条 assistant message 的摘要（各前 200 字符）
+    - 倒数 2 条 assistant message 的摘要（各前 300 字符）
 
     对超长 prompt 做截断：头 60% + 尾 40%，确保分类器不会因超长输入超时。
+    拼接后整体最前加上截断说明，让 LLM 知道这是不完整的上下文片段。
     """
     if not body:
         return ""
@@ -852,11 +859,23 @@ def _extract_classification_context(body: bytes) -> str:
         if isinstance(messages[i], dict) and messages[i].get("role") == "assistant":
             text = _extract_text_from_content(messages[i].get("content"))
             if text:
-                assistant_texts.insert(0, text[:200])
+                assistant_texts.insert(0, text[:300])
     if assistant_texts:
         parts.append("[RECENT_ASSISTANT]\n" + "\n---\n".join(assistant_texts))
 
     combined = "\n\n".join(parts)
+
+    # ── 截断说明（让 LLM 知道这是不完整的上下文片段）──
+    # 放在最前面，因为 LLM 在阅读后续截断内容时如果先看到"截断"说明，
+    # 会自发加上安全边界（"可能还有更多上下文没看到，不过推断应是..."）。
+    truncated_notice = (
+        "[注意：以下上下文是从 Claude Code 当前 API 请求中提取的片段，"
+        "并非完整对话历史。\n"
+        "SYSTEM 提示截取前 600 字符，RECENT_ASSISTANT 回复各摘要前 300 字符，"
+        "LAST_USER 消息完整保留。\n"
+        "此片段用于进度分类 —— "
+        "请据此推断当前所处阶段(stage)、任务类型(pattern)和复杂度(complexity)。]"
+    )
 
     # 超长截断：头 60% + 尾 40%
     if len(combined) > max_total:
@@ -869,7 +888,7 @@ def _extract_classification_context(body: bytes) -> str:
             + combined[-tail_chars:]
         )
 
-    return combined
+    return truncated_notice + "\n\n" + combined
 
 
 def _extract_text_from_content(content) -> str:
@@ -892,9 +911,8 @@ def _write_stage_from_proxy(stage: str) -> None:
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(stage + "\n")
-        # 同步更新 state_index.json
+        # 同步更新 state_index.json（使用 proxy.py 自身的 STATE_INDEX_FILE）
         try:
-            from stage_config import STATE_INDEX_FILE as _SIF  # noqa: E402
             from stage_detector import _update_state_index  # noqa: E402
             project_root = str(_find_project_root_for_stage_path(p))
             sid = _extract_session_id_from_stage_path(p)
@@ -1524,6 +1542,58 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 log.info("prompt ~model reset：清除 model 覆盖")
             except (FileNotFoundError, OSError) as e:
                 log.warning(f"prompt ~model reset 删除 model_<sid> 失败: {e}")
+
+        # ── Per-API-Request 分类：每 N 次 API 请求触发一次 LLM 重新分类 ──
+        # 计数器在 UserPromptSubmit (Hook) 时重置为 0。
+        # 本回合若计数器到达阈值，提取 prompt 上下文 → 调用 llm_classifier →
+        # 更新 stage/pattern/complexity 文件 → 后续路由分支自动使用新分类结果。
+        # 为保证分类上下文提取需要 session_id/project_root，先临时解析一次。
+        try:
+            _prx_ap = ACTIVE_SESSION_FILE.read_text().strip()
+            if _prx_ap:
+                _prx_ap_path = Path(_prx_ap)
+                _prx_sid = _extract_session_id_from_stage_path(_prx_ap_path)
+                _prx_root = str(_find_project_root_for_stage_path(_prx_ap_path))
+            else:
+                _prx_sid = _prx_root = None
+        except (FileNotFoundError, OSError):
+            _prx_sid = _prx_root = None
+
+        if _prx_sid and _prx_root and _increment_and_should_classify():
+            _ctx = _extract_classification_context(body)
+            if _ctx:
+                log.info(
+                    f"[per-api-classify:session={_prx_sid}] "
+                    f"计数器到达阈值，触发 LLM 重新分类..."
+                )
+                try:
+                    _clf_result = _proxy_llm_classify(_ctx)
+                    _new_stage = _clf_result.get("stage", "default")
+                    _new_pattern = _clf_result.get("pattern", "feature")
+                    _new_score = _clf_result.get("complexity_score", 50)
+                    _new_label = _clf_result.get("complexity_label", "medium")
+                    _new_pconf = _clf_result.get("pattern_confidence", 0.5)
+                    _new_cconf = _clf_result.get("complexity_confidence", 0.5)
+                    _new_reason = _clf_result.get("reasoning", "")
+                    log.info(
+                        f"[per-api-classify:session={_prx_sid}] "
+                        f"结果: stage={_new_stage} pattern={_new_pattern} "
+                        f"complexity={_new_label}({_new_score}) "
+                        f"reason={_new_reason}"
+                    )
+                    # 写回 state 文件 —— 下一条请求的 read_stage() / read_pattern()
+                    # / read_complexity() 自动使用新分类结果
+                    _write_stage_from_proxy(_new_stage)
+                    _write_pattern_from_proxy(_new_pattern, _new_pconf)
+                    _write_complexity_from_proxy(
+                        _new_score, _new_label, _new_cconf,
+                        source="proxy_per_api",
+                    )
+                except Exception as _clf_exc:
+                    log.warning(
+                        f"[per-api-classify:session={_prx_sid}] "
+                        f"LLM 分类失败（静默，保留现有分类）: {_clf_exc}"
+                    )
 
         # 2) 读 model_<sid> 文件（stage_detector 上一回合写入的覆盖）
         if not model_override:
