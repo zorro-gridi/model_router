@@ -64,6 +64,9 @@ STAGE_CONFIG: dict[str, dict] = {
         "emoji":       "💭",
         "label":       "头脑风暴",
         "desc":        "快速发散，低成本探索",
+        # V1.2 §11 例外（D11-1）：主模型 = flash（"低成本探索"语义），
+        # 偏离"MiniMax-M3 作为默认基线"原则是经业务验证的优化，
+        # 备=MiniMax-M3（flash 不可用时升级）。
         "model":       "deepseek-v4-flash",
         "base_url":    "https://api.deepseek.com/anthropic",
         "api_key_env": "DEEPSEEK_API_KEY",
@@ -77,6 +80,9 @@ STAGE_CONFIG: dict[str, dict] = {
         "emoji":       "⚖️",
         "label":       "决策分析",
         "desc":        "深度推理，权衡分析",
+        # V1.2 §11 例外（D11-1）：主模型 = deepseek-v4-pro（"高阶推理"语义），
+        # 偏离"MiniMax-M3 作为默认基线"原则是经业务验证的优化（决策场景值得付推理成本），
+        # 备=MiniMax-M3（pro 不可用时降级到基线）。
         "model":       "deepseek-v4-pro",
         "base_url":    "https://api.deepseek.com/anthropic",
         "api_key_env": "DEEPSEEK_API_KEY",
