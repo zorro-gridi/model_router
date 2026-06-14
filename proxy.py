@@ -175,18 +175,47 @@ def read_stage() -> str:
     # Level 1: Project Binding — state_index.json[project_root]
     # project_root 通过复用 @hooks/compact/utils.py 的 _find_project_root 算得
     # （沿 .claude/ 优先、.git/ 备选的规则，跟 stage_detector 写入端保持一致）
+    current_sid: str | None = None
     if active_path is not None:
+        current_sid = _extract_session_id_from_stage_path(active_path)
         project_root = str(_find_project_root_for_stage_path(active_path))
         state_via_index = _read_state_index_for_project(project_root)
-        if state_via_index:
+        # Level 1 真正匹配需「project_root 命中 + session_id 一致」
+        # sid 不一致时让位给 Level 2/3（设计文档 §13 D13-1）
+        if state_via_index and current_sid and \
+                state_via_index.get("session_id") == current_sid:
             stage_via_index = state_via_index.get("stage")
             if stage_via_index and stage_via_index in STAGE_MODELS:
                 return stage_via_index
             if stage_via_index:
                 log.warning(
                     f"state_index[{project_root}] 阶段值 '{stage_via_index}' "
-                    f"未知，回退到 active_session"
+                    f"未知，回退到 Level 2/3"
                 )
+
+        # Level 2: session_id 全局匹配（设计文档 §13 Level 2）
+        # 同一 session 可能在不同 cwd 写过 state_index（多窗口工作区），按 sid 全局找。
+        if current_sid:
+            all_entries = _read_state_index_all()
+            for path, entry in all_entries.items():
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("session_id") == current_sid:
+                    stage_via_sid = entry.get("stage")
+                    if stage_via_sid and stage_via_sid in STAGE_MODELS:
+                        return stage_via_sid
+                    break  # 找到 sid 匹配但 stage 值不合法，不再继续
+
+        # Level 3: timestamp 最近活跃（设计文档 §13 D13-1）
+        # 同 project_root（或其祖先/后代）下多 session 并发时，新 session
+        # 复用最近活跃的 stage——避免每次新开窗口都从 default 起步。
+        if current_sid:
+            ts_match = _find_state_by_timestamp(project_root, current_sid)
+            if ts_match:
+                _path, ts_entry = ts_match
+                stage_via_ts = ts_entry.get("stage")
+                if stage_via_ts and stage_via_ts in STAGE_MODELS:
+                    return stage_via_ts
 
     # Level 4: active_session 指针（兼容旧版 / state_index 缺失时回退）
     if active_path is not None:
@@ -240,6 +269,59 @@ def _read_state_index_for_project(project_root: str) -> dict | None:
     if not isinstance(data, dict):
         return None
     return data.get(project_root)
+
+
+def _read_state_index_all() -> dict[str, dict]:
+    """读取整个 state_index.json（设计文档 §13 Level 2/3 用）。
+
+    返回 {project_root: entry}；缺失/损坏时返回空 dict。
+    """
+    try:
+        content = STATE_INDEX_FILE.read_text(encoding="utf-8")
+        data = json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _extract_session_id_from_stage_path(stage_path: Path) -> str | None:
+    """从 stage_<sid> 路径中提取 session_id。
+
+    例: /Users/zorro/.claude/.claude/stage_0818b13d-... → "0818b13d-..."
+    """
+    name = stage_path.name  # stage_<sid>
+    if not name.startswith("stage_"):
+        return None
+    return name[len("stage_"):] or None
+
+
+def _find_state_by_timestamp(project_root: str, current_sid: str) -> tuple[str, dict] | None:
+    """Level 3 timestamp 查找：在 state_index 中找与 project_root 同前缀且
+    last_active 最新的 entry（排除当前 sid）。
+
+    设计文档 §13 D13-1：同 project_root 下多 session 并发时，新 session 应自动
+    复用最近活跃 session 的 stage。
+    """
+    all_entries = _read_state_index_all()
+    if not all_entries:
+        return None
+    candidates: list[tuple[str, dict]] = []
+    for path, entry in all_entries.items():
+        if not isinstance(entry, dict):
+            continue
+        sid = entry.get("session_id", "")
+        if sid == current_sid:
+            continue
+        # 同 project_root 或 project_root 是 path 的子路径
+        if path == project_root or path.startswith(project_root + "/") \
+           or project_root.startswith(path + "/"):
+            candidates.append((path, entry))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda kv: kv[1].get("last_active", 0), reverse=True)
+    return candidates[0]
 
 
 # ── Operation-type 读取 — [已废弃 2026-06-14] ──
