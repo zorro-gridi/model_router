@@ -64,6 +64,21 @@ assert_eq "$test_color" "ESC[33m" "test 配黄色"
 test_color=$(stage_color explore | sed 's/\x1b/ESC/g')
 assert_eq "$test_color" "ESC[34m" "explore 配蓝色"
 
+# ── Line 3 part order (regression for: PATTERN/STAGE order swap) ──
+# 用户明确要求：第三行主三段顺序 = task_pattern → stage → stage_complexity
+# OVERRIDE/OP 插入位置见 statusline.sh 注释
+echo "line3_order:"
+# 抽出 statusline.sh 里 LINE3_PARTS+=("$X") 的 push 顺序
+# 用 LINE3_PARTS+=( 锚定到 push 行（而不是 [ -n "$X" ] 条件行），
+# 避免 [ -n "$X" ] && LINE3_PARTS+=("$X") 一行被算成 2 次
+START=$(grep -nE 'LINE3_PARTS=\(\)$' "$STATUSLINE_SH" | head -1 | cut -d: -f1)
+END=$((START + 4))   # 4 个 push 行
+order=$(sed -n "${START},${END}p" "$STATUSLINE_SH" \
+        | grep -oE 'LINE3_PARTS.{0,30}PART' \
+        | grep -oE 'OVERRIDE_PART|PATTERN_PART|STAGE_PART|COMPLEXITY_PART' \
+        | paste -sd'|' -)
+assert_eq "$order" "OVERRIDE_PART|PATTERN_PART|STAGE_PART|COMPLEXITY_PART" "第三行顺序 = OVERRIDE → PATTERN → STAGE → COMPLEXITY（OP 已废弃不再显示）"
+
 echo
 if [ "$fail" -eq 0 ]; then
     echo "ALL PASS"
