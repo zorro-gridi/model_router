@@ -440,6 +440,28 @@ def _active_stage_path() -> Path | None:
     return None
 
 
+def _session_id_from_active() -> str:
+    """从 active_session 指针中提取 session_id（UUID 前 8 位）。
+
+    active_session 存的是 stage_<sid> 完整路径，例如：
+      /Users/zorro/project/.claude/stage_301e00d0-5a51-4674-9234-93ae806ccc57
+    → 提取 'stage_' 之后到下一个 '.'/结尾的段，即 sid：
+      301e00d0-5a51-4674-9234-93ae806ccc57
+    日志统一截取前 8 位（与 statusline.sh 中的 session_id 灰底标记保持一致）。
+
+    无 active_session 指针时返回 'none'——避免日志里出现 '未知' 这种模棱两可的标记。
+    """
+    p = _active_stage_path()
+    if not p:
+        return "none"
+    name = p.name  # 例如 'stage_301e00d0-...'
+    if name.startswith("stage_"):
+        sid = name[len("stage_"):]
+    else:
+        sid = name
+    return sid[:8] if sid else "none"
+
+
 def read_pattern() -> dict | None:
     """读取当前 session 的 task pattern 标注（Shadow Mode JSON）。"""
     p = _active_stage_path()
@@ -723,7 +745,10 @@ def forward_request(
                     if "signature" in b:
                         thinking_with_sig += 1
     log.info(
-        f"路由: 阶段={read_stage()!r} "
+        f"路由: session={_session_id_from_active()} "
+        f"task_pattern={(read_pattern() or {}).get('prediction', 'none')!r} "
+        f"task_complexity={(read_complexity() or {}).get('label', 'none')!r} "
+        f"task_stage={read_stage()!r} "
         f"原模型={original_model} → 目标={target_model} "
         f"provider={target_base} protocol={protocol} "
         f"| msgs={len(msgs)} thinking_param={has_thinking_param} "
@@ -945,6 +970,9 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # ── 路由决策：prompt_model_override > model_override(file) > op > stage > default ──
         # 1) prompt 内嵌 ~model 优先（消除一回合延迟）；同时把结果写回
         #    model_<sid> 文件，让 stage_detector 下一回合也能保持一致。
+        # 显式初始化 model_override=None，避免下面 elif/1001 行 if 分支里
+        # UnboundLocalError（命中分支才会赋值）。
+        model_override = None
         if prompt_model_override:
             # 找到当前 session 的 model 文件路径（如果有就覆盖）
             try:
