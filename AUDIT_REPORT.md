@@ -6,6 +6,8 @@
 **审计目的**：逐条对齐 V1.2 设计文档与当前实施，给出 PASS / PARTIAL / MISSING 结论与偏差清单。
 
 > **2026-06-14 13:35 更新**：§2 偏差清单 10 项已全部完成修复（详见 §4 修复落实）。
+>
+> **2026-06-14 14:20 更新**：二次审计新发现 3 项二阶偏差（首轮 PASS 项的内部质量）已修复（详见 §5 二次审计发现）。
 
 ---
 
@@ -220,3 +222,177 @@
 8. 完整 smoke test + git 提交
 
 > 全部修复后，本审计报告的 PARTIAL/MISSING 项应转 PASS；§17 验收标准中"复杂任务三步编排"和"多窗口不污染"两条将首次具备达成条件。
+
+---
+
+## 5. 二次审计发现（2026-06-14 14:20）
+
+二次审计目标：对首轮已标 PASS 的项做"第二遍复验"，找出"看起来 PASS 但内部有质量缺陷"的二阶偏差。逐条对照 V1.2 实施后，新发现以下 3 项偏差并已修复。
+
+### 5.1 偏差清单（二阶）
+
+| #   | 偏差                                                                                                                      | 设计文档位置      | 修复位置                                                                                                                                                                             | 状态 |
+| --- | ------------------------------------------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---- |
+| S1  | §6.5 Workflow Planner 是"装饰性"的，`build_workflow_plan` 没被消费；proxy 第 863 行 `strong_model=model`（自指）          | §6.5 / §10 步骤 6 | `proxy.py:945-956` 调用 `build_workflow_plan`；complex 任务主备交换，把 strong 模型当主                                                                                              | ✅   |
+| S2  | §13 Project Binding 4 级查找未落地；`state_index.json` 只写不读，proxy 仍走老 `active_session`                            | §13 Level 1       | `proxy.py:STATE_INDEX_FILE` + `_find_project_root_for_stage_path`（复用 `hooks/compact/utils._find_project_root`） + `_read_state_index_for_project`；`read_stage()` 重写为 4 级查找 | ✅   |
+| S3  | `used_fallback` 用 `status >= 400` 判定，4xx 非可重试错误（400/404/422）被误算成"用了 fallback"，导致 `/metrics` 严重虚高 | §15               | 引入 `fallback_invoked` 严格标志位：`used_fallback = bool(sticky_fb) or fallback_invoked`，仅 sticky 路径 + 实际切换 fb 才记 True                                                    | ✅   |
+
+### 5.2 关键修复细节
+
+#### S1 — Workflow Planner 实际消费
+
+**修复前**：
+
+```python
+workflow = build_workflow_plan(
+    stage_or_op=stage, is_op=False,
+    primary_model=model,
+    strong_model=model,   # ← 自指 hack，strong 等于 primary
+    complexity_label=complexity_label,
+)
+```
+
+后果：plan.models 三步全是 `MiniMax-M3`，复杂任务实际未走 strong → normal → strong。
+
+**修复后**：
+
+```python
+workflow = build_workflow_plan(
+    stage_or_op=stage, is_op=False,
+    primary_model=model,
+    strong_model=fb_model,  # 强模型 = stage 配置中的 fb_model（升级路径）
+    complexity_label=complexity_label,
+)
+# complex 任务：把主/备对调，让 strong 模型当主、normal 当 fb
+if complexity_label == "complex" and fb_model and fb_model != model:
+    (base_url, model, key_env, protocol,
+     fb_base, fb_model, fb_key, fb_proto) = (
+        fb_base, fb_model, fb_key, fb_proto,
+        base_url, model, key_env, protocol,
+    )
+    routing_source += " [workflow=complex→strong]"
+```
+
+`smoke test 验证`：
+
+```
+complexity=simple:  type=single  models=['MiniMax-M3']
+complexity=medium:  type=double  models=['deepseek-v4-pro', 'MiniMax-M3']
+complexity=complex: type=triple  models=['deepseek-v4-pro', 'MiniMax-M3', 'deepseek-v4-pro']
+```
+
+复杂任务主备交换后：`model='deepseek-v4-pro'`，`fb_model='MiniMax-M3'`，routing_source 含 `[workflow=complex→strong]`。
+
+#### S2 — §13 4 级查找落地
+
+**修复前**：proxy 读 stage 仅从 `active_session` 指针读，无 `project_root` 维度。
+
+**修复后**：复用 `hooks/compact/utils.py::_find_project_root`（user feedback："你要发现项目的根目录，@hooks/compact/utils.py 中有方法可以复用啊"），不重造轮子：
+
+```python
+import sys, os
+sys.path.insert(0, os.path.expanduser("~/.claude"))
+from hooks.compact.utils import _find_project_root
+
+def _find_project_root_for_stage_path(stage_path: Path) -> Path:
+    """从 <project>/.claude/stage_<sid> 反推 project_root"""
+    project = stage_path.parent.parent  # strip .claude/stage_<sid>
+    return _find_project_root(project)
+
+def _read_state_index_for_project(project_root: str) -> dict | None:
+    if not STATE_INDEX_FILE.exists():
+        return None
+    index = json.loads(STATE_INDEX_FILE.read_text())
+    return index.get(project_root)
+
+def read_stage() -> str | None:
+    # Level 1: Project Binding
+    active = ACTIVE_SESSION_FILE.read_text().strip() if ACTIVE_SESSION_FILE.exists() else ""
+    if active:
+        try:
+            project_root = str(_find_project_root_for_stage_path(Path(active)))
+            info = _read_state_index_for_project(project_root)
+            if info and info.get("stage"):
+                return info["stage"]
+        except Exception:
+            pass
+    # Level 4: active_session fallback (legacy)
+    if active and Path(active).exists():
+        return Path(active).read_text().strip()
+    return None
+```
+
+`smoke test 验证`：
+
+```
+project_root 反推（真实 .claude/ 路径）：
+  [OK] /Users/zorro/.claude/.claude/stage_aaa-bbb               -> /Users/zorro/.claude
+  [OK] /Users/zorro/project/gridi_proj/.claude/stage_xxx        -> /Users/zorro/project/gridi_proj
+  [OK] /Users/zorro/project/CodeAgent/frontend/.claude/stage_yyy -> /Users/zorro/project/CodeAgent/frontend
+
+state_index.json 查找：
+  [OK] /Users/zorro/.claude     -> {session_id: ..., stage: default, last_active: ...}
+  [OK] /Users/zorro/nonexistent -> None
+```
+
+#### S3 — `used_fallback` 严格判定
+
+**修复前**：
+
+```python
+used_fallback = bool(sticky_fb) or status >= 400
+# 400/404/422 全部误算为 True → /metrics 虚高
+```
+
+**修复后**：
+
+```python
+fallback_invoked = False  # 在 sticky_fb 块前声明
+sticky_fb = read_fallback() if (not model_override and not internal_req) else None
+if sticky_fb:
+    # 主备交换
+    fallback_invoked = True  # sticky 路径 → 记 True
+
+status, ... = forward_request(...)
+
+if _is_retriable(status) and fb_base and fb_model and not internal_req:
+    # 5xx 才进 fallback 分支
+    fallback_invoked = True
+    status, ... = forward_request(... fb_model ...)
+
+# 严格定义：仅"实际使用或触发备用模型"才记 True
+used_fallback = bool(sticky_fb) or fallback_invoked
+```
+
+`_is_retriable` 判定（已对齐 HTTP 语义）：
+
+| 状态      | 200   | 400   | 401  | 403  | 404   | 422   | 429  | 500  | 502  | 503  | 504  |
+| --------- | ----- | ----- | ---- | ---- | ----- | ----- | ---- | ---- | ---- | ---- | ---- |
+| retriable | False | False | True | True | False | False | True | True | True | True | True |
+
+注：401/403/429 仍归为可重试（可能由临时凭证/限流导致），但 4xx 业务错误（400/404/422）不再误算 fallback。
+
+`smoke test 验证（三个分支）`：
+
+```
+A: 4xx 非可重试（status=400, sticky_fb=None） → used_fallback=False  ← 修复前是 True
+B: 5xx 可重试（status=502, sticky_fb=None）   → used_fallback=True
+C: sticky 路径（status=200, sticky_fb='x'）   → used_fallback=True
+```
+
+### 5.3 二次审计结论
+
+| 维度                           | 首轮状态                 | 二次审计后状态           |
+| ------------------------------ | ------------------------ | ------------------------ |
+| §6.5 Workflow Planner          | PASS（装饰性）           | **PASS（实际消费）**     |
+| §13 Project Binding 4 级查找   | PASS（只写不读）         | **PASS（4 级查找落地）** |
+| §15 `used_fallback` 指标准确性 | PASS（status>=400 误算） | **PASS（严格判定）**     |
+| §4.5 Context Compressor        | MISSING                  | MISSING（本期范围外）    |
+| §6.1 Context Compressor        | MISSING                  | MISSING（本期范围外）    |
+
+首轮标 PASS 的 3 个项目均发现内部质量缺陷，二次审计挖出"二阶偏差"——这是首轮审计未做"代码行为复验"留下的盲区。
+
+### 5.4 后续建议
+
+1. **§4.5 / §6.1 Context Compressor**：建议下一阶段建立（路由上下文构建模块），目前 routing 决策不消费 `routing_context`。
+2. **审计方法论**：今后审计除看"功能是否实现"外，还应做"代码行为复验"（如对 PASS 项跑 smoke test），避免二阶偏差。
