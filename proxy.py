@@ -701,6 +701,247 @@ def read_batch() -> dict | None:
     return None
 
 
+# ── Per-API-Request 动态重新分类（设计目标：每 N 次 API 请求触发一次 LLM 分类）──
+#
+# 背景：Hook 只在 UserPromptSubmit 时运行一次分类。复杂任务的一次 user prompt
+# 可能触发 CC 发起 10~30+ 次 API 请求，任务阶段可能在请求中途发生变化
+# （如从 plan → implement → audit）。仅靠 Hook 一次分类无法感知中途的阶段跳变。
+#
+# 机制：
+#   1. Hook (UserPromptSubmit) → 分类 + 写入 stage/pattern/complexity + 重置 counter=0
+#   2. Proxy (per API request)  → counter++；若 counter >= interval → 重新分类 + 重置 counter
+#   3. 重新分类结果立即更新 stage/pattern/complexity 文件，后续请求使用新路由
+#
+# 计数文件: <project_root>/.claude/reqcnt_<sid>.json
+# 间隔可通过 STAGE_ROUTER_RECLASSIFY_INTERVAL 环境变量配置，默认 3。
+
+RECLASSIFY_INTERVAL = int(os.environ.get("STAGE_ROUTER_RECLASSIFY_INTERVAL", "3"))
+
+
+def _reqcnt_file_path(stage_file: Path) -> Path:
+    """从 stage_<sid> 路径派生 reqcnt_<sid> 路径。"""
+    return stage_file.with_name(stage_file.name.replace("stage_", "reqcnt_", 1))
+
+
+def _read_reqcnt_raw() -> dict:
+    """读取当前 session 的 API 请求计数器（原始值）。"""
+    p = _active_stage_path()
+    if not p:
+        return {"count": 0, "interval": RECLASSIFY_INTERVAL}
+    cnt_path = _reqcnt_file_path(p)
+    try:
+        if cnt_path.exists():
+            content = cnt_path.read_text().strip()
+            if content:
+                data = json.loads(content)
+                data.setdefault("interval", RECLASSIFY_INTERVAL)
+                return data
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {"count": 0, "interval": RECLASSIFY_INTERVAL}
+
+
+def _write_reqcnt(data: dict) -> None:
+    """写入当前 session 的 API 请求计数器。"""
+    p = _active_stage_path()
+    if not p:
+        return
+    cnt_path = _reqcnt_file_path(p)
+    try:
+        cnt_path.parent.mkdir(parents=True, exist_ok=True)
+        # 原子写：先写 .tmp 再 rename
+        tmp = cnt_path.with_suffix(cnt_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False))
+        os.replace(tmp, cnt_path)
+    except OSError:
+        pass
+
+
+def _increment_and_should_classify() -> bool:
+    """递增请求计数器，返回是否需要触发重新分类。
+
+    每次 proxy 接收到 CC API 请求时调用。
+    返回 True 表示计数器已到达间隔阈值，应触发 LLM 重新分类。
+    """
+    data = _read_reqcnt_raw()
+    interval = int(data.get("interval", RECLASSIFY_INTERVAL))
+    if interval <= 0:
+        return False  # 间隔为 0 表示禁用 per-request 分类
+    count = int(data.get("count", 0)) + 1
+    data["count"] = count
+    if count >= interval:
+        data["count"] = 0  # 重置
+        _write_reqcnt(data)
+        return True
+    _write_reqcnt(data)
+    return False
+
+
+def reset_reqcnt() -> None:
+    """重置请求计数器为 0（由 Hook 在 UserPromptSubmit 分类后调用）。"""
+    p = _active_stage_path()
+    if not p:
+        return
+    cnt_path = _reqcnt_file_path(p)
+    try:
+        cnt_path.parent.mkdir(parents=True, exist_ok=True)
+        cnt_path.write_text(json.dumps(
+            {"count": 0, "interval": RECLASSIFY_INTERVAL},
+            ensure_ascii=False,
+        ))
+    except OSError:
+        pass
+
+
+def _extract_classification_context(body: bytes) -> str:
+    """从请求体中提取用于 LLM 分类的上下文。
+
+    返回包含以下内容的拼接文本（优先保留头部和尾部，中段截断）：
+    - 系统提示（前 600 字符）
+    - 最后一条 user message（完整）
+    - 倒数 2 条 assistant message 的摘要（各前 200 字符）
+
+    对超长 prompt 做截断：头 60% + 尾 40%，确保分类器不会因超长输入超时。
+    """
+    if not body:
+        return ""
+    try:
+        data = json.loads(body.decode("utf-8", errors="replace"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return ""
+
+    parts: list[str] = []
+    max_total = int(os.environ.get("STAGE_ROUTER_CLASSIFY_MAX_CHARS", "6000"))
+
+    # 系统提示
+    system = data.get("system")
+    if isinstance(system, str) and system.strip():
+        parts.append("[SYSTEM]\n" + system.strip()[:600])
+    elif isinstance(system, list):
+        sys_texts = []
+        for s in system:
+            if isinstance(s, dict) and s.get("type") == "text":
+                sys_texts.append(s.get("text", ""))
+        sys_combined = "\n".join(sys_texts).strip()
+        if sys_combined:
+            parts.append("[SYSTEM]\n" + sys_combined[:600])
+
+    # 消息历史
+    messages = data.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return "\n".join(parts)
+
+    # 找到最后一条 user message 和最近的 assistant messages
+    last_user_idx = -1
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], dict) and messages[i].get("role") == "user":
+            last_user_idx = i
+            break
+
+    if last_user_idx >= 0:
+        user_msg = messages[last_user_idx]
+        user_text = _extract_text_from_content(user_msg.get("content"))
+        if user_text:
+            parts.append("[LAST_USER]\n" + user_text)
+
+    # 最近的 assistant 响应摘要
+    assistant_texts: list[str] = []
+    for i in range(last_user_idx - 1, max(last_user_idx - 4, -1), -1):
+        if i < 0:
+            break
+        if isinstance(messages[i], dict) and messages[i].get("role") == "assistant":
+            text = _extract_text_from_content(messages[i].get("content"))
+            if text:
+                assistant_texts.insert(0, text[:200])
+    if assistant_texts:
+        parts.append("[RECENT_ASSISTANT]\n" + "\n---\n".join(assistant_texts))
+
+    combined = "\n\n".join(parts)
+
+    # 超长截断：头 60% + 尾 40%
+    if len(combined) > max_total:
+        head_chars = int(max_total * 0.6)
+        tail_chars = max_total - head_chars
+        truncated_chars = len(combined) - head_chars - tail_chars
+        combined = (
+            combined[:head_chars]
+            + f"\n\n... [已截断 {truncated_chars} 字符] ...\n\n"
+            + combined[-tail_chars:]
+        )
+
+    return combined
+
+
+def _extract_text_from_content(content) -> str:
+    """从 Anthropic content 字段提取纯文本。"""
+    text_parts: list[str] = []
+    if isinstance(content, str):
+        text_parts.append(content)
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                text_parts.append(part["text"])
+    return "\n".join(text_parts)
+
+
+def _write_stage_from_proxy(stage: str) -> None:
+    """Proxy 端写入 stage（覆盖当前 session 的 stage_<sid>）。"""
+    p = _active_stage_path()
+    if not p:
+        return
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(stage + "\n")
+        # 同步更新 state_index.json
+        try:
+            from stage_config import STATE_INDEX_FILE as _SIF  # noqa: E402
+            from stage_detector import _update_state_index  # noqa: E402
+            project_root = str(_find_project_root_for_stage_path(p))
+            sid = _extract_session_id_from_stage_path(p)
+            _update_state_index(project_root, sid, p)
+        except Exception:
+            pass
+    except OSError:
+        pass
+
+
+def _write_pattern_from_proxy(prediction: str, confidence: float) -> None:
+    """Proxy 端写入 task pattern。"""
+    p = _active_stage_path()
+    if not p:
+        return
+    try:
+        pp = _pattern_file_path(p)
+        pp.parent.mkdir(parents=True, exist_ok=True)
+        pp.write_text(json.dumps({
+            "prediction": prediction,
+            "confidence": confidence,
+            "ts": time.time(),
+        }, ensure_ascii=False))
+    except OSError:
+        pass
+
+
+def _write_complexity_from_proxy(score: int, label: str, confidence: float,
+                                  source: str = "proxy") -> None:
+    """Proxy 端写入 complexity 评估。"""
+    p = _active_stage_path()
+    if not p:
+        return
+    try:
+        cp = _complexity_file_path(p)
+        cp.parent.mkdir(parents=True, exist_ok=True)
+        cp.write_text(json.dumps({
+            "score": score,
+            "label": label,
+            "confidence": confidence,
+            "source": source,
+            "ts": time.time(),
+        }, ensure_ascii=False))
+    except OSError:
+        pass
+
+
 # ── Workflow Planner（设计文档 §6.5 / §10 步骤 6-8）──────────────────────
 # 完整 plan：每个 complexity 包含 steps 序列、models 序列、step_stages 序列。
 #   simple  : [execute]                           / [NORMAL_MODEL]                            / [default]
@@ -1385,7 +1626,6 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 try:
                     from workflow_orchestrator import (  # noqa: E402
                         read_state as _wf_read,
-                        advance as _wf_advance,
                     )
                     _rl_ap = ACTIVE_SESSION_FILE.read_text().strip()
                     _wf_project_root = (
@@ -1463,11 +1703,9 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                                     rate_limit_consume(
                                         STRONG_MODEL, _wf_project_root, _wf_sid
                                     )
-                            # 推进 step（写回文件；越界时自动 deactivate）
-                            try:
-                                _wf_advance(_wf_sid, _wf_project_root)
-                            except Exception as e:
-                                log.warning(f"workflow_orchestrator.advance 失败: {e!r}")
+                            # workflow step 由 Hook (stage_detector.py) 在阶段跳转时推进，
+                            # proxy 只读取 current_step 并路由对应模型，自身不做 advance。
+                            # 参见设计文档 §6.5 / §10。
                     else:
                         # 越界（plan 已完成或数据损坏）→ deactivate 落回 stage 路由
                         try:
