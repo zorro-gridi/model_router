@@ -73,6 +73,7 @@ HOME_CLAUDE         = Path.home() / ".claude"
 HOOK_DIR            = HOME_CLAUDE / "hooks" / "model_router"
 ACTIVE_SESSION_FILE = HOOK_DIR / "active_session"
 GLOBAL_STAGE_FILE   = HOOK_DIR / "current_stage"   # 全局后备（无 session_id 时使用）
+STATE_INDEX_FILE    = HOOK_DIR / "state_index.json"  # 设计文档 §13 Project Binding
 LOG_FILE            = Path("/tmp/stage_detector.log")
 
 
@@ -410,8 +411,52 @@ def _ensure_session_stage(session_id: str, cwd: str | Path) -> str:
     # 始终刷新 active_session 指针（存储完整路径，多 session 时最后活跃的获胜）
     HOOK_DIR.mkdir(parents=True, exist_ok=True)
     ACTIVE_SESSION_FILE.write_text(str(stage_path))
+    # 维护 state_index.json（设计文档 §13 Project Binding）：
+    # 按 project_root 索引 session_id + stage + last_active，proxy 优先用此查找。
+    try:
+        project_root = str(_find_project_root(Path(cwd) if isinstance(cwd, str) else cwd, session_id))
+        _update_state_index(project_root, session_id, stage_path)
+    except Exception as exc:
+        log("WARN", f"state_index 更新失败（非阻塞）: {exc!r}")
     content = stage_path.read_text().strip()
     return content if content else "default"
+
+
+def _load_state_index() -> dict:
+    """读取 state_index.json，文件缺失/损坏时返回空 dict。"""
+    try:
+        content = STATE_INDEX_FILE.read_text(encoding="utf-8")
+        data = json.loads(content)
+        if isinstance(data, dict):
+            return data
+        return {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_state_index(idx: dict) -> None:
+    """原子写 state_index.json：先写 .tmp 再 rename，避免半写。"""
+    HOOK_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_INDEX_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(idx, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(STATE_INDEX_FILE)
+
+
+def _update_state_index(project_root: str, session_id: str, stage_path: Path) -> None:
+    """更新 state_index.json 中 project_root 记录的 session_id 和 last_active。
+    同一 project_root 多 session 时以 last_active 最新者为准（与 active_session 语义一致）。
+    """
+    idx = _load_state_index()
+    try:
+        stage_name = stage_path.read_text().strip() or "default"
+    except FileNotFoundError:
+        stage_name = "default"
+    idx[project_root] = {
+        "session_id":  session_id,
+        "stage":       stage_name,
+        "last_active": int(datetime.now(timezone.utc).timestamp()),
+    }
+    _save_state_index(idx)
 
 
 def write_stage(stage: str, session_id: str | None = None,
@@ -785,8 +830,80 @@ def main():
             else:
                 log("INFO", "pattern (shadow): no signal")
 
-        # ── 输出 additionalContext（model/stage/op/fallback/pattern 各自命中时合并提示）──
-        msgs = [m for m in (model_msg, stage_msg, op_msg, fb_msg, pattern_msg) if m]
+        # ── Stage Complexity 评估（设计文档 §6.4）──
+        #   优先级：~careful/~quick 显式调档 > auto 检测 > PATTERN 默认
+        complexity_msg: str | None = None
+        if session_id and cwd:
+            shift_m = COMPLEXITY_SHIFT_RE.search(prompt)
+            batch_m = BATCH_RE.search(prompt)
+            reset_m = RESET_RE.search(prompt)
+
+            if reset_m:
+                # ~reset — 全量清除 override（包括 model/op/pattern/fallback/
+                #         complexity/batch），stage 保留
+                removed = clear_all_overrides(session_id, cwd)
+                log("INFO", f"~reset cleared {removed} override files")
+                complexity_msg = f"~reset: 已清除 {removed} 个 override 文件"
+
+            elif shift_m:
+                # ~careful / ~quick — 在当前评估基础上 +/- 1 档
+                action = shift_m.group(1).lower()
+                delta = 1 if action == "careful" else -1
+                cur = read_complexity(session_id, cwd)
+                if cur is None:
+                    # 没有现成评估 → 先做一次 auto 检测再调档
+                    auto = detect_complexity(prompt, new_pattern)
+                    cur_label = auto["label"]
+                else:
+                    cur_label = cur.get("label", "medium")
+                new_label = shift_complexity(cur_label, delta)
+                # 调档后重新映射到 0~100 分数（取该 label 的中位数）
+                new_score = {
+                    "simple":  20,
+                    "medium":  50,
+                    "complex": 80,
+                }[new_label]
+                write_complexity(
+                    new_score, new_label,
+                    confidence=0.95, source=action,
+                    session_id=session_id, cwd=cwd,
+                )
+                log("INFO", f"~{action}: complexity {cur_label} → {new_label}")
+                complexity_msg = (
+                    f"~{action}: 复杂度 {cur_label} → {new_label}（强制）"
+                )
+
+            elif batch_m:
+                # ~batch <template> — 载入预定义任务模式
+                from stage_config import PATTERN_CONFIG
+                template = batch_m.group(1).lower()
+                flow = PATTERN_CONFIG.get(template, {}).get("default_flow", [])
+                if flow:
+                    write_batch(template, flow, session_id, cwd)
+                    log("INFO", f"~batch loaded: {template} → {flow}")
+                    complexity_msg = (
+                        f"~batch: 已载入 {template} 流程 {'→'.join(flow)}"
+                    )
+                else:
+                    log("WARN", f"~batch: unknown template {template}")
+
+            else:
+                # auto 检测：基于 prompt 关键词 + 已识别 pattern
+                if new_pattern:
+                    auto = detect_complexity(prompt, new_pattern)
+                else:
+                    auto = detect_complexity(prompt, None)
+                write_complexity(
+                    auto["score"], auto["label"],
+                    confidence=auto["confidence"], source="auto",
+                    session_id=session_id, cwd=cwd,
+                )
+                log("INFO",
+                    f"complexity (auto): score={auto['score']} "
+                    f"label={auto['label']} conf={auto['confidence']}")
+
+        # ── 输出 additionalContext（model/stage/op/fallback/pattern/complexity 各自命中时合并提示）──
+        msgs = [m for m in (model_msg, stage_msg, op_msg, fb_msg, pattern_msg, complexity_msg) if m]
         if msgs:
             output = {
                 "hookSpecificOutput": {
@@ -799,6 +916,298 @@ def main():
         # 兜底：任何未捕获异常都吞掉，绝不让 hook 退非零码
         log("ERROR", f"unexpected: {exc!r}; passthrough")
     sys.exit(0)
+
+
+# ────────────────────────────────────────────────────────────────────
+# Stage Complexity Classifier（设计文档第 6.4 / 9 章）—— 2026-06-14 引入
+#
+# 复杂度按 0~100 连续分映射到 simple/medium/complex：
+#   simple    — 0~30   单文件、单步骤、需求明确
+#   medium    — 31~70  多步骤、轻度设计
+#   complex   — 71~100 跨模块/跨系统/高风险
+#
+# 当前为 V1（关键词 + 长度 + pattern 加权），用于 ~careful/~quick 调档
+# 与 proxy Workflow Planner 选模型序列。
+# ────────────────────────────────────────────────────────────────────
+
+# 加分关键词：每个 (kw, weight) 命中后累加。负权重用于"明显简单"的反向信号。
+COMPLEXITY_KEYWORDS: list[tuple[str, int]] = [
+    # 高复杂度信号
+    ("跨模块", 25), ("跨系统", 25), ("跨服务", 20), ("分布式", 20),
+    ("迁移", 20), ("migration", 20), ("migrate", 20),
+    ("架构", 25), ("architecture", 25), ("顶层设计", 30), ("系统设计", 25),
+    ("性能审查", 20), ("安全审计", 20), ("安全审查", 20),
+    ("重构", 15), ("refactor", 15), ("restructure", 15),
+    ("审计", 15), ("audit", 15), ("code review", 15),
+    ("分析测试失败", 20), ("失败原因", 15), ("排查", 10), ("根因", 15),
+    ("方案对比", 15), ("比较方案", 15), ("调研", 10), ("research", 10),
+    # 低复杂度信号（负权重）
+    ("重命名", -15), ("rename", -15),
+    ("改一行", -20), ("一行代码", -20), ("一行修复", -20),
+    ("改个名字", -15), ("修个 typo", -20), ("typo", -20),
+    ("确认一下", -10), ("快速确认", -10),
+    ("简单", -5), ("就", -1),  # "就改一下" 类短句
+]
+
+# Pattern → 默认基础分（来自 PATTERN_CONFIG.default_complexity 的扩展）
+PATTERN_BASE_SCORE: dict[str, int] = {
+    "feature":      50,
+    "bugfix":       45,
+    "refactor":     55,
+    "test":         40,
+    "research":     50,
+    "migration":    75,
+    "architecture": 80,
+    "docs":         20,
+    "audit":        70,
+}
+
+
+def _score_to_label(score: int) -> str:
+    """0~100 分数 → simple/medium/complex 标签。"""
+    if score <= COMPLEXITY_THRESHOLDS["simple"]:
+        return "simple"
+    if score <= COMPLEXITY_THRESHOLDS["medium"]:
+        return "medium"
+    return "complex"
+
+
+def detect_complexity(prompt: str, pattern: str | None = None) -> dict:
+    """
+    计算当前 prompt 的复杂度评分。
+
+    返回：{"score": int, "label": "simple"|"medium"|"complex",
+           "confidence": float, "signals": list[str]}
+
+    实现思路（V1 启发式，V2 可替换为 LLM 分类器）：
+      1. 基础分：若已识别 pattern，从 PATTERN_BASE_SCORE 起步；否则 medium=50
+      2. 关键词加权：扫描 COMPLEXITY_KEYWORDS，累加权重
+      3. 长度加成：>200 字加 5，>500 字加 10（长 prompt 通常任务更复杂）
+      4. 文件提及：出现"X 个文件"/"多个"等加 5
+      5. 夹紧到 [0, 100]
+      6. confidence：依据触发的信号数，0 个信号 → 0.3，≥3 个 → 0.85
+    """
+    signals: list[str] = []
+    if not prompt:
+        return {"score": 50, "label": "medium", "confidence": 0.3, "signals": []}
+
+    # 1. 基础分
+    if pattern and pattern in PATTERN_BASE_SCORE:
+        score = PATTERN_BASE_SCORE[pattern]
+        signals.append(f"pattern={pattern}({score})")
+    else:
+        score = 50  # medium 起步
+        signals.append("base=medium(50)")
+
+    # 2. 关键词
+    prompt_lower = prompt.lower()
+    for kw, w in COMPLEXITY_KEYWORDS:
+        if kw in prompt_lower:
+            score += w
+            signals.append(f"{kw}({w:+d})")
+
+    # 3. 长度加成
+    char_count = len(prompt)
+    if char_count > 500:
+        score += 10
+        signals.append(f"len>500(+10)")
+    elif char_count > 200:
+        score += 5
+        signals.append(f"len>200(+5)")
+
+    # 4. "多个 / X 个" 加成
+    if any(p in prompt for p in ("多个", "若干", "几处", "一系列")):
+        score += 5
+        signals.append("multi-entity(+5)")
+
+    # 5. 夹紧
+    score = max(0, min(100, score))
+
+    # 6. confidence
+    n_signals = len(signals)
+    confidence = min(0.85, 0.3 + n_signals * 0.12)
+    confidence = round(confidence, 2)
+
+    return {
+        "score":      score,
+        "label":      _score_to_label(score),
+        "confidence": confidence,
+        "signals":    signals,
+    }
+
+
+# ────────────────────────────────────────────────────────────────────
+# Complexity / Batch 文件（per-session）
+# ────────────────────────────────────────────────────────────────────
+
+def _complexity_file_path(stage_file: Path) -> Path:
+    """从 stage_<sid> 派生 complexity_<sid> 路径（同目录、仅前缀替换）。
+    存储 JSON：{"score": int, "label": str, "confidence": float, "ts": str, "source": str}。
+    """
+    return stage_file.with_name(stage_file.name.replace("stage_", "complexity_", 1))
+
+
+def _batch_file_path(stage_file: Path) -> Path:
+    """从 stage_<sid> 派生 batch_<sid> 路径（同目录、仅前缀替换）。
+    存储 JSON：{"template": str, "flow": list[str], "ts": str}。
+    """
+    return stage_file.with_name(stage_file.name.replace("stage_", "batch_", 1))
+
+
+def read_complexity(session_id: str | None = None,
+                    cwd: str | Path | None = None) -> dict | None:
+    """读取当前 session 的 complexity 评估结果。"""
+    if session_id and cwd:
+        stage_path = _stage_file_path(cwd, session_id)
+        complexity_file = _complexity_file_path(stage_path)
+    else:
+        try:
+            active_path = ACTIVE_SESSION_FILE.read_text().strip()
+            if not active_path:
+                return None
+            complexity_file = _complexity_file_path(Path(active_path))
+        except FileNotFoundError:
+            return None
+    try:
+        content = complexity_file.read_text().strip()
+        if not content:
+            return None
+        return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def write_complexity(score: int, label: str, confidence: float,
+                     source: str, session_id: str | None = None,
+                     cwd: str | Path | None = None) -> None:
+    """写入 complexity 评估到 complexity_<sid>（JSON 格式）。
+    source: "auto" | "careful" | "quick" | "batch" 标识来源。
+    """
+    if not session_id or not cwd:
+        return
+    stage_path = _stage_file_path(cwd, session_id)
+    stage_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "score":      int(score),
+        "label":      label,
+        "confidence": round(float(confidence), 2),
+        "source":     source,
+        "ts":         datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _complexity_file_path(stage_path).write_text(
+        json.dumps(payload, ensure_ascii=False)
+    )
+
+
+def clear_complexity(session_id: str | None = None,
+                     cwd: str | Path | None = None) -> None:
+    """清除 complexity_<sid> 文件。"""
+    if not session_id or not cwd:
+        return
+    stage_path = _stage_file_path(cwd, session_id)
+    try:
+        _complexity_file_path(stage_path).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def read_batch(session_id: str | None = None,
+               cwd: str | Path | None = None) -> dict | None:
+    """读取当前 session 的 batch 模板载入信息。"""
+    if session_id and cwd:
+        stage_path = _stage_file_path(cwd, session_id)
+        batch_file = _batch_file_path(stage_path)
+    else:
+        try:
+            active_path = ACTIVE_SESSION_FILE.read_text().strip()
+            if not active_path:
+                return None
+            batch_file = _batch_file_path(Path(active_path))
+        except FileNotFoundError:
+            return None
+    try:
+        content = batch_file.read_text().strip()
+        if not content:
+            return None
+        return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def write_batch(template: str, flow: list[str],
+                session_id: str | None = None,
+                cwd: str | Path | None = None) -> None:
+    """写入 batch 模板到 batch_<sid>。"""
+    if not session_id or not cwd:
+        return
+    stage_path = _stage_file_path(cwd, session_id)
+    stage_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "template": template,
+        "flow":     list(flow),
+        "ts":       datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _batch_file_path(stage_path).write_text(
+        json.dumps(payload, ensure_ascii=False)
+    )
+
+
+def clear_batch(session_id: str | None = None,
+                cwd: str | Path | None = None) -> None:
+    """清除 batch_<sid> 文件。"""
+    if not session_id or not cwd:
+        return
+    stage_path = _stage_file_path(cwd, session_id)
+    try:
+        _batch_file_path(stage_path).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def clear_all_overrides(session_id: str | None = None,
+                        cwd: str | Path | None = None) -> int:
+    """~reset 全量清除：删除 model/op/pattern/fallback/complexity/batch
+    全部 override 文件，stage 保留。返回删除的文件数。
+    """
+    if not session_id or not cwd:
+        return 0
+    stage_path = _stage_file_path(cwd, session_id)
+    files = [
+        _model_file_path(stage_path),
+        _op_file_path(stage_path),
+        _pattern_file_path(stage_path),
+        _fallback_file_path(stage_path),
+        _complexity_file_path(stage_path),
+        _batch_file_path(stage_path),
+    ]
+    removed = 0
+    for f in files:
+        try:
+            f.unlink(missing_ok=True)
+            removed += 1
+        except Exception:
+            pass
+    return removed
+
+
+# ────────────────────────────────────────────────────────────────────
+# 手动指令前缀（设计文档第 12 章）—— 2026-06-14 补齐 ~careful / ~quick / ~batch / ~reset
+# ────────────────────────────────────────────────────────────────────
+
+# ~careful / ~quick — 复杂度调档
+COMPLEXITY_SHIFT_RE = re.compile(
+    r"(?:^|\s)~(careful|quick)\b",
+    re.IGNORECASE,
+)
+
+# ~batch <template> — 载入预定义任务模式
+BATCH_RE = re.compile(
+    r"(?:^|\s)~batch\s+(feature|bugfix|refactor|test|research|migration|architecture|docs|audit)\b",
+    re.IGNORECASE,
+)
+
+# ~reset — 全量清除 override
+RESET_RE = re.compile(r"(?:^|\s)~reset\b", re.IGNORECASE)
 
 
 if __name__ == "__main__":

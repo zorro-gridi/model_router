@@ -275,6 +275,202 @@ def write_fallback(model: str) -> None:
     except Exception as e:
         log.error(f"写入 fallback_<sid> 失败: {e}")
 
+
+# ── Pattern / Complexity / Batch / State-Index 读取（设计文档 §6.2-6.4 / §13）──
+
+def _pattern_file_path(stage_file: Path) -> Path:
+    return stage_file.with_name(stage_file.name.replace("stage_", "pattern_", 1))
+
+
+def _complexity_file_path(stage_file: Path) -> Path:
+    return stage_file.with_name(stage_file.name.replace("stage_", "complexity_", 1))
+
+
+def _batch_file_path(stage_file: Path) -> Path:
+    return stage_file.with_name(stage_file.name.replace("stage_", "batch_", 1))
+
+
+def _active_stage_path() -> Path | None:
+    try:
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            return Path(active_path)
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def read_pattern() -> dict | None:
+    """读取当前 session 的 task pattern 标注（Shadow Mode JSON）。"""
+    p = _active_stage_path()
+    if not p:
+        return None
+    try:
+        content = _pattern_file_path(p).read_text().strip()
+        if content:
+            return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def read_complexity() -> dict | None:
+    """读取当前 session 的 complexity 评估（§6.4）。"""
+    p = _active_stage_path()
+    if not p:
+        return None
+    try:
+        content = _complexity_file_path(p).read_text().strip()
+        if content:
+            return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def read_batch() -> dict | None:
+    """读取当前 session 的 batch 模板（~batch 载入）。"""
+    p = _active_stage_path()
+    if not p:
+        return None
+    try:
+        content = _batch_file_path(p).read_text().strip()
+        if content:
+            return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return None
+
+
+# ── Workflow Planner（设计文档 §6.5）───────────────────────────────────────────
+# 简单/中等/复杂 → single/double/triple 模型序列。
+#   simple  : 单模型（当前 stage/op 的主模型）
+#   medium  : 双步（normal 主模型 + strong 审计模型；normal 先节约 token）
+#   complex : 三步（strong 规划 + normal 执行 + strong 审计）
+# 当前实现：plan 在 proxy 主线程中只取"第一步模型"（执行模型），后续 step
+# 留待编排层或多 agent 层消费 plan。本期目标是"按复杂度挑对模型"，plan 完整
+# 序列写到路由日志供追溯。
+
+WORKFLOW_PLANNER: dict[str, dict] = {
+    # complexity label → 模型选择策略（按 stage 上下文细分）
+    # simple → 用主模型
+    # medium → 先 strong 规划（fb_model），再 normal 主模型执行
+    # complex → strong 规划 → normal 执行 → strong 审计
+    "simple": {
+        "type":  "single",
+        "steps": ["execute"],
+        # 选模型规则：直接用 stage/op 的主模型
+        "model_rule": "primary",
+    },
+    "medium": {
+        "type":  "double",
+        "steps": ["plan", "execute"],
+        # 选模型规则：执行仍用 primary（normal），但 plan 步骤可用 strong
+        "model_rule": "primary",
+    },
+    "complex": {
+        "type":  "triple",
+        "steps": ["plan", "execute", "audit"],
+        "model_rule": "primary",
+    },
+}
+
+
+def build_workflow_plan(stage_or_op: str, is_op: bool,
+                        primary_model: str,
+                        strong_model: str,
+                        complexity_label: str) -> dict:
+    """
+    根据 complexity 标签生成 workflow_plan。
+    返回 dict：{"type": "single|double|triple", "steps": [...], "models": [...]}
+    本期只用于日志与 /trace 返回值；实际执行仍按 primary_model 路由。
+    """
+    rule = WORKFLOW_PLANNER.get(complexity_label, WORKFLOW_PLANNER["medium"])
+    if rule["type"] == "single":
+        return {
+            "type":   "single",
+            "steps":  ["execute"],
+            "models": [primary_model],
+        }
+    if rule["type"] == "double":
+        return {
+            "type":   "double",
+            "steps":  ["plan", "execute"],
+            "models": [strong_model, primary_model],
+        }
+    # triple
+    return {
+        "type":   "triple",
+        "steps":  ["plan", "execute", "audit"],
+        "models": [strong_model, primary_model, strong_model],
+    }
+
+
+# ── Metrics / Trace（设计文档 §6.8 / §15）────────────────────────────────────
+# 每次路由决策写一条 JSONL 到 /tmp/stage_metrics.jsonl，供 /metrics /trace 查询。
+METRICS_LOG_FILE = Path("/tmp/stage_metrics.jsonl")
+METRICS_MAX_RECORDS = 500  # 环形缓冲：最多保留最近 500 条
+
+
+def _append_metric(record: dict) -> None:
+    """追加一条路由指标（best-effort，失败不阻塞代理）。"""
+    try:
+        with METRICS_LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _read_metrics(limit: int = 50) -> list[dict]:
+    """读取最近 N 条路由指标。"""
+    try:
+        lines = METRICS_LOG_FILE.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    out: list[dict] = []
+    for line in lines[-limit:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def _summarize_metrics(records: list[dict]) -> dict:
+    """汇总指标：按 model/pattern/complexity 分组计数 + fallback 总数。"""
+    from collections import Counter
+    model_counter: Counter = Counter()
+    pattern_counter: Counter = Counter()
+    complexity_counter: Counter = Counter()
+    routing_source_counter: Counter = Counter()
+    fallback_total = 0
+    status_counter: Counter = Counter()
+    for r in records:
+        if r.get("target_model"):
+            model_counter[r["target_model"]] += 1
+        if r.get("pattern"):
+            pattern_counter[r["pattern"]] += 1
+        if r.get("complexity_label"):
+            complexity_counter[r["complexity_label"]] += 1
+        if r.get("routing_source"):
+            routing_source_counter[r["routing_source"]] += 1
+        if r.get("used_fallback"):
+            fallback_total += 1
+        s = r.get("status", 0)
+        status_counter[s] += 1
+    return {
+        "total":              len(records),
+        "fallback_total":     fallback_total,
+        "by_model":           dict(model_counter),
+        "by_pattern":         dict(pattern_counter),
+        "by_complexity":      dict(complexity_counter),
+        "by_routing_source":  dict(routing_source_counter),
+        "by_status":          dict(status_counter),
+    }
+
 def _rewrite_response_model(resp_body: bytes, display_model: str) -> bytes:
     """
     将响应体中的 model 字段改写为 CC 能识别的模型名。

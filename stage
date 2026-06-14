@@ -62,6 +62,7 @@ _DOTENV_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
 sys.path.insert(0, str(HOOK_DIR))
 from stage_config import (                          # noqa: E402
     STAGE_CONFIG, OPERATION_CONFIG, PATTERN_CONFIG,
+    COMPLEXITY_LEVELS, shift_complexity,
 )
 VALID_STAGES    = set(STAGE_CONFIG.keys())
 VALID_OPS       = set(OPERATION_CONFIG.keys())
@@ -368,6 +369,32 @@ def show_current():
     else:
         print(f"当前模式: \033[90mnone\033[0m (shadow mode, 不影响路由)")
 
+    # ── Complexity（设计文档 §6.4，2026-06-14 引入）──
+    cdata = read_complexity()
+    if cdata and cdata.get("label"):
+        c_label = cdata["label"]
+        c_score = cdata.get("score", 0)
+        c_src = cdata.get("source", "auto")
+        c_conf = cdata.get("confidence", 0.0)
+        c_emoji = {"simple": "🟢", "medium": "🟡", "complex": "🔴"}.get(
+            c_label, "⚪"
+        )
+        print(
+            f"当前复杂度: {c_emoji} \033[1m{c_label}\033[0m "
+            f"(score={c_score}, conf={c_conf}, src={c_src})"
+        )
+    else:
+        print(f"当前复杂度: \033[90mnone\033[0m (未评估)")
+
+    # ── Batch（~batch 模板，2026-06-14 引入）──
+    bdata = read_batch()
+    if bdata and bdata.get("template"):
+        b_t = bdata["template"]
+        b_flow = bdata.get("flow", [])
+        print(f"当前 batch: \033[1;36m{b_t}\033[0m ({'→'.join(b_flow)})")
+    else:
+        print(f"当前 batch: \033[90mnone\033[0m")
+
     print(f"\n代理地址: http://127.0.0.1:{PROXY_PORT}")
     print(f"设置方式: export ANTHROPIC_BASE_URL=http://127.0.0.1:{PROXY_PORT}")
 
@@ -439,6 +466,173 @@ def list_patterns():
         print(f"  {PATTERN_INFO.get(p, p)}")
 
 
+# ── Complexity 读 / 写 / 清（设计文档 §6.4）──
+
+def _complexity_file_path(stage_path: Path) -> Path:
+    return stage_path.with_name(stage_path.name.replace("stage_", "complexity_", 1))
+
+
+def _batch_file_path(stage_path: Path) -> Path:
+    return stage_path.with_name(stage_path.name.replace("stage_", "batch_", 1))
+
+
+def read_complexity() -> dict | None:
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return None
+    try:
+        content = _complexity_file_path(stage_path).read_text().strip()
+        if not content:
+            return None
+        return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def write_complexity(score: int, label: str, confidence: float,
+                     source: str) -> bool:
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return False
+    f = _complexity_file_path(stage_path)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "score":      int(score),
+        "label":      label,
+        "confidence": round(float(confidence), 2),
+        "source":     source,
+        "ts":         datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    f.write_text(json.dumps(payload, ensure_ascii=False))
+    return True
+
+
+def clear_complexity() -> bool:
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return False
+    try:
+        _complexity_file_path(stage_path).unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def read_batch() -> dict | None:
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return None
+    try:
+        content = _batch_file_path(stage_path).read_text().strip()
+        if not content:
+            return None
+        return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def write_batch(template: str, flow: list[str]) -> bool:
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return False
+    f = _batch_file_path(stage_path)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "template": template,
+        "flow":     list(flow),
+        "ts":       datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    f.write_text(json.dumps(payload, ensure_ascii=False))
+    return True
+
+
+def clear_batch() -> bool:
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return False
+    try:
+        _batch_file_path(stage_path).unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def clear_all_overrides() -> int:
+    """~reset 等价：清 model/op/pattern/fallback/complexity/batch（stage 保留）。"""
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return 0
+    paths = [
+        stage_path.with_name(stage_path.name.replace("stage_", "model_", 1)),
+        stage_path.with_name(stage_path.name.replace("stage_", "op_", 1)),
+        stage_path.with_name(stage_path.name.replace("stage_", "pattern_", 1)),
+        stage_path.with_name(stage_path.name.replace("stage_", "fallback_", 1)),
+        _complexity_file_path(stage_path),
+        _batch_file_path(stage_path),
+    ]
+    removed = 0
+    for p in paths:
+        try:
+            p.unlink(missing_ok=True)
+            removed += 1
+        except Exception:
+            pass
+    return removed
+
+
+def show_complexity():
+    c = read_complexity()
+    if not c or not c.get("label"):
+        print("ℹ️  当前没有 complexity 评估")
+        return
+    label = c["label"]
+    score = c.get("score", 0)
+    conf = c.get("confidence", 0.0)
+    src = c.get("source", "auto")
+    ts = c.get("ts", "?")
+    emoji = {"simple": "🟢", "medium": "🟡", "complex": "🔴"}.get(label, "⚪")
+    print(f"当前复杂度: {emoji} {label}（score={score}, conf={conf}, src={src}）")
+    print(f"  评估时间: {ts}")
+
+
+def set_complexity(action: str):
+    """~careful / ~quick 显式调档。"""
+    delta = 1 if action == "careful" else -1
+    cur = read_complexity()
+    if cur is None:
+        cur_label = "medium"
+    else:
+        cur_label = cur.get("label", "medium")
+    new_label = shift_complexity(cur_label, delta)
+    new_score = {"simple": 20, "medium": 50, "complex": 80}[new_label]
+    if not write_complexity(new_score, new_label, 0.95, action):
+        print("❌ 无法写入 complexity：无活跃 session")
+        sys.exit(1)
+    print(f"复杂度调档: {cur_label} → \033[1;33m{new_label}\033[0m (~{action})")
+
+
+def set_batch(template: str):
+    if template not in VALID_PATTERNS:
+        print(f"❌ 未知 template: {template}")
+        print(f"   有效值: {' | '.join(sorted(VALID_PATTERNS))}")
+        sys.exit(1)
+    flow = PATTERN_CONFIG[template].get("default_flow", [])
+    if not write_batch(template, flow):
+        print("❌ 无法写入 batch：无活跃 session")
+        sys.exit(1)
+    print(f"~batch: 已载入 \033[1;36m{template}\033[0m 流程 {'→'.join(flow)}")
+
+
+def show_batch():
+    b = read_batch()
+    if not b or not b.get("template"):
+        print("ℹ️  当前没有 batch 模板")
+        return
+    print(f"当前 batch: \033[1;36m{b['template']}\033[0m")
+    print(f"  流程: {' → '.join(b.get('flow', []))}")
+    print(f"  载入: {b.get('ts', '?')}")
+
+
 def show_pattern():
     pat = read_pattern()
     if not pat or not pat.get("prediction"):
@@ -508,7 +702,14 @@ def main():
     elif args[0] == "log":
         tail_log()
     elif args[0] == "reset":
-        set_stage("default")
+        # ~reset 全量清除：清 model/op/pattern/fallback/complexity/batch
+        # stage 保留不动（用户仍可手动 stage <name> 切换）
+        removed = clear_all_overrides()
+        if removed:
+            print(f"✅ ~reset: 已清除 {removed} 个 override 文件")
+            print("   (model/op/pattern/fallback/complexity/batch 均已清除)")
+        else:
+            print("ℹ️  ~reset: 当前没有 override 文件需要清除")
     elif args[0] == "op":
         # stage op <name> | stage op reset | stage op list
         if len(args) < 2:
@@ -542,6 +743,40 @@ def main():
         else:
             print(f"❌ 未知 pattern 子命令: {sub}")
             print(f"   有效值: {' | '.join(sorted(VALID_PATTERNS))} | reset | list")
+            sys.exit(1)
+    elif args[0] == "complexity":
+        # stage complexity [<careful|quick|reset>] | show
+        if len(args) < 2:
+            show_complexity()
+            sys.exit(0)
+        sub = args[1].lower()
+        if sub in ("careful", "quick"):
+            set_complexity(sub)
+        elif sub == "reset":
+            if clear_complexity():
+                print("✅ complexity 已清除")
+            else:
+                print("ℹ️  当前没有 complexity 文件")
+        else:
+            print(f"❌ 未知 complexity 子命令: {sub}")
+            print("   有效值: careful | quick | reset")
+            sys.exit(1)
+    elif args[0] == "batch":
+        # stage batch [<template>|reset]
+        if len(args) < 2:
+            show_batch()
+            sys.exit(0)
+        sub = args[1].lower()
+        if sub == "reset":
+            if clear_batch():
+                print("✅ batch 模板已清除")
+            else:
+                print("ℹ️  当前没有 batch 文件")
+        elif sub in VALID_PATTERNS:
+            set_batch(sub)
+        else:
+            print(f"❌ 未知 batch template: {sub}")
+            print(f"   有效值: {' | '.join(sorted(VALID_PATTERNS))} | reset")
             sys.exit(1)
     elif args[0] in VALID_STAGES:
         set_stage(args[0])

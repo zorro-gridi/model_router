@@ -52,6 +52,7 @@ sys.path.insert(0, str(HOOK_DIR))
 
 # 从统一配置文件导入（hooks/model_router/stage_config.py）
 from stage_config import STAGE_DISPLAY, OPERATION_DISPLAY, PATTERN_INFO  # noqa: E402
+from stage_config import COMPLEXITY_LEVELS  # 用于显示复杂度档位
 from model_alias import resolve_model  # 用于显示模型简称
 
 
@@ -211,6 +212,11 @@ def _pattern_file_path(stage_file: Path) -> Path:
     return stage_file.with_name(stage_file.name.replace("stage_", "pattern_", 1))
 
 
+def _complexity_file_path(stage_file: Path) -> Path:
+    """从 stage_<sid> 派生 complexity_<sid> 路径（复杂度评估 JSON）。"""
+    return stage_file.with_name(stage_file.name.replace("stage_", "complexity_", 1))
+
+
 def read_pattern(event: dict | None = None) -> dict | None:
     """
     读取当前 session 的 task pattern 标注（Shadow Mode 专用）。
@@ -234,6 +240,37 @@ def read_pattern(event: dict | None = None) -> dict | None:
         if active_path:
             pattern_file = _pattern_file_path(Path(active_path))
             content = pattern_file.read_text().strip()
+            if content:
+                return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    return None
+
+
+def read_complexity(event: dict | None = None) -> dict | None:
+    """
+    读取当前 session 的 complexity 评估（§6.4）。
+    返回 dict：{"score": int, "label": str, "confidence": float, "source": str, "ts": str} 或 None。
+    """
+    if event:
+        session_id: str | None = (event.get("session_id") or "").strip() or None
+        cwd: str | None = event.get("cwd")
+        if session_id and cwd:
+            stage_path = _stage_file_path(cwd, session_id)
+            complexity_file = _complexity_file_path(stage_path)
+            try:
+                content = complexity_file.read_text().strip()
+                if content:
+                    return json.loads(content)
+            except (FileNotFoundError, json.JSONDecodeError):
+                pass
+
+    try:
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            complexity_file = _complexity_file_path(Path(active_path))
+            content = complexity_file.read_text().strip()
             if content:
                 return json.loads(content)
     except (FileNotFoundError, json.JSONDecodeError):
@@ -275,6 +312,23 @@ def main():
         p_conf = pattern_data.get("confidence", 0.0)
         p_label = PATTERN_INFO.get(p_pred, p_pred)
         parts.append(f"📐 模式: {p_pred} (conf={p_conf}) [shadow]")
+
+    # ── Stage Complexity（设计文档 §6.4，2026-06-14 引入）──
+    #   标注当前任务复杂度档位（simple/medium/complex）和分数。
+    complexity_data = read_complexity(event)
+    if complexity_data and complexity_data.get("label"):
+        c_label = complexity_data["label"]
+        c_score = complexity_data.get("score", 0)
+        c_source = complexity_data.get("source", "auto")
+        c_conf = complexity_data.get("confidence", 0.0)
+        # 简单档用绿色 emoji，中等黄色，复杂红色
+        c_emoji = {"simple": "🟢", "medium": "🟡", "complex": "🔴"}.get(
+            c_label, "⚪"
+        )
+        parts.append(
+            f"{c_emoji} 复杂度: {c_label} (score={c_score}, "
+            f"conf={c_conf}, src={c_source})"
+        )
 
     print(
         f"\r\033[90m[Stage Router] {' │ '.join(parts)}\033[0m",
