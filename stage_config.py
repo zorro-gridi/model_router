@@ -59,6 +59,32 @@ STAGE_CONFIG: dict[str, dict] = {
         "fb_base_url":    "https://api.deepseek.com/anthropic",
         "fb_api_key_env": "DEEPSEEK_API_KEY",
         "fb_protocol":    "anthropic",
+        # §14 配置单源化（D14-2/3 修复 2026-06-14）：关键词从 stage_detector 迁入。
+        # 顺序遍历即优先级；权重未使用，detect_stage 只判定包含关系。
+        "keywords": [
+            '读代码',
+            '看代码',
+            '理解',
+            '追调用',
+            '调用链',
+            '看日志',
+            '分析现状',
+            '定位',
+            '了解一下',
+            '搞清楚',
+            'read code',
+            'understand',
+            'trace',
+            'investigate',
+            'explore',
+            '调研',
+            '排查',
+            '现状',
+            '调用栈',
+            '哪里调',
+            '怎么实现的',
+            '梳理',
+        ],
     },
     "brainstorm": {
         "emoji":       "💭",
@@ -75,6 +101,20 @@ STAGE_CONFIG: dict[str, dict] = {
         "fb_base_url":    "https://api.minimaxi.com/anthropic",
         "fb_api_key_env": "MINIMAX_API_KEY",
         "fb_protocol":    "anthropic",
+        # §14 配置单源化（D14-2/3 修复 2026-06-14）：关键词从 stage_detector 迁入。
+        # 顺序遍历即优先级；权重未使用，detect_stage 只判定包含关系。
+        "keywords": [
+            '头脑风暴',
+            'brainstorm',
+            '想法',
+            '创意',
+            'idea',
+            '可能性',
+            '方向',
+            'possibilities',
+            '脑暴',
+            '随便想想',
+        ],
     },
     "decide": {
         "emoji":       "⚖️",
@@ -91,6 +131,23 @@ STAGE_CONFIG: dict[str, dict] = {
         "fb_base_url":    "https://api.minimaxi.com/anthropic",
         "fb_api_key_env": "MINIMAX_API_KEY",
         "fb_protocol":    "anthropic",
+        # §14 配置单源化（D14-2/3 修复 2026-06-14）：关键词从 stage_detector 迁入。
+        # 顺序遍历即优先级；权重未使用，detect_stage 只判定包含关系。
+        "keywords": [
+            '决策',
+            '选择',
+            'compare',
+            '对比',
+            '权衡',
+            'trade-off',
+            'pros and cons',
+            '哪个好',
+            '怎么选',
+            'evaluate',
+            '评估',
+            'analysis',
+            '分析',
+        ],
     },
     "design": {
         "emoji":       "🏗️",
@@ -105,6 +162,22 @@ STAGE_CONFIG: dict[str, dict] = {
         "fb_base_url":    "https://api.deepseek.com/anthropic",
         "fb_api_key_env": "DEEPSEEK_API_KEY",
         "fb_protocol":    "anthropic",
+        # §14 配置单源化（D14-2/3 修复 2026-06-14）：关键词从 stage_detector 迁入。
+        # 顺序遍历即优先级；权重未使用，detect_stage 只判定包含关系。
+        "keywords": [
+            '设计',
+            '架构',
+            'design',
+            'architect',
+            '方案',
+            'schema',
+            'structure',
+            '模块',
+            '接口',
+            'interface',
+            '系统设计',
+            '数据模型',
+        ],
     },
     "plan": {
         "emoji":       "📋",
@@ -119,6 +192,22 @@ STAGE_CONFIG: dict[str, dict] = {
         "fb_base_url":    "https://api.deepseek.com/anthropic",
         "fb_api_key_env": "DEEPSEEK_API_KEY",
         "fb_protocol":    "anthropic",
+        # §14 配置单源化（D14-2/3 修复 2026-06-14）：关键词从 stage_detector 迁入。
+        # 顺序遍历即优先级；权重未使用，detect_stage 只判定包含关系。
+        "keywords": [
+            '计划',
+            'plan',
+            '拆分',
+            'breakdown',
+            '步骤',
+            'task list',
+            'todo',
+            'roadmap',
+            '分解',
+            'milestone',
+            '任务清单',
+            '怎么做',
+        ],
     },
     "implement": {
         "emoji":       "⚙️",
@@ -133,20 +222,24 @@ STAGE_CONFIG: dict[str, dict] = {
         "fb_base_url":    "https://api.deepseek.com/anthropic",
         "fb_api_key_env": "DEEPSEEK_API_KEY",
         "fb_protocol":    "anthropic",
-    },
-    "audit": {
-        "emoji":       "🔍",
-        "label":       "工程审计",
-        "desc":        "严格检查，安全审计",
-        "model":       "MiniMax-M3",
-        "base_url":    "https://api.minimaxi.com/anthropic",
-        "api_key_env": "MINIMAX_API_KEY",
-        "protocol":    "anthropic",
-        # 升级：deepseek-v4-pro（审计需要稳妥推理）
-        "fb_model":       "deepseek-v4-pro",
-        "fb_base_url":    "https://api.deepseek.com/anthropic",
-        "fb_api_key_env": "DEEPSEEK_API_KEY",
-        "fb_protocol":    "anthropic",
+        # §14 配置单源化（D14-2/3 修复 2026-06-14）：关键词从 stage_detector 迁入。
+        # 顺序遍历即优先级；权重未使用，detect_stage 只判定包含关系。
+        "keywords": [
+            '实现',
+            '实施',
+            'implement',
+            '写代码',
+            '开发',
+            'develop',
+            '写',
+            '修',
+            'build',
+            'create',
+            'fix',
+            '修复',
+            'add',
+            '添加',
+        ],
     },
     "test": {
         "emoji":       "🧪",
@@ -161,6 +254,59 @@ STAGE_CONFIG: dict[str, dict] = {
         "fb_base_url":    "https://api.deepseek.com/anthropic",
         "fb_api_key_env": "DEEPSEEK_API_KEY",
         "fb_protocol":    "anthropic",
+        # §14 配置单源化（D14-2/3 修复 2026-06-14）：关键词从 stage_detector 迁入。
+        # §7 D7-2 修复：test 必须排在 audit 之前（避免被 audit 吞掉）。
+        # 顺序遍历即优先级；权重未使用，detect_stage 只判定包含关系。
+        "keywords": [
+            '跑测试',
+            '跑一下测试',
+            '跑用例',
+            '写测试',
+            '测试覆盖率',
+            'unit test',
+            '单元测试',
+            '回归测试',
+            'run test',
+            'run tests',
+            'run the test',
+            'execute test',
+            '覆盖率',
+            '回归验证',
+            'pytest',
+            'jest',
+            'mocha',
+        ],
+    },
+    "audit": {
+        "emoji":       "🔍",
+        "label":       "工程审计",
+        "desc":        "严格检查，安全审计",
+        "model":       "MiniMax-M3",
+        "base_url":    "https://api.minimaxi.com/anthropic",
+        "api_key_env": "MINIMAX_API_KEY",
+        "protocol":    "anthropic",
+        # 升级：deepseek-v4-pro（审计需要稳妥推理）
+        "fb_model":       "deepseek-v4-pro",
+        "fb_base_url":    "https://api.deepseek.com/anthropic",
+        "fb_api_key_env": "DEEPSEEK_API_KEY",
+        "fb_protocol":    "anthropic",
+        # §14 配置单源化（D14-2/3 修复 2026-06-14）：关键词从 stage_detector 迁入。
+        # 顺序遍历即优先级；权重未使用，detect_stage 只判定包含关系。
+        "keywords": [
+            '审计',
+            'audit',
+            'review',
+            '检查',
+            'code review',
+            '安全',
+            'security',
+            '漏洞',
+            '验证',
+            'verify',
+            '质量',
+            'quality',
+            '检验',
+        ],
     },
     "default": {
         "emoji":       "🔄",
@@ -289,6 +435,14 @@ PATTERN_CONFIG: dict[str, dict] = {
         "default_flow": ["plan", "design", "implement", "test", "audit"],
         "default_complexity": "medium",
         "primary_model": "MiniMax-M3",
+        # §14 配置单源化（D14-2/3 修复 2026-06-14）：关键词从 stage_detector 迁入此处。
+        # 加权计票：每条 (关键词, 权重)；同 pattern 多个关键词命中时累加。
+        "keywords": [
+            ("新增功能", 3), ("添加功能", 3), ("加个功能", 2), ("新增字段", 2),
+            ("新功能", 2), ("做一个", 1), ("实现一个", 1),
+            ("new feature", 3), ("add feature", 3), ("implement feature", 3),
+            ("support ", 1), ("支持 ", 1), ("实现", 1), ("加", 1),
+        ],
     },
     "bugfix": {
         "label":        "缺陷修复",
@@ -296,6 +450,11 @@ PATTERN_CONFIG: dict[str, dict] = {
         "default_flow": ["explore", "implement", "test"],
         "default_complexity": "medium",
         "primary_model": "MiniMax-M3",
+        "keywords": [
+            ("bug", 3), ("fix", 3), ("修复", 3), ("defect", 3),
+            ("崩溃", 3), ("crash", 3), ("异常", 2), ("报错", 2), ("error", 2),
+            ("修", 1),
+        ],
     },
     "refactor": {
         "label":        "结构重构",
@@ -303,6 +462,10 @@ PATTERN_CONFIG: dict[str, dict] = {
         "default_flow": ["explore", "design", "implement", "test", "audit"],
         "default_complexity": "medium",
         "primary_model": "MiniMax-M3",
+        "keywords": [
+            ("refactor", 3), ("重构", 3), ("整理", 2), ("优化结构", 3),
+            ("restructure", 3), ("reorganize", 2), ("改结构", 3), ("清理", 1),
+        ],
     },
     "test": {
         "label":        "测试建设",
@@ -310,6 +473,10 @@ PATTERN_CONFIG: dict[str, dict] = {
         "default_flow": ["explore", "test", "audit"],
         "default_complexity": "medium",
         "primary_model": "MiniMax-M3",
+        "keywords": [
+            ("写测试", 3), ("补测试", 3), ("单元测试", 3), ("unit test", 3),
+            ("integration test", 3), ("test case", 2), ("测试", 1),
+        ],
     },
     "research": {
         "label":        "资料调研",
@@ -317,6 +484,10 @@ PATTERN_CONFIG: dict[str, dict] = {
         "default_flow": ["explore", "plan", "design"],
         "default_complexity": "medium",
         "primary_model": "deepseek-v4-flash",
+        "keywords": [
+            ("调研", 3), ("research", 3), ("比较方案", 2), ("对比", 1),
+            ("evaluate", 2), ("哪个好", 1), ("选哪个", 1), ("查一下", 1),
+        ],
     },
     "migration": {
         "label":        "迁移改造",
@@ -324,6 +495,11 @@ PATTERN_CONFIG: dict[str, dict] = {
         "default_flow": ["plan", "design", "implement", "test", "audit"],
         "default_complexity": "complex",
         "primary_model": "MiniMax-M3",
+        "keywords": [
+            ("migration", 3), ("migrate", 3), ("迁移", 3), ("迁到", 2),
+            ("迁过去", 2), ("升级", 2), ("upgrade", 2),
+            ("迁移到", 3), ("升级到", 2), ("改造", 2),
+        ],
     },
     "architecture": {
         "label":        "架构级任务",
@@ -331,6 +507,10 @@ PATTERN_CONFIG: dict[str, dict] = {
         "default_flow": ["explore", "plan", "design", "audit"],
         "default_complexity": "complex",
         "primary_model": "MiniMax-M3",
+        "keywords": [
+            ("架构", 3), ("architecture", 3), ("系统设计", 3), ("顶层设计", 3),
+            ("整体方案", 2), ("技术选型", 2), ("模块划分", 3),
+        ],
     },
     "docs": {
         "label":        "文档编写",
@@ -338,6 +518,10 @@ PATTERN_CONFIG: dict[str, dict] = {
         "default_flow": ["explore", "implement"],
         "default_complexity": "simple",
         "primary_model": "deepseek-v4-flash",
+        "keywords": [
+            ("写文档", 3), ("写说明", 3), ("readme", 3), ("comment", 2),
+            ("注释", 1), ("注释一下", 2), ("documentation", 3), ("docs", 2),
+        ],
     },
     "audit": {
         "label":        "代码审计",
@@ -345,6 +529,10 @@ PATTERN_CONFIG: dict[str, dict] = {
         "default_flow": ["explore", "audit"],
         "default_complexity": "complex",
         "primary_model": "MiniMax-M3",
+        "keywords": [
+            ("code review", 3), ("安全审查", 3), ("安全审计", 3), ("security review", 3),
+            ("审计", 3), ("漏洞", 2), ("vulnerability", 3), ("性能审查", 2),
+        ],
     },
 }
 
@@ -566,3 +754,34 @@ for c in OPERATION_CONFIG.values():
         c["fb_model"],
         (c["fb_base_url"], c["fb_model"], c["fb_api_key_env"], c["fb_protocol"]),
     )
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 关键词派生视图（§14 配置单源化 — D14-2/3/4 修复 2026-06-14）
+#
+# 原始 keywords 列表已合并进 STAGE_CONFIG（每 stage 的 `keywords` 字段）和
+# PATTERN_CONFIG（每 pattern 的 `keywords` 字段）。stage_detector / 任何分类器
+# 都从这里派生读取，避免硬编码副本。
+#
+# 派生约定：
+#   STAGE_KEYWORDS   — list[(stage, list[str])]，顺序 = 优先级，detect_stage 用
+#   PATTERN_KEYWORDS — dict[pattern, list[(kw, weight)]]，加权计票用
+#   COMPLEXITY_KEYWORDS — list[(kw, weight)]，见上方 D9-3 定义
+# ═══════════════════════════════════════════════════════════════════════════
+
+# stage_detector.detect_stage() 用的优先级列表。
+# 顺序与 STAGE_CONFIG 字典定义顺序保持一致（Python 3.7+ dict 保序）；
+# 这样 explore → brainstorm → decide → design → plan → implement → test
+# → audit → default 顺次尝试，文档要求的关键字优先级与原 stage_detector
+# 完全一致。
+STAGE_KEYWORDS: list[tuple[str, list[str]]] = [
+    (stage, list(c.get("keywords", [])))
+    for stage, c in STAGE_CONFIG.items()
+    if c.get("keywords")  # 排除 default 等无关键词的 stage
+]
+
+# stage_detector.detect_task_pattern() 用的加权计票表。
+# 直接把 PATTERN_CONFIG.keywords 拿出来（每个 pattern 一组 (关键词, 权重) 元组）。
+PATTERN_KEYWORDS: dict[str, list[tuple[str, int]]] = {
+    pattern: [(kw, int(w)) for kw, w in c.get("keywords", [])]
+    for pattern, c in PATTERN_CONFIG.items()
+}
