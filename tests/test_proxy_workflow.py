@@ -95,37 +95,45 @@ def _make_handler(project_root: str, session_id: str, monkey_model: str = "test"
     return handler
 
 
-def _run_one_do_POST(project_root: str, session_id: str) -> dict:
-    """跑一次 do_POST（dry_run=True），返回（伪）wfile 中响应 body 里的 metric 摘要。
+def _run_one_do_POST(project_root: str, session_id: str,
+                      complexity_override: dict | None = None) -> dict:
+    """跑一次 do_POST（dry_run=True），返回 _append_metric 中抓到的 record dict。
 
-    由于 dry_run=True 时 proxy.py 直接构造响应而不真正调用 _call_upstream，
-    我们需要从 routing_source / log 中拿关键信息。最简单办法是 monkeypatch
-    `_append_metric` 把 record 抓到外面。
+    核心：
+    - 把所有文件 IO 限定在 tmpdir 内，不污染宿主系统的 active_session。
+    - 通过 patch proxy_mod.ACTIVE_SESSION_FILE 让 do_POST 从 tmpdir 读状态链。
     """
     captured = {}
 
     def _capture_metric(record):
         captured.update(record)
 
-    # 替换 do_POST 依赖的几个外部 IO：
-    # 1) _append_metric：抓 record
-    # 2) workflow_orchestrator：真实写文件
-    # 3) ACTIVE_SESSION_FILE：让 do_POST 知道当前 sid / root
-    active_session_path = Path(project_root) / ".claude" / "active_session"
-    active_session_path.parent.mkdir(parents=True, exist_ok=True)
-    active_session_path.write_text(
-        f"{project_root}/.claude/stage_{session_id}"
-    )
-    # 写一份 stage 文件（让 _find_project_root_for_stage_path 找到 root）
-    (Path(project_root) / ".claude" / f"stage_{session_id}").write_text("default")
-    # complexity 文件（do_POST 早期会读）
-    (Path(project_root) / ".claude" / f"complexity_{session_id}").write_text(
-        json.dumps({"label": "complex", "score": 85, "ts": 0})
-    )
+    # 在 tmpdir 里搭文件链（模拟 stage_detector 已写好的状态）：
+    #   <root>/.claude/active_session     → active session 指针
+    #   <root>/.claude/stage_<sid>        → stage 文件
+    #   <root>/.claude/complexity_<sid>   → complexity 文件
+    #   <root>/.claude/model_<sid>        → model override 文件（可选）
+    claude_dir = Path(project_root) / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+
+    active_session_path = claude_dir / "active_session"
+    stage_path = claude_dir / f"stage_{session_id}"
+
+    active_session_path.write_text(str(stage_path))
+    stage_path.write_text("default")
+
+    if complexity_override is not None:
+        (claude_dir / f"complexity_{session_id}").write_text(
+            json.dumps(complexity_override)
+        )
 
     handler = _make_handler(project_root, session_id)
 
-    with patch.object(proxy_mod, "_append_metric", side_effect=_capture_metric):
+    # 关键 patch：把 proxy_mod 的 ACTIVE_SESSION_FILE 指向 tmpdir 的
+    # active_session（否则它会去读 ~/.claude/hooks/model_router/active_session ——
+    # 即宿主系统的活跃 session，永远不是测试数据）。
+    with patch.object(proxy_mod, "ACTIVE_SESSION_FILE", active_session_path), \
+         patch.object(proxy_mod, "_append_metric", side_effect=_capture_metric):
         try:
             handler.do_POST()
         except Exception as e:
@@ -150,11 +158,8 @@ class TestProxyWorkflow(unittest.TestCase):
 
     # ── 1. simple → 不激活 workflow，走 stage 模型 ─────────
     def test_simple_task_no_workflow(self):
-        # 写 simple complexity
-        (Path(self.root) / ".claude" / f"complexity_{self.sid}").write_text(
-            json.dumps({"label": "simple", "score": 10, "ts": 0})
-        )
-        rec = _run_one_do_POST(self.root, self.sid)
+        rec = _run_one_do_POST(self.root, self.sid,
+                               complexity_override={"label": "simple", "score": 10, "ts": 0})
         # 路由 source 不含 step 标记
         rs = rec.get("routing_source", "")
         self.assertNotIn("step1/", rs,
@@ -165,15 +170,12 @@ class TestProxyWorkflow(unittest.TestCase):
 
     # ── 2. complex → 三步物理切模型 ─────────────────────────
     def test_complex_task_three_step_routing(self):
-        # 写 complex complexity（do_POST 早期读）
-        (Path(self.root) / ".claude" / f"complexity_{self.sid}").write_text(
-            json.dumps({"label": "complex", "score": 90, "ts": 0})
-        )
         # 预激活 plan（模拟 stage_detector.activate 已发生）
         wo.activate("complex", self.sid, self.root)
 
         # 第 1 次：step 1/3 → strong
-        rec1 = _run_one_do_POST(self.root, self.sid)
+        rec1 = _run_one_do_POST(self.root, self.sid,
+                                complexity_override={"label": "complex", "score": 90, "ts": 0})
         self.assertEqual(rec1.get("workflow_step"), 1)
         self.assertEqual(rec1.get("workflow_type"), "triple")
         self.assertEqual(rec1.get("target_model"), STRONG_MODEL,
@@ -198,33 +200,28 @@ class TestProxyWorkflow(unittest.TestCase):
 
     # ── 3. 显式 model_override 优先级最高 ───────────────────
     def test_model_override_bypasses_workflow(self):
-        (Path(self.root) / ".claude" / f"complexity_{self.sid}").write_text(
-            json.dumps({"label": "complex", "score": 90, "ts": 0})
-        )
         wo.activate("complex", self.sid, self.root)
-        # 写 model override
+        # 写 model override（用 deepseek-v4-flash：在 STAGE_CONFIG 中可解析）
         (Path(self.root) / ".claude" / f"model_{self.sid}").write_text(
-            "claude-sonnet-4-6"
+            "deepseek-v4-flash"
         )
 
-        rec = _run_one_do_POST(self.root, self.sid)
+        rec = _run_one_do_POST(self.root, self.sid,
+                               complexity_override={"label": "complex", "score": 90, "ts": 0})
         rs = rec.get("routing_source", "")
-        self.assertIn("model=claude-sonnet-4-6", rs,
+        self.assertIn("model=deepseek-v4-flash", rs,
                       f"model_override 应优先: {rs!r}")
         # workflow_step 不应被填充（model_override 路径跳过 orchestrator）
-        # （实际实现中 model_override 走早期 return，workflow 块未执行）
         self.assertIsNone(rec.get("workflow_step"))
         # 清 override
         (Path(self.root) / ".claude" / f"model_{self.sid}").unlink()
 
     # ── 4. medium → 双步 [strong, normal] ────────────────────
     def test_medium_task_double_step(self):
-        (Path(self.root) / ".claude" / f"complexity_{self.sid}").write_text(
-            json.dumps({"label": "medium", "score": 50, "ts": 0})
-        )
         wo.activate("medium", self.sid, self.root)
 
-        rec1 = _run_one_do_POST(self.root, self.sid)
+        rec1 = _run_one_do_POST(self.root, self.sid,
+                                complexity_override={"label": "medium", "score": 50, "ts": 0})
         self.assertEqual(rec1.get("workflow_type"), "double")
         self.assertEqual(rec1.get("workflow_step"), 1)
         self.assertEqual(rec1.get("target_model"), STRONG_MODEL)
@@ -239,11 +236,9 @@ class TestProxyWorkflow(unittest.TestCase):
 
     # ── 5. workflow_step_<sid> 缺失时 → 不报错，走 stage 模型 ─
     def test_missing_workflow_file_falls_back(self):
-        (Path(self.root) / ".claude" / f"complexity_{self.sid}").write_text(
-            json.dumps({"label": "complex", "score": 90, "ts": 0})
-        )
         # 没有 activate，没有写 workflow_step_<sid> 文件
-        rec = _run_one_do_POST(self.root, self.sid)
+        rec = _run_one_do_POST(self.root, self.sid,
+                               complexity_override={"label": "complex", "score": 90, "ts": 0})
         # 没文件 → orchestrator 读 None → 不走 step 路由
         self.assertIsNone(rec.get("workflow_step"),
                           f"无 plan 文件时 workflow_step 应为 None: {rec.get('workflow_step')}")

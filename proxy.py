@@ -959,6 +959,12 @@ def forward_request(
     DeepSeek 的 Anthropic SDK 端点（https://api.deepseek.com/anthropic）
     就是 Anthropic 协议，必须走 anthropic 分支。
     """
+    # dry_run 模式提前返回（不检查 API key，不发起 HTTP 请求）
+    if dry_run:
+        log.info(f"[DRY-RUN] 将转发到: {target_model}")
+        mock = {"content": [{"type": "text", "text": f"[dry-run] routed to {target_model}"}]}
+        return 200, {"content-type": "application/json"}, json.dumps(mock).encode()
+
     api_key = os.environ.get(api_key_env, "")
     if not api_key:
         log.error(f"环境变量 {api_key_env} 未设置")
@@ -1029,11 +1035,6 @@ def forward_request(
         f"thinking_blocks={thinking_block_total}(有sig={thinking_with_sig})"
         f" hdrs={list(headers.keys())}"
     )
-
-    if dry_run:
-        log.info(f"[DRY-RUN] 将转发到: {url}")
-        mock = {"content": [{"type": "text", "text": f"[dry-run] routed to {target_model}"}]}
-        return 200, {"content-type": "application/json"}, json.dumps(mock).encode()
 
     # 构造请求头
     fwd_headers = {"Content-Type": "application/json"}
