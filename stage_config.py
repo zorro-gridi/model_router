@@ -46,6 +46,20 @@ stage_config.py — 阶段 × 复杂度 × 模式 统一配置
 # ═══════════════════════════════════════════════════════════════════════════
 
 STAGE_CONFIG: dict[str, dict] = {
+    "explore": {
+        "emoji":       "🔎",
+        "label":       "探索理解",
+        "desc":        "读代码、追调用链、看日志、定位现状",
+        "model":       "MiniMax-M3",
+        "base_url":    "https://api.minimaxi.com/anthropic",
+        "api_key_env": "MINIMAX_API_KEY",
+        "protocol":    "anthropic",
+        # 升级：deepseek-v4-pro（深追调用链/理解复杂上下文时升级推理）
+        "fb_model":       "deepseek-v4-pro",
+        "fb_base_url":    "https://api.deepseek.com/anthropic",
+        "fb_api_key_env": "DEEPSEEK_API_KEY",
+        "fb_protocol":    "anthropic",
+    },
     "brainstorm": {
         "emoji":       "💭",
         "label":       "头脑风暴",
@@ -123,6 +137,20 @@ STAGE_CONFIG: dict[str, dict] = {
         "api_key_env": "MINIMAX_API_KEY",
         "protocol":    "anthropic",
         # 升级：deepseek-v4-pro（审计需要稳妥推理）
+        "fb_model":       "deepseek-v4-pro",
+        "fb_base_url":    "https://api.deepseek.com/anthropic",
+        "fb_api_key_env": "DEEPSEEK_API_KEY",
+        "fb_protocol":    "anthropic",
+    },
+    "test": {
+        "emoji":       "🧪",
+        "label":       "测试验证",
+        "desc":        "写测试、跑测试、分析覆盖率、回归验证",
+        "model":       "MiniMax-M3",
+        "base_url":    "https://api.minimaxi.com/anthropic",
+        "api_key_env": "MINIMAX_API_KEY",
+        "protocol":    "anthropic",
+        # 升级：deepseek-v4-pro（复杂测试用例设计、根因分析需稳妥推理）
         "fb_model":       "deepseek-v4-pro",
         "fb_base_url":    "https://api.deepseek.com/anthropic",
         "fb_api_key_env": "DEEPSEEK_API_KEY",
@@ -332,6 +360,56 @@ COMPLEXITY_THRESHOLDS: dict[str, int] = {
     "complex": 100,
 }
 
+# 关键词权重表（命中后累加；负权重为"明显简单"的反向信号）。
+# §14 配置单源化（D9-3 修复 2026-06-14）：原本硬编码在 stage_detector.py，
+# 现统一在 stage_config.py，stage_detector / proxy 通过派生读取。
+COMPLEXITY_KEYWORDS: list[tuple[str, int]] = [
+    # 高复杂度信号
+    ("跨模块", 25), ("跨系统", 25), ("跨服务", 20), ("分布式", 20),
+    ("迁移", 20), ("migration", 20), ("migrate", 20),
+    ("架构", 25), ("architecture", 25), ("顶层设计", 30), ("系统设计", 25),
+    ("性能审查", 20), ("安全审计", 20), ("安全审查", 20),
+    ("重构", 15), ("refactor", 15), ("restructure", 15),
+    ("审计", 15), ("audit", 15), ("code review", 15),
+    ("分析测试失败", 20), ("失败原因", 15), ("排查", 10), ("根因", 15),
+    ("方案对比", 15), ("比较方案", 15), ("调研", 10), ("research", 10),
+    # 低复杂度信号（负权重）
+    ("重命名", -15), ("rename", -15),
+    ("改一行", -20), ("一行代码", -20), ("一行修复", -20),
+    ("改个名字", -15), ("修个 typo", -20), ("typo", -20),
+    ("确认一下", -10), ("快速确认", -10),
+    ("简单", -5), ("就", -1),  # "就改一下" 类短句
+]
+
+# Pattern 基础分（PATTERN_BASE_SCORE）
+PATTERN_BASE_SCORE: dict[str, int] = {
+    "feature":      50,
+    "bugfix":       45,
+    "refactor":     55,
+    "test":         40,
+    "research":     50,
+    "migration":    75,
+    "architecture": 80,
+    "docs":         20,
+    "audit":        70,
+}
+
+# Stage 倍率（设计文档 §9 原则："复杂度必须基于当前阶段判断"）
+# §9 D9-1 修复 2026-06-14：原 detect_complexity 不接 stage，导致同一 prompt
+# 在 explore / implement / audit 三个 stage 下评分相同。
+# 倍率语义：探索阶段通常简单（×0.7），设计/审计阶段通常复杂（×1.2~1.3）。
+STAGE_COMPLEXITY_MULTIPLIER: dict[str, float] = {
+    "explore":    0.7,   # 读代码/追调用链 → 通常简单
+    "brainstorm": 0.8,   # 发散想法 → 偏简单
+    "implement":  1.0,   # 编码 → 中性
+    "decide":     1.1,   # 决策推理 → 偏复杂
+    "plan":       1.1,   # 任务拆解 → 偏复杂
+    "design":     1.2,   # 架构设计 → 通常复杂
+    "audit":      1.3,   # 审计/审查 → 通常复杂
+    "test":       1.0,   # 测试任务 → 中性（复杂度看具体子任务）
+    "default":    1.0,   # 兜底
+}
+
 # ═══════════════════════════════════════════════════════════════════════════
 # LLM 分类器配置（设计文档 §6.2 / §6.4 / §10 合并实现）
 #
@@ -354,6 +432,20 @@ LLM_CLASSIFIER_CONFIG: dict[str, object] = {
     "temperature": 0.0,
     "timeout":     15,
 }
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Workflow 角色模型（设计文档第 10 章算法 D10-5 修复 2026-06-14）
+#
+# 问题：原 build_workflow_plan 把 stage.fb_model 当 strong_model 用，
+# 但 implement.fb_model = deepseek-v4-flash（弱模型），
+# 导致 implement complex workflow = [flash, M3, flash] —— 违反"复杂任务用强模型"。
+#
+# 修复：定义全局 STRONG_MODEL / NORMAL_MODEL，build_workflow_plan 直接引用，
+# 任何 stage 的 complex workflow 都真正走"强+常规+强"。
+# ═══════════════════════════════════════════════════════════════════════════
+
+STRONG_MODEL:  str = "deepseek-v4-pro"   # 复杂任务的规划/审计模型（设计文档 §10）
+NORMAL_MODEL: str = "MiniMax-M3"        # 常规模型（主力执行）
 
 
 def complexity_rank(level: str) -> int:

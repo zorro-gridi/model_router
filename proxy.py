@@ -1050,10 +1050,37 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             # op 路由已废弃（2026-06-14）：OPERATION_MODELS = {}，
             # read_operation() 始终返回 None，此分支自动退化到 stage。
             op = read_operation()
+
+            # ── Batch 强制流程覆盖（优先级 #2：设计文档 §5）──
+            # ~batch 激活时直接跳到 PATTERN_CONFIG[template].default_flow[0]，
+            # 绕过普通 stage 检测；同时把 PATTERN.primary_model 作为主模型来源。
+            # 修复 D5-3（2026-06-14）：之前 batch 文件只写 template+flow+ts，
+            # 没有 primary_model，所以下面那段 batch.get("primary_model") 是死代码。
+            batch_template = batch.get("template") if batch else None
             if op and op in OPERATION_MODELS:
                 base_url, model, key_env, protocol = OPERATION_MODELS[op]
                 fb_base, fb_model, fb_key, fb_proto = OPERATION_FALLBACK_MODELS[op]
                 routing_source = f"op={op}"
+            elif batch_template and batch_template in PATTERN_CONFIG:
+                # 强制 stage = PATTERN_CONFIG[template].default_flow[0]
+                flow = PATTERN_CONFIG[batch_template].get("default_flow", [])
+                stage = flow[0] if flow else read_stage()
+                base_url, model, key_env, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
+                fb_base, fb_model, fb_key, fb_proto = FALLBACK_MODELS.get(
+                    stage, FALLBACK_MODELS["default"]
+                )
+                routing_source = f"stage={stage} [batch={batch_template}]"
+                # 强制主模型 = PATTERN.primary_model（如 research/docs 用 deepseek-v4-flash）
+                pattern_primary = PATTERN_CONFIG[batch_template].get("primary_model")
+                if pattern_primary:
+                    try:
+                        override_routing = resolve_model_routing(pattern_primary)
+                        if override_routing:
+                            (base_url, model, key_env, protocol,
+                             fb_base, fb_model, fb_key, fb_proto) = override_routing
+                            routing_source += f" [batch.primary={pattern_primary}]"
+                    except Exception:
+                        pass  # primary_model 解析失败 → 保留 stage 默认
             else:
                 stage = read_stage()
                 base_url, model, key_env, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
@@ -1061,17 +1088,6 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                     stage, FALLBACK_MODELS["default"]
                 )
                 routing_source = f"stage={stage}"
-
-            # ── Batch 强制流程覆盖（优先级 #2：设计文档 §5）──
-            if batch and batch.get("primary_model"):
-                try:
-                    override_routing = resolve_model_routing(batch["primary_model"])
-                    if override_routing:
-                        (base_url, model, key_env, protocol,
-                         fb_base, fb_model, fb_key, fb_proto) = override_routing
-                        routing_source += f" [batch={batch.get('template', '?')}]"
-                except Exception:
-                    pass  # batch 模板名无效 → 静默回落到 stage/op
 
             # ── Workflow Plan（设计文档 §6.5 / §10 算法步骤 6-7）──
             # simple/medium/complex 决定 single/double/triple 模型序列。

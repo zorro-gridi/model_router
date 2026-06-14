@@ -99,12 +99,14 @@ Analyze the user's request and classify it along THREE dimensions.
 Return ONLY valid JSON (no markdown fences, no extra text).
 
 ## Dimension 1 — stage (current work phase):
+- "explore": reading code, tracing call chains, understanding current state, investigating logs
 - "brainstorm": exploring ideas, creative thinking, possibilities, "what if"
 - "decide": making decisions, comparing options, evaluating trade-offs
 - "design": system architecture, designing solutions, data models, interfaces
 - "plan": breaking down tasks, creating roadmaps, step-by-step planning
 - "implement": coding, building, fixing bugs, developing, refactoring
-- "audit": reviewing, testing, security checking, code review, quality assurance
+- "test": writing tests, running tests, analyzing coverage, regression verification
+- "audit": reviewing, security checking, code review, quality assurance (non-test review)
 - "default": none of the above clearly matches / general chat
 
 ## Dimension 2 — pattern (task type):
@@ -304,8 +306,8 @@ def _parse_classifier_json(text: str) -> dict:
 
 # ── 合法的 stage / pattern 枚举值 ──
 VALID_STAGES = {
-    "brainstorm", "decide", "design", "plan",
-    "implement", "audit", "default",
+    "explore", "brainstorm", "decide", "design", "plan",
+    "implement", "test", "audit", "default",
 }
 VALID_PATTERNS = {
     "feature", "bugfix", "refactor", "test", "research",

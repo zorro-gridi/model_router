@@ -99,8 +99,16 @@ def log(level: str, msg: str) -> None:
 
 # 关键词 → 阶段映射（按优先级排列，先匹配先赢）
 STAGE_KEYWORDS: list[tuple[str, list[str]]] = [
+    # explore 放最前：读代码/追调用链/理解现状是高频任务
+    # 2026-06-14 §7 D7-1 修复：补全 explore stage（设计文档第 7 章）
+    ("explore",    [
+        "读代码", "看代码", "理解", "追调用", "调用链", "看日志", "分析现状",
+        "定位", "了解一下", "搞清楚", "read code", "understand", "trace",
+        "investigate", "explore", "调研", "排查", "现状", "调用栈",
+        "哪里调", "怎么实现的", "梳理",
+    ]),
     ("brainstorm", [
-        "头脑风暴", "brainstorm", "想法", "创意", "idea", "explore",
+        "头脑风暴", "brainstorm", "想法", "创意", "idea",
         "可能性", "方向", "possibilities", "脑暴", "随便想想",
     ]),
     ("decide",     [
@@ -119,16 +127,24 @@ STAGE_KEYWORDS: list[tuple[str, list[str]]] = [
         "实现", "实施", "implement", "写代码", "开发", "develop",
         "写", "修", "build", "create", "fix", "修复", "add", "添加",
     ]),
+    # test 放 audit 之前：测试任务独立识别，避免被 audit 吞掉
+    # 2026-06-14 §7 D7-2 修复：补全 test stage
+    ("test",       [
+        "跑测试", "跑一下测试", "跑用例", "写测试", "测试覆盖率",
+        "unit test", "单元测试", "回归测试", "run test", "run tests",
+        "run the test", "execute test", "覆盖率", "回归验证",
+        "pytest", "jest", "mocha",
+    ]),
     ("audit",      [
         "审计", "audit", "review", "检查", "code review", "安全",
-        "security", "漏洞", "bug", "测试", "test", "验证", "verify",
+        "security", "漏洞", "验证", "verify",
         "质量", "quality", "检验",
     ]),
 ]
 
 # 显式命令前缀（优先级最高）
 EXPLICIT_PREFIX_RE = re.compile(
-    r"(?:^|\s)~stage\s+(brainstorm|decide|design|plan|implement|audit|default)\b",
+    r"(?:^|\s)~stage\s+(brainstorm|decide|design|plan|implement|audit|default|explore|test)\b",
     re.IGNORECASE,
 )
 
@@ -801,8 +817,8 @@ def main():
             # 无显式 ~stage 指令时，用 LLM 分类结果
             llm_stage = llm_result.get("stage", "")
             if llm_stage in {
-                "brainstorm", "decide", "design", "plan",
-                "implement", "audit", "default",
+                "explore", "brainstorm", "decide", "design", "plan",
+                "implement", "test", "audit", "default",
             }:
                 new_stage = llm_stage
                 log("INFO", f"stage from LLM: {new_stage}")
@@ -1005,39 +1021,19 @@ def main():
 #
 # 当前为 V1（关键词 + 长度 + pattern 加权），用于 ~careful/~quick 调档
 # 与 proxy Workflow Planner 选模型序列。
+#
+# §14 配置单源化（D9-3 修复 2026-06-14）：COMPLEXITY_KEYWORDS / PATTERN_BASE_SCORE
+# 已迁移到 stage_config.py，本文件改为派生读取。
+# §9 设计原则（D9-1 修复 2026-06-14）：detect_complexity 现在接收 stage 参数，
+# 引入 STAGE_COMPLEXITY_MULTIPLIER 让"探索/设计/审计"等阶段影响复杂度评分。
 # ────────────────────────────────────────────────────────────────────
 
-# 加分关键词：每个 (kw, weight) 命中后累加。负权重用于"明显简单"的反向信号。
-COMPLEXITY_KEYWORDS: list[tuple[str, int]] = [
-    # 高复杂度信号
-    ("跨模块", 25), ("跨系统", 25), ("跨服务", 20), ("分布式", 20),
-    ("迁移", 20), ("migration", 20), ("migrate", 20),
-    ("架构", 25), ("architecture", 25), ("顶层设计", 30), ("系统设计", 25),
-    ("性能审查", 20), ("安全审计", 20), ("安全审查", 20),
-    ("重构", 15), ("refactor", 15), ("restructure", 15),
-    ("审计", 15), ("audit", 15), ("code review", 15),
-    ("分析测试失败", 20), ("失败原因", 15), ("排查", 10), ("根因", 15),
-    ("方案对比", 15), ("比较方案", 15), ("调研", 10), ("research", 10),
-    # 低复杂度信号（负权重）
-    ("重命名", -15), ("rename", -15),
-    ("改一行", -20), ("一行代码", -20), ("一行修复", -20),
-    ("改个名字", -15), ("修个 typo", -20), ("typo", -20),
-    ("确认一下", -10), ("快速确认", -10),
-    ("简单", -5), ("就", -1),  # "就改一下" 类短句
-]
-
-# Pattern → 默认基础分（来自 PATTERN_CONFIG.default_complexity 的扩展）
-PATTERN_BASE_SCORE: dict[str, int] = {
-    "feature":      50,
-    "bugfix":       45,
-    "refactor":     55,
-    "test":         40,
-    "research":     50,
-    "migration":    75,
-    "architecture": 80,
-    "docs":         20,
-    "audit":        70,
-}
+from stage_config import (  # noqa: E402  配置单源化派生
+    COMPLEXITY_KEYWORDS,
+    COMPLEXITY_THRESHOLDS,
+    PATTERN_BASE_SCORE,
+    STAGE_COMPLEXITY_MULTIPLIER,
+)
 
 
 def _score_to_label(score: int) -> str:
@@ -1049,7 +1045,8 @@ def _score_to_label(score: int) -> str:
     return "complex"
 
 
-def detect_complexity(prompt: str, pattern: str | None = None) -> dict:
+def detect_complexity(prompt: str, pattern: str | None = None,
+                      stage: str | None = None) -> dict:
     """
     计算当前 prompt 的复杂度评分。
 
@@ -1058,11 +1055,17 @@ def detect_complexity(prompt: str, pattern: str | None = None) -> dict:
 
     实现思路（V1 启发式，V2 可替换为 LLM 分类器）：
       1. 基础分：若已识别 pattern，从 PATTERN_BASE_SCORE 起步；否则 medium=50
-      2. 关键词加权：扫描 COMPLEXITY_KEYWORDS，累加权重
-      3. 长度加成：>200 字加 5，>500 字加 10（长 prompt 通常任务更复杂）
-      4. 文件提及：出现"X 个文件"/"多个"等加 5
-      5. 夹紧到 [0, 100]
-      6. confidence：依据触发的信号数，0 个信号 → 0.3，≥3 个 → 0.85
+      2. Stage 倍率：基于当前阶段（设计文档 §9 原则："复杂度必须基于当前阶段判断"）
+      3. 关键词加权：扫描 COMPLEXITY_KEYWORDS，累加权重
+      4. 长度加成：>200 字加 5，>500 字加 10（长 prompt 通常任务更复杂）
+      5. 文件提及：出现"X 个文件"/"多个"等加 5
+      6. 夹紧到 [0, 100]
+      7. confidence：依据触发的信号数，0 个信号 → 0.3，≥3 个 → 0.85
+
+    参数：
+      prompt  — 用户输入文本
+      pattern — 已识别的任务模式（feature / bugfix / ...）
+      stage   — 当前工作阶段（explore / design / audit / ...，设计文档 §9 原则）
     """
     signals: list[str] = []
     if not prompt:
@@ -1076,14 +1079,20 @@ def detect_complexity(prompt: str, pattern: str | None = None) -> dict:
         score = 50  # medium 起步
         signals.append("base=medium(50)")
 
-    # 2. 关键词
+    # 2. Stage 倍率（§9 D9-1 修复）
+    if stage and stage in STAGE_COMPLEXITY_MULTIPLIER:
+        mult = STAGE_COMPLEXITY_MULTIPLIER[stage]
+        score = int(score * mult)
+        signals.append(f"stage={stage}(×{mult})")
+
+    # 3. 关键词
     prompt_lower = prompt.lower()
     for kw, w in COMPLEXITY_KEYWORDS:
         if kw in prompt_lower:
             score += w
             signals.append(f"{kw}({w:+d})")
 
-    # 3. 长度加成
+    # 4. 长度加成
     char_count = len(prompt)
     if char_count > 500:
         score += 10
@@ -1092,15 +1101,15 @@ def detect_complexity(prompt: str, pattern: str | None = None) -> dict:
         score += 5
         signals.append(f"len>200(+5)")
 
-    # 4. "多个 / X 个" 加成
+    # 5. "多个 / X 个" 加成
     if any(p in prompt for p in ("多个", "若干", "几处", "一系列")):
         score += 5
         signals.append("multi-entity(+5)")
 
-    # 5. 夹紧
+    # 6. 夹紧
     score = max(0, min(100, score))
 
-    # 6. confidence
+    # 7. confidence
     n_signals = len(signals)
     confidence = min(0.85, 0.3 + n_signals * 0.12)
     confidence = round(confidence, 2)
