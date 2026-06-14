@@ -95,6 +95,7 @@ from stage_config import (
     OPERATION_MODELS, OPERATION_FALLBACK_MODELS,
     STAGE_CONFIG, OPERATION_CONFIG,
     MODEL_TO_CONFIG,
+    STRONG_MODEL, NORMAL_MODEL,   # 设计文档 §10 路由算法：全局强/常规模型
 )
 
 # 模型覆盖指令解析（~model / ~m / 自然语言）
@@ -1092,11 +1093,11 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             # ── Workflow Plan（设计文档 §6.5 / §10 算法步骤 6-7）──
             # simple/medium/complex 决定 single/double/triple 模型序列。
             # 实际路由按 plan 真正落地：
-            #   simple  → 单模型（主模型）
-            #   medium  → 双步：normal 主模型执行，strong 模型审计（保留主执行）
-            #   complex → 三步：strong 规划 + normal 执行 + strong 审计
-            #            → 实际路由时把 strong 模型（= stage.fb_model）作为主模型，
-            #              normal 模型（= stage.model）作为 fb，体现"高阶推理优先"。
+            #   simple  → 单模型（主模型 = stage.model）
+            #   medium  → 双步：[strong, normal]（规划用强模型、执行用常规模型）
+            #   complex → 三步：[strong, normal, strong]（强规划 + 常规执行 + 强审计）
+            # 强模型是**全局概念**（STRONG_MODEL = deepseek-v4-pro），与 stage 无关——
+            # 此前用 stage.fb_model 当强模型是错误的（implement.fb = deepseek-v4-flash 是弱模型）。
             # 设计文档 §17 验收："复杂任务稳定触发 strong→normal→strong"——
             # 在单步 CC 转发场景下，"stable" 通过"complex 任务统一走 strong 主模型"保证。
             workflow = build_workflow_plan(
@@ -1104,17 +1105,21 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                             if "=" in routing_source else "default",
                 is_op=routing_source.startswith("op="),
                 primary_model=model,
-                strong_model=fb_model,  # 强模型 = stage 配置中的 fb_model（升级路径）
+                strong_model=STRONG_MODEL,  # 全局强模型（与 stage 无关）
                 complexity_label=complexity_label,
             )
-            # complex 任务：把主/备对调，让 strong 模型当主、normal 当 fb
-            if complexity_label == "complex" and fb_model and fb_model != model:
-                (base_url, model, key_env, protocol,
-                 fb_base, fb_model, fb_key, fb_proto) = (
-                    fb_base, fb_model, fb_key, fb_proto,
-                    base_url, model, key_env, protocol,
-                )
-                routing_source += " [workflow=complex→strong]"
+            # complex 任务：把强模型 (STRONG_MODEL = deepseek-v4-pro) 当主，
+            # 常规 stage 模型当 fb —— 体现"高阶推理优先"。
+            if complexity_label == "complex":
+                strong_routing = resolve_model_routing(STRONG_MODEL)
+                if strong_routing and strong_routing[1] != model:
+                    s_base, s_model, s_key, s_proto, _, _, _, _ = strong_routing
+                    # 把原 stage 模型存为 fb，strong 路由设为主
+                    fb_base, fb_model, fb_key, fb_proto = (
+                        base_url, model, key_env, protocol
+                    )
+                    base_url, model, key_env, protocol = s_base, s_model, s_key, s_proto
+                    routing_source += f" [workflow=complex→{STRONG_MODEL}]"
         else:
             # model_override 路径无 workflow 编排（用户已显式指定）
             workflow = {
