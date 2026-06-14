@@ -612,16 +612,16 @@ STAGE_COMPLEXITY_MULTIPLIER: dict[str, float] = {
 # 调用。llm_classifier.py 读取此配置确定使用哪个模型做分类。
 #
 # 模型选择建议：
-#   MiniMax-M3           — 推荐，分类准确、稳定、速度快
-#   deepseek-v4-flash    — 备选，成本更低、响应更快
+#   deepseek-v4-flash    — 推荐，成本更低、响应更快，分类任务不需要强模型
+#   MiniMax-M3           — 备选，分类准确、稳定、速度快
 #
 # 调用方优先级：传入 config > 本配置 > llm_classifier.DEFAULT_CLASSIFIER_CONFIG
 # ═══════════════════════════════════════════════════════════════════════════
 
 LLM_CLASSIFIER_CONFIG: dict[str, object] = {
-    "model":       "MiniMax-M3",
-    "base_url":    "https://api.minimaxi.com/anthropic",
-    "api_key_env": "MINIMAX_API_KEY",
+    "model":       "deepseek-v4-flash",
+    "base_url":    "https://api.deepseek.com/anthropic",
+    "api_key_env": "DEEPSEEK_API_KEY",
     "protocol":    "anthropic",
     "max_tokens":  512,
     "temperature": 0.0,
@@ -641,6 +641,14 @@ LLM_CLASSIFIER_CONFIG: dict[str, object] = {
 
 STRONG_MODEL:  str = "deepseek-v4-pro"   # 复杂任务的规划/审计模型（设计文档 §10）
 NORMAL_MODEL: str = "MiniMax-M3"        # 常规模型（主力执行）
+
+# ── Per-API-Request 动态分类间隔（设计文档 §6.2 / §6.4）──
+# Hook (UserPromptSubmit) 每次都会分类；Proxy 在每次 API 请求时递增计数器，
+# 计数器到达此阈值时触发一次 LLM 重新分类。
+# 默认值 3：即每 3 次 CC API 请求重新分类一次。
+# 可通过环境变量 STAGE_ROUTER_RECLASSIFY_INTERVAL 覆盖（覆盖点在 proxy.py 和
+# stage_detector.py 中读取 os.environ）。
+RECLASSIFY_INTERVAL: int = 3
 
 
 def complexity_rank(level: str) -> int:

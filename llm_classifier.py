@@ -88,11 +88,11 @@ def _load_dotenv_once(env_path: Path = ENV_FILE) -> int:
 # 模块导入时立即加载一次（最迟到首次调用 classify() 时 key 必然就位）
 _load_dotenv_once()
 
-# ── 默认配置（MiniMax-M3，Anthropic 协议）──
+# ── 默认配置（deepseek-v4-flash，Anthropic 协议）──
 DEFAULT_CLASSIFIER_CONFIG: dict = {
-    "model":       "MiniMax-M3",
-    "base_url":    "https://api.minimaxi.com/anthropic",
-    "api_key_env": "MINIMAX_API_KEY",
+    "model":       "deepseek-v4-flash",
+    "base_url":    "https://api.deepseek.com/anthropic",
+    "api_key_env": "DEEPSEEK_API_KEY",
     "protocol":    "anthropic",
     "max_tokens":  512,      # 分类只需要很短的回答
     "temperature": 0.0,      # 零温度确保确定性
