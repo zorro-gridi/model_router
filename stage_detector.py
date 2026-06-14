@@ -7,7 +7,7 @@ stage_detector.py — UserPromptSubmit Hook
 
 支持两种写入方式：
   1. 关键词自动检测（本文件负责）
-  2. 用户显式前缀，如：/stage implement → 写入 implement
+  2. 用户显式前缀，如：~stage implement → 写入 implement
 
 阶段文件存储位置：
   分 session 阶段文件 stage_<session_id> 存放在 <项目根目录>/.claude/ 下，
@@ -17,13 +17,13 @@ stage_detector.py — UserPromptSubmit Hook
 
 Operation-type（第二维度，2026-06-13 引入）：
   与 stage 并列独立信号，由关键词或显式前缀触发：
-    /op write /op read /op search /op refactor
+    ~write / ~read / ~search / ~refactor
   op 文件位置：<project_root>/.claude/op_<session_id>，与 stage_<sid> 同目录，
   仅前缀不同。proxy.py 端在 stage 路由之上叠加：检出 op → 完全覆盖 stage。
 
 Model-override（用户显式指定模型，2026-06-13 引入，最高优先级）：
-  用户可通过 !model / !m 前缀或自然语言（use / 用）指定模型简称：
-    !model ds-v4-pro   !m mm3   use deepseek-v4-flash   用 mm3
+  用户可通过 ~model / ~m 前缀或自然语言（use / 用）指定模型简称：
+    ~model ds-v4-pro   ~m mm3   use deepseek-v4-flash   用 mm3
   model 文件位置：<project_root>/.claude/model_<session_id>，与 stage_<sid>
   同目录，仅前缀不同。proxy.py 端路由优先级：model_override > op > stage。
 
@@ -109,7 +109,7 @@ STAGE_KEYWORDS: list[tuple[str, list[str]]] = [
 
 # 显式命令前缀（优先级最高）
 EXPLICIT_PREFIX_RE = re.compile(
-    r"^/stage\s+(brainstorm|decide|design|plan|implement|audit|default)\b",
+    r"^~stage\s+(brainstorm|decide|design|plan|implement|audit|default)\b",
     re.IGNORECASE,
 )
 
@@ -156,9 +156,9 @@ OPERATION_KEYWORDS: list[tuple[str, list[str]]] = [
     ]),
 ]
 
-# 显式命令前缀（优先级最高，与 EXPLICIT_PREFIX_RE 同风格但只接 op 名）
+# 显式命令前缀（优先级最高，使用 ~<op> 格式）
 OPERATION_PREFIX_RE = re.compile(
-    r"^/op\s+(write|read|search|refactor)\b",
+    r"^~(write|read|search|refactor)\b",
     re.IGNORECASE,
 )
 

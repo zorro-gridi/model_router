@@ -2,14 +2,14 @@
 model_alias.py — 用户自定义模型指令别名系统
 =============================================
 维护模型简称 → 规范模型名的映射，并提供自然语言关键词识别和
-标准指令格式（!model / !m）解析。
+标准指令格式（~model / ~m）解析。
 
 用户可在任意 prompt 中指定模型，优先于 op/stage 自动路由：
-  !model ds-v4-pro      → 显式指令
-  !m mm3                 → 短指令
+  ~model ds-v4-pro      → 显式指令
+  ~m mm3                 → 短指令
   use deepseek-v4-flash  → 自然英语
   用 mm3                  → 自然中文
-  !model reset           → 清除覆盖，回到自动路由
+  ~model reset           → 清除覆盖，回到自动路由
 
 本文件是别名映射的**唯一数据源**。新增简称只需修改 MODEL_ALIASES 字典。
 """
@@ -75,11 +75,11 @@ def _collect_known_models() -> set[str]:
 KNOWN_MODEL_NAMES: set[str] = _collect_known_models()
 
 
-# ── 正则：显式指令（!model / !m，最高优先级）─────────────────────
+# ── 正则：显式指令（~model / ~m，最高优先级）─────────────────────
 
-# !model <alias> 或 !m <alias>
+# ~model <alias> 或 ~m <alias>
 MODEL_OVERRIDE_PREFIX_RE = re.compile(
-    r"^!(?:model|m)\s+(\S+)",
+    r"^~(?:model|m)\s+(\S+)",
     re.IGNORECASE,
 )
 
@@ -128,7 +128,7 @@ def detect_model_override(prompt: str) -> tuple[Optional[str], bool]:
     - is_reset=True:  用户要求清除覆盖，回到自动路由
     - 其它:            canon 为模型名或 None（无指令）
 
-    优先级: 显式 !model 指令 > 自然语言模式
+    优先级: 显式 ~model 指令 > 自然语言模式
     """
     if not prompt:
         return (None, False)
@@ -150,7 +150,7 @@ def detect_model_override(prompt: str) -> tuple[Optional[str], bool]:
         return (None, False)
 
     # ── 2. 自然语言模式 ─────────────────────────────────────
-    # 注意：只在 !model 未命中时才走自然语言，避免 "!model" 被
+    # 注意：只在 ~model 未命中时才走自然语言，避免 "~model" 被
     # 自然语言正则误匹配。
     for m_nat in NATURAL_MODEL_RE.finditer(prompt_lower):
         raw = m_nat.group(1).strip()
