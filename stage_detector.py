@@ -64,6 +64,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from model_alias import detect_model_override  # 用户模型覆盖（最高路由优先级）
 
+# 阶段复杂度阈值（simple ≤ X，medium ≤ Y，> Y = complex）
+# 见 stage_config.COMPLEXITY_THRESHOLDS
+try:
+    from stage_config import COMPLEXITY_THRESHOLDS  # noqa: E402
+except Exception:
+    COMPLEXITY_THRESHOLDS = {"simple": 30, "medium": 70}
+
 # ── 分 session 阶段管理 ──
 # 每个 session 独立管理阶段，避免多会话互相覆盖。
 # 命名规则：stage_<session_id>（参照 hooks/session 的 session_state_<session_id> 模式）

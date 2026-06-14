@@ -5,6 +5,33 @@
 **当前目录**：`/Users/zorro/.claude/hooks/model_router/`
 **审计目的**：逐条对齐 V1.2 设计文档与当前实施，给出 PASS / PARTIAL / MISSING 结论与偏差清单。
 
+> **2026-06-14 13:35 更新**：§2 偏差清单 10 项已全部完成修复（详见 §4 修复落实）。
+
+---
+
+## 4. 修复落实（2026-06-14 13:35）
+
+| #   | 偏差                                           | 修复位置                                                                                                 | 状态 |
+| --- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ---- |
+| 1   | ~careful / ~quick 指令未实现                   | `stage_detector.py:COMPLEXITY_SHIFT_RE` + `stage_detector.main()`，CLI `stage complexity careful\|quick` | ✅   |
+| 2   | ~batch <template> 未实现                       | `stage_detector.py:BATCH_RE`，CLI `stage batch <template>`，proxy `do_POST` 强制覆盖                     | ✅   |
+| 3   | ~reset 只能清 stage                            | `stage_detector.py:clear_all_overrides()` 清 model/op/pattern/fallback/complexity/batch 六件套           | ✅   |
+| 4   | detect_complexity() 未实现                     | `stage_detector.py:detect_complexity()` 关键词+pattern 加权 0-100 评分                                   | ✅   |
+| 5   | Workflow Planner 未实现                        | `proxy.py:build_workflow_plan()` single/double/triple 模型序列（§6.5）                                   | ✅   |
+| 6   | state_index.json 未实现                        | `stage_detector.py:STATE_INDEX_FILE` + `_update_state_index()` 写入 project_root 索引                    | ✅   |
+| 7   | 路由日志缺 pattern/complexity/score/confidence | `proxy.py:do_POST` 结构化日志 + `_append_metric()` 写 `/tmp/stage_metrics.jsonl`                         | ✅   |
+| 8   | /metrics、/trace 接口未实现                    | `proxy.py:do_GET` 增 `/metrics`（聚合）+ `/trace`（最近决策）                                            | ✅   |
+| 9   | stage_show 未显示 complexity                   | `stage_show.py:read_complexity()` + main 中 🟢/🟡/🔴 emoji 显示                                          | ✅   |
+| 10  | stage CLI 缺子命令                             | `stage` CLI dispatcher 增 `complexity` 和 `batch` 两个分支                                               | ✅   |
+
+**Smoke Test 全部通过**：
+
+- `detect_complexity` 关键词评分输出 simple/medium/complex 标签
+- `~careful` / `~quick` / `~batch refactor` / `~reset` 正则匹配
+- `stage` CLI 全部子命令端到端通过
+- `proxy /health` / `/metrics` / `/trace` HTTP 200，含 workflow_type/pattern/complexity 字段
+- 路由日志格式：`[stage=design] target=... actual=... status=... pattern=... complexity=... workflow=... batch=...`
+
 ---
 
 ## 0. 总体结论

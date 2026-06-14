@@ -37,6 +37,7 @@ import logging
 import os
 import re
 import sys
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -789,6 +790,19 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 )
                 model_override = None  # 走下面的 op/stage 分支
 
+        # ── Pattern / Complexity / Batch（设计文档 §6.2/6.4/§12）──
+        # Shadow Mode：先读出，路由决策前先看 batch 是否压倒其他信号。
+        # batch 激活时强制走 batch 模板的主模型（保留 stage/op 兜底）。
+        pattern_data  = read_pattern()
+        complexity    = read_complexity()
+        batch         = read_batch()
+        pattern_label = pattern_data.get("prediction") if pattern_data else None
+        complexity_label = (
+            complexity.get("label") if complexity else "medium"
+        ) or "medium"
+        complexity_score  = complexity.get("score", 50) if complexity else 50
+        complexity_source = complexity.get("source", "auto") if complexity else "auto"
+
         if not model_override:
             op = read_operation()
             if op and op in OPERATION_MODELS:
@@ -802,6 +816,36 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                     stage, FALLBACK_MODELS["default"]
                 )
                 routing_source = f"stage={stage}"
+
+            # ── Batch 强制流程覆盖（优先级 #2：设计文档 §5）──
+            if batch and batch.get("primary_model"):
+                try:
+                    override_routing = resolve_model_routing(batch["primary_model"])
+                    if override_routing:
+                        (base_url, model, key_env, protocol,
+                         fb_base, fb_model, fb_key, fb_proto) = override_routing
+                        routing_source += f" [batch={batch.get('template', '?')}]"
+                except Exception:
+                    pass  # batch 模板名无效 → 静默回落到 stage/op
+
+            # ── Workflow Plan（设计文档 §6.5）──
+            # simple/medium/complex 决定 single/double/triple 模型序列；
+            # 当前实现保留 primary_model 实际执行，plan 写到日志与 /trace。
+            workflow = build_workflow_plan(
+                stage_or_op=routing_source.split("=", 1)[1].split(" ")[0]
+                            if "=" in routing_source else "default",
+                is_op=routing_source.startswith("op="),
+                primary_model=model,
+                strong_model=model,  # strong 视作与 primary 同高（暂无独立 strong）
+                complexity_label=complexity_label,
+            )
+        else:
+            # model_override 路径无 workflow 编排（用户已显式指定）
+            workflow = {
+                "type":   "single",
+                "steps":  ["execute"],
+                "models": [model],
+            }
 
         # ── Sticky fallback: 主模型曾失败过，交换主/备避免重复重试 ──
         # 仅在自动路由（非 model_override）下生效——用户显式指定模型时不干预
@@ -855,6 +899,38 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # 避免 CC 重启后尝试恢复该别名时报 "not a model this version recognizes"。
         if not _is_retriable(status):
             resp_body = _rewrite_response_model(resp_body, session_model)
+
+        # ── 结构化指标落盘（设计文档 §15）──
+        # 每条请求都写一条 JSONL 记录，含 pattern/complexity/score/confidence/
+        # token_estimate/fallback_count，供 /metrics /trace 读取。
+        try:
+            used_fallback = bool(sticky_fb) or status >= 400
+            _append_metric({
+                "ts":               time.time(),
+                "path":             self.path,
+                "routing_source":   routing_source,
+                "target_model":     session_model,
+                "actual_model":     model,
+                "status":           status,
+                "pattern":          pattern_label,
+                "complexity_label": complexity_label,
+                "complexity_score": complexity_score,
+                "complexity_source": complexity_source,
+                "workflow_type":    workflow.get("type"),
+                "workflow_models":  workflow.get("models"),
+                "batch_template":   batch.get("template") if batch else None,
+                "used_fallback":    used_fallback,
+            })
+        except Exception:
+            pass
+
+        # ── 结构化路由日志（设计文档 §15）──
+        log.info(
+            f"[{routing_source}] target={session_model} actual={model} "
+            f"status={status} pattern={pattern_label} "
+            f"complexity={complexity_label}({complexity_score},src={complexity_source}) "
+            f"workflow={workflow.get('type')} batch={batch.get('template') if batch else None}"
+        )
 
         self.send_response(status)
         self.send_header("Content-Type", resp_headers.get("content-type", "application/json"))
@@ -919,6 +995,41 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                     )
 
             encoded = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+        elif self.path == "/metrics":
+            # 路由指标聚合（设计文档 §6.8 / §15）
+            records = _read_metrics(limit=200)
+            payload = {
+                "summary": _summarize_metrics(records),
+                "recent":  records[-20:],  # 最近 20 条
+            }
+            encoded = json.dumps(payload, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+        elif self.path == "/trace":
+            # 单条最新路由决策的完整 trace（设计文档 §6.8 / §15）
+            records = _read_metrics(limit=1)
+            latest = records[-1] if records else {}
+            payload = {
+                "current_session": {
+                    "stage":     read_stage(),
+                    "op":        read_operation(),
+                    "model_override": read_model_override(),
+                    "pattern":   read_pattern(),
+                    "complexity": read_complexity(),
+                    "batch":     read_batch(),
+                    "sticky_fallback": read_fallback(),
+                },
+                "latest_request": latest,
+            }
+            encoded = json.dumps(payload, ensure_ascii=False).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(encoded)))
