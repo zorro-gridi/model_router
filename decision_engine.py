@@ -234,18 +234,23 @@ def maybe_redecide(
 
     # ── 写回 ──
     new_label = merged
-    new_model = _COMPLEXITY_TO_MODEL.get(new_label, "MiniMax-M3")
     source = "todowrite" if todo_force_lock else "runtime"
 
     new_decision = dict(decision)
     new_decision.update({
         "task_complexity": new_label,
         "runtime_score": runtime_score,
-        "final_model": new_model,
         "locked": True,
         "decision_source": source,
         "last_update": int(time.time()),
     })
+
+    # 仅当复杂度确实升级到更高 tier 时才更新 final_model；
+    # 否则保留现有模型（特别是 ~model 显式覆盖不应被 maybe_redecide 降级）
+    if promoted:
+        new_decision["final_model"] = _COMPLEXITY_TO_MODEL.get(
+            new_label, "MiniMax-M3"
+        )
 
     # 写回：仅写新格式（不再双写旧 9 文件 — Stage 5 不动 stage_detector）
     store.write(sid, project_root, decision=new_decision)
