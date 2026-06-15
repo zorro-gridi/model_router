@@ -364,5 +364,116 @@ class TestFlagDefaultIsOn(unittest.TestCase):
         self.assertEqual(resolved["task_complexity"], "medium")
 
 
+# ── 场景 9: read_stage 兜底走 v1.3 决策反推 ─────────────────────────────
+
+class TestV13FallbackInReadStage(unittest.TestCase):
+    """read_stage 兜底路径:无 v1.2 stage_ 文件时,从 v1.3 决策 final_model 反推 stage。
+
+    触发场景:Stage 6.2 灰度期,旧 stage_<sid> 文件已删除(Stage 7 完成后),
+    proxy 必须能从 session_state_<sid>.json 决策中拿到等价的 stage 字符串,
+    否则 STAGE_MODELS[stage] 查表会失败,fallback 到 default。
+
+    映射规则(v1.3 → v1.2 渐进期):
+      - final_model=deepseek-v4-pro  → stage="decide"  (复杂任务升档)
+      - final_model=deepseek-v4-flash → stage="brainstorm"
+      - final_model=MiniMax-M3 + task_complexity=complex  → stage="decide"
+      - final_model=MiniMax-M3 + task_complexity=medium   → stage="implement"
+      - final_model=MiniMax-M3 + task_complexity=simple   → stage="default"
+
+    唯一性约束:STAGE_MODELS 中 deepseek-v4-pro/decide、deepseek-v4-flash/brainstorm
+    是 1-1 映射;MiniMax-M3 在 6 个 stage 中复用,需用 task_complexity 二次消歧。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.sid = "sid-v13-fb-001"
+        # 模拟 active_session 指针指向的 stage_ 文件路径（不必真实存在）
+        self.stage_path = self.root / ".claude" / f"stage_{self.sid}"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_complex_with_deepseek_v4_pro_maps_to_decide_stage(self):
+        from proxy import _resolve_stage_v13
+
+        _write_new_state(
+            self.root, self.sid,
+            decision=_sample_decision("complex", "deepseek-v4-pro"),
+        )
+
+        result = _resolve_stage_v13(self.stage_path)
+        self.assertEqual(result, "decide",
+                         "v1.3 complex + deepseek-v4-pro 应反推为 decide stage")
+
+    def test_complex_with_minimax_m3_maps_to_decide_stage(self):
+        """task_complexity=complex 是升档信号,即便 final_model=基线也用 decide stage。"""
+        from proxy import _resolve_stage_v13
+
+        _write_new_state(
+            self.root, self.sid,
+            decision=_sample_decision("complex", "MiniMax-M3"),
+        )
+
+        result = _resolve_stage_v13(self.stage_path)
+        self.assertEqual(result, "decide",
+                         "task_complexity=complex 应映射到 decide stage（升档语义）")
+
+    def test_medium_with_minimax_m3_maps_to_implement_stage(self):
+        from proxy import _resolve_stage_v13
+
+        _write_new_state(
+            self.root, self.sid,
+            decision=_sample_decision("medium", "MiniMax-M3"),
+        )
+
+        result = _resolve_stage_v13(self.stage_path)
+        self.assertEqual(result, "implement",
+                         "task_complexity=medium 应映射到 implement stage")
+
+    def test_simple_with_minimax_m3_maps_to_default_stage(self):
+        from proxy import _resolve_stage_v13
+
+        _write_new_state(
+            self.root, self.sid,
+            decision=_sample_decision("simple", "MiniMax-M3"),
+        )
+
+        result = _resolve_stage_v13(self.stage_path)
+        self.assertEqual(result, "default",
+                         "task_complexity=simple 应映射到 default stage")
+
+    def test_deepseek_v4_flash_maps_to_brainstorm_stage(self):
+        from proxy import _resolve_stage_v13
+
+        _write_new_state(
+            self.root, self.sid,
+            decision=_sample_decision("medium", "deepseek-v4-flash"),
+        )
+
+        result = _resolve_stage_v13(self.stage_path)
+        self.assertEqual(result, "brainstorm",
+                         "deepseek-v4-flash 唯一对应 brainstorm stage")
+
+    def test_no_new_state_returns_none(self):
+        """无 session_state_ 文件 → 不反推(避免猜测),返回 None 让 read_stage 走 default。"""
+        from proxy import _resolve_stage_v13
+
+        # 不写任何文件
+        result = _resolve_stage_v13(self.stage_path)
+        self.assertIsNone(result,
+                          "无 v1.3 决策时不应反推,让 read_stage 走兜底 default")
+
+    def test_new_state_empty_decision_returns_none(self):
+        """decision 字段为空 dict → 不反推,返回 None。"""
+        from proxy import _resolve_stage_v13
+
+        _write_new_state(self.root, self.sid, decision={})
+
+        result = _resolve_stage_v13(self.stage_path)
+        self.assertIsNone(result,
+                          "decision 为空时不应反推,让 read_stage 走兜底 default")
+
+
 if __name__ == "__main__":
     unittest.main()
