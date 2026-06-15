@@ -2,11 +2,11 @@
 test_proxy_v13_read.py — v1.3 proxy 读侧切换测试
 ==================================================
 
-V1.3 §6 / Stage 6: proxy.py 读侧从"旧 9 文件"切换到"session_state_<sid>.json"。
+V1.3 §6 / Stage 6: proxy.py 读侧从"旧 9 文件"切换到"model_router_state_<sid>.json"。
 
 引入纯函数 `_v13_resolve_decision(sid, project_root) -> dict | None`：
   - MODEL_ROUTER_V13_READ=1 (默认):
-      1. 优先读新格式 session_state_<sid>.json
+      1. 优先读新格式 model_router_state_<sid>.json
       2. 找不到再 fallback 读旧 9 文件
       3. 都没有 → None
   - MODEL_ROUTER_V13_READ=0:
@@ -36,7 +36,7 @@ from unittest.mock import patch
 # ── helpers ────────────────────────────────────────────────────────────────
 
 def _write_new_state(project_root: Path, sid: str, *, decision: dict | None = None) -> None:
-    """写入新格式 session_state_<sid>.json。"""
+    """写入新格式 model_router_state_<sid>.json。"""
     claude_dir = project_root / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
     data = {
@@ -45,7 +45,7 @@ def _write_new_state(project_root: Path, sid: str, *, decision: dict | None = No
         "decision": decision or {},
         "last_update": 1700000000,
     }
-    (claude_dir / f"session_state_{sid}.json").write_text(
+    (claude_dir / f"model_router_state_{sid}.json").write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8",
     )
 
@@ -87,7 +87,7 @@ def _sample_decision(task_complexity: str = "medium", final_model: str = "MiniMa
 # ── 场景 1: 仅有新文件 ─────────────────────────────────────────────────────
 
 class TestNewFormatOnly(unittest.TestCase):
-    """仅有 session_state_<sid>.json → 解析 decision 字段。"""
+    """仅有 model_router_state_<sid>.json → 解析 decision 字段。"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -294,7 +294,7 @@ class TestNewFormatCorruptFallback(unittest.TestCase):
         # 写损坏的新文件
         claude_dir = self.root / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
-        (claude_dir / f"session_state_{self.sid}.json").write_text(
+        (claude_dir / f"model_router_state_{self.sid}.json").write_text(
             "{ this is not valid json",
             encoding="utf-8",
         )
@@ -370,7 +370,7 @@ class TestV13FallbackInReadStage(unittest.TestCase):
     """read_stage 兜底路径:无 v1.2 stage_ 文件时,从 v1.3 决策 final_model 反推 stage。
 
     触发场景:Stage 6.2 灰度期,旧 stage_<sid> 文件已删除(Stage 7 完成后),
-    proxy 必须能从 session_state_<sid>.json 决策中拿到等价的 stage 字符串,
+    proxy 必须能从 model_router_state_<sid>.json 决策中拿到等价的 stage 字符串,
     否则 STAGE_MODELS[stage] 查表会失败,fallback 到 default。
 
     映射规则(v1.3 → v1.2 渐进期):
@@ -456,7 +456,7 @@ class TestV13FallbackInReadStage(unittest.TestCase):
                          "deepseek-v4-flash 唯一对应 brainstorm stage")
 
     def test_no_new_state_returns_none(self):
-        """无 session_state_ 文件 → 不反推(避免猜测),返回 None 让 read_stage 走 default。"""
+        """无 model_router_state_ 文件 → 不反推(避免猜测),返回 None 让 read_stage 走 default。"""
         from proxy import _resolve_stage_v13
 
         # 不写任何文件
