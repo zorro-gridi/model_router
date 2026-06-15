@@ -22,6 +22,7 @@ V1.3 §6.1 / §10 路由策略 + §13.1 DecisionRecord schema。
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from dataclasses import dataclass, asdict
@@ -136,6 +137,134 @@ def _default_classifier(prompt: str) -> dict:
 
 
 # ── 公开 API ────────────────────────────────────────────────────────────────
+
+# ── maybe_redecide feature flag（V1.3 §6.4 PostToolUse 链路）────────────
+
+def _is_redecide_enabled() -> bool:
+    """MODEL_ROUTER_V13_DECIDE flag：默认 True（开启 PostToolUse 链路重决策）。
+
+    关闭时 maybe_redecide() 整体 no-op，PostToolUse 仅做观测不重决策。
+    """
+    flag = os.environ.get("MODEL_ROUTER_V13_DECIDE", "1")
+    return flag.lower() not in ("0", "false", "no", "off")
+
+
+# ── 复杂度比较（only-upgrade-never-downgrade 语义）─────────────────────
+
+_COMPLEXITY_RANK: dict[str, int] = {
+    "simple": 0,
+    "medium": 1,
+    "complex": 2,
+}
+
+
+def _max_complexity(a: str, b: str) -> str:
+    """返回 a、b 中较高的复杂度（只升不降）。"""
+    ra = _COMPLEXITY_RANK.get(a, 0)
+    rb = _COMPLEXITY_RANK.get(b, 0)
+    return a if ra >= rb else b
+
+
+# ── maybe_redecide ─────────────────────────────────────────────────────────
+
+def maybe_redecide(
+    sid: str,
+    project_root: str,
+    runtime_score: int,
+    todowrite_signal: Optional[dict] = None,
+) -> Optional[DecisionRecord]:
+    """V1.3 §6.4 PostToolUse 决策重算：runtime_score 累积 + TodoWrite 强信号。
+
+    行为契约（Stage 5.1 / 5.2）：
+      1. MODEL_ROUTER_V13_DECIDE=0 → 整体 no-op，返回 None。
+      2. session_state_<sid>.json 缺失或 decision 为空 → 不当场重决策，
+         返回 None（避免在未初始化 session 上空跑）。
+      3. decision.locked=True → 不重决策，返回 None。
+      4. 计算候选 complexity：
+           - runtime_score > 70 → complex
+           - 31 <= runtime_score <= 70 → medium
+           - runtime_score <= 30 → simple
+         与当前 task_complexity 取 max（只升不降）。
+      5. todowrite_signal.is_implementation=True → 强制至少 medium，
+         立即 lock（即使 runtime_score 不足）。
+      6. 实际有变化（new_complexity > current 或 todowrite 触发锁）才
+         写回 session_state 并返回新 DecisionRecord；否则返回 None。
+
+    Args:
+        sid: session id。
+        project_root: 项目根目录。
+        runtime_score: RuntimeTracker 累积分数（0~100）。
+        todowrite_signal: TodoWriteAnalyzer.analyze() 的结果，可为 None。
+
+    Returns:
+        新 DecisionRecord（升级/锁定时）或 None（无需重决策）。
+    """
+    if not _is_redecide_enabled():
+        return None
+
+    # 延迟导入避免循环 + 路径问题
+    from state_persistence import SessionStateStore
+
+    store = SessionStateStore()
+    state = store.read_new(sid, project_root)
+    if not state:
+        return None
+
+    decision = state.get("decision") or {}
+    if not decision:
+        return None
+
+    # 已锁 → 不重决策
+    if decision.get("locked"):
+        return None
+
+    current_label = decision.get("task_complexity", "simple")
+    current_rank = _COMPLEXITY_RANK.get(current_label, 0)
+
+    # ── 计算 runtime_score 候选 label ──
+    runtime_label = _label_from_score(runtime_score)
+
+    # ── 计算 todowrite 强信号候选 label ──
+    todo_force_lock = False
+    todo_label = current_label
+    if isinstance(todowrite_signal, dict) and todowrite_signal.get("is_implementation"):
+        todo_force_lock = True
+        # 实施类 todo → 强制至少 medium
+        if _COMPLEXITY_RANK.get(current_label, 0) < _COMPLEXITY_RANK["medium"]:
+            todo_label = "medium"
+
+    # ── 融合：max(current, runtime, todo) ──
+    merged = _max_complexity(_max_complexity(current_label, runtime_label), todo_label)
+    merged_rank = _COMPLEXITY_RANK.get(merged, 0)
+
+    # ── 决定是否升级 / 锁 ──
+    promoted = merged_rank > current_rank
+    need_lock = todo_force_lock
+
+    if not (promoted or need_lock):
+        # 无变化且不需要锁 → 不写
+        return None
+
+    # ── 写回 ──
+    new_label = merged
+    new_model = _COMPLEXITY_TO_MODEL.get(new_label, "MiniMax-M3")
+    source = "todowrite" if todo_force_lock else "runtime"
+
+    new_decision = dict(decision)
+    new_decision.update({
+        "task_complexity": new_label,
+        "runtime_score": runtime_score,
+        "final_model": new_model,
+        "locked": True,
+        "decision_source": source,
+        "last_update": int(time.time()),
+    })
+
+    # 写回：仅写新格式（不再双写旧 9 文件 — Stage 5 不动 stage_detector）
+    store.write(sid, project_root, decision=new_decision)
+
+    return DecisionRecord.from_dict(new_decision)
+
 
 def decide(
     prompt: str,

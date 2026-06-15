@@ -10,12 +10,17 @@ V1.3 §8 PostToolUse 接入 / dispatcher + 2 worker。
   - TodoWrite → todowrite_analyzer + runtime_tracker（双写）
   - 其他工具 → runtime_tracker（仅 runtime_score）
 
+Stage 5 扩展（V1.3 §6.4 决策链路端到端）：
+  - track() 之后从 session_state 读 runtime_score + todowrite_signal
+  - 调 decision_engine.maybe_redecide() 检查 lock 阈值
+
 入口函数：
   - main() — CLI 入口，从 stdin 读 JSON，提取 sid/cwd
   - dispatch(sid, project_root, raw_event) — 可供测试调用的纯逻辑
 
 Feature Flag:
-  MODEL_ROUTER_V13_OBSERVE=0 → 完全 no-op
+  MODEL_ROUTER_V13_OBSERVE=0 → 完全 no-op（仅观测关闭）
+  MODEL_ROUTER_V13_DECIDE=0  → maybe_redecide 内部 no-op（决策关闭）
 
 设计约束：
   - 所有异常静默吞掉（不阻塞 PostToolUse hook）
@@ -75,9 +80,50 @@ def dispatch(sid: str, project_root: str, raw_event: dict) -> None:
         if tool_name == "TodoWrite":
             _handle_todowrite(sid, project_root, raw_event)
 
+        # ── Stage 5.3: 调 maybe_redecide 检查 lock 阈值 ──
+        # 读 session_state 取最新 runtime_score + todowrite_signal
+        runtime_score, todowrite_signal = _read_latest_signals(sid, project_root)
+        if runtime_score > 0 or todowrite_signal:
+            try:
+                from decision_engine import maybe_redecide
+                maybe_redecide(
+                    sid=sid,
+                    project_root=project_root,
+                    runtime_score=runtime_score,
+                    todowrite_signal=todowrite_signal,
+                )
+            except Exception:
+                # maybe_redecide 内部已静默吞错；这里再兜一层
+                pass
+
     except Exception:
         # 静默吞掉所有异常，永不阻塞 PostToolUse hook
         pass
+
+
+def _read_latest_signals(sid: str, project_root: str) -> tuple[int, dict | None]:
+    """从 session_state_<sid>.json 读最新 runtime_score + todowrite_signal。
+
+    Returns:
+        (runtime_score, todowrite_signal)；文件缺失/字段缺失时
+        返回 (0, None)。
+    """
+    path = Path(project_root) / ".claude" / f"session_state_{sid}.json"
+    if not path.exists():
+        return 0, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return 0, None
+
+    rs = data.get("runtime_score") or {}
+    runtime_score = int(rs.get("score", 0)) if isinstance(rs, dict) else 0
+
+    todo = data.get("todowrite_signal")
+    if not isinstance(todo, dict):
+        todo = None
+
+    return runtime_score, todo
 
 
 def _handle_todowrite(sid: str, project_root: str, raw_event: dict) -> None:
