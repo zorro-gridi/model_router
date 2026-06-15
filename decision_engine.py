@@ -42,6 +42,13 @@ REQUIRED_FIELDS = (
     "final_model", "locked", "decision_source", "last_update",
 )
 
+# V1.3 §15.4 路由理由（细粒度人类可读）
+OPTIONAL_FIELDS = (
+    "reasoning",         # 路由理由（人类可读）
+    "reason_code",       # 升级原因代码（machine-readable）
+    "created_at",        # 决策创建时间戳
+)
+
 # v1.3 路由表：complexity label → 模型
 # 简化映射：complex=升级 deepseek-v4-pro；medium/simple=基线 MiniMax-M3
 _COMPLEXITY_TO_MODEL: dict[str, str] = {
@@ -82,6 +89,10 @@ class DecisionRecord:
     locked: bool
     decision_source: str
     last_update: int
+    # V1.3 §15.4 可选细粒度字段（向后兼容）
+    reasoning: str = ""         # 路由理由（人类可读）
+    reason_code: str = ""       # 升级原因代码
+    created_at: int = 0         # 决策创建时间戳
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -91,7 +102,11 @@ class DecisionRecord:
         missing = [k for k in REQUIRED_FIELDS if k not in d]
         if missing:
             raise ValueError(f"DecisionRecord 缺少必填字段: {missing}")
-        return cls(**d)
+        # 兼容老 dict 缺可选字段的情况
+        kwargs = dict(d)
+        for opt in OPTIONAL_FIELDS:
+            kwargs.setdefault(opt, "" if opt != "created_at" else 0)
+        return cls(**kwargs)
 
 
 # ── 内部纯函数 ──────────────────────────────────────────────────────────────
@@ -236,6 +251,26 @@ def maybe_redecide(
     new_label = merged
     source = "todowrite" if todo_force_lock else "runtime"
 
+    # V1.3 §15.4 路由理由：细粒度人类可读
+    if todo_force_lock:
+        reasoning = (
+            f"TodoWrite 触发实施信号，强制至少 medium（{current_label} → {new_label}）"
+        )
+        reason_code = "todowrite_force"
+    elif promoted:
+        if runtime_label == "complex" and new_label == "complex":
+            reasoning = f"runtime_score 快速上升至 {runtime_score}（>70），升级到 complex"
+            reason_code = "runtime_threshold_70"
+        elif runtime_label == "medium" and new_label == "medium":
+            reasoning = f"runtime_score 中等累积（{runtime_score}），从 {current_label} 升至 medium"
+            reason_code = "runtime_medium"
+        else:
+            reasoning = f"runtime 累积触发升级（{current_label} → {new_label}，score={runtime_score}）"
+            reason_code = "runtime_general"
+    else:
+        reasoning = f"无变化（{current_label}，score={runtime_score}）"
+        reason_code = "no_change"
+
     new_decision = dict(decision)
     new_decision.update({
         "task_complexity": new_label,
@@ -243,7 +278,12 @@ def maybe_redecide(
         "locked": True,
         "decision_source": source,
         "last_update": int(time.time()),
+        "reasoning": reasoning,
+        "reason_code": reason_code,
     })
+    # 兼容创建时间戳
+    if "created_at" not in new_decision or not new_decision.get("created_at"):
+        new_decision["created_at"] = new_decision["last_update"]
 
     # 仅当复杂度确实升级到更高 tier 时才更新 final_model；
     # 否则保留现有模型（特别是 ~model 显式覆盖不应被 maybe_redecide 降级）
@@ -254,6 +294,21 @@ def maybe_redecide(
 
     # 写回：仅写新格式（不再双写旧 9 文件 — Stage 5 不动 stage_detector）
     store.write(sid, project_root, decision=new_decision)
+
+    # ── V1.3 §11 Context Summary 注入：跨档升级时生成摘要 ──
+    try:
+        from context_summary import ContextSummaryInjector
+        _injector = ContextSummaryInjector()
+        full_state = store.read_new(sid, project_root) or {}
+        if _injector.should_inject(full_state, new_label):
+            summary = _injector.build_summary(full_state, prompt=full_state.get("prompt"))
+            _injector.mark_injected(full_state, summary)
+            # 写回 context_summary 字段
+            store.write(sid, project_root, decision=new_decision,
+                        context_summary=summary)
+    except Exception:
+        # 摘要生成失败不影响核心路由
+        pass
 
     return DecisionRecord.from_dict(new_decision)
 
@@ -282,13 +337,14 @@ def decide(
     classify = classifier or _default_classifier
     raw = classify(prompt)
 
-    pattern = raw.get("pattern", "feature")
+    pattern = raw.get("pattern", "implement")
     pattern_confidence = float(raw.get("pattern_confidence", 0.0))
     raw_label = raw.get("complexity_label") or _label_from_score(
         int(raw.get("complexity_score", 50))
     )
     raw_score = int(raw.get("complexity_score", 50))
     complexity_confidence = float(raw.get("complexity_confidence", 0.0))
+    reasoning = str(raw.get("reasoning", "")).strip()
 
     # raw_score 经 _apply_conservative_bias 重新评估（保守偏置可能抬升），
     # 本阶段只关心最终 label，不直接使用 score
@@ -296,6 +352,16 @@ def decide(
     del _score
     final_model = _COMPLEXITY_TO_MODEL.get(label, "MiniMax-M3")
 
+    # V1.3 §15.4 路由理由：人类可读
+    biased = label != raw_label
+    if biased:
+        prompt_reasoning = f"prompt 模糊，保守偏置抬升 {raw_label} → {label}"
+        if reasoning:
+            prompt_reasoning = f"{reasoning}；{prompt_reasoning}"
+    else:
+        prompt_reasoning = reasoning or f"prompt 显式 {label}"
+
+    now = int(time.time())
     return DecisionRecord(
         session_id=sid,
         prompt_id=prompt_id,
@@ -309,5 +375,8 @@ def decide(
         final_model=final_model,
         locked=False,       # 首次决策可改：maybe_redecide 升级时才锁定
         decision_source="prompt",
-        last_update=int(time.time()),
+        last_update=now,
+        reasoning=prompt_reasoning,
+        reason_code="prompt_classify",
+        created_at=now,
     )

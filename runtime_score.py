@@ -19,15 +19,21 @@ from __future__ import annotations
 
 import copy
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # 延迟导入避免 stage_config 缺失时连环崩
+# V1.3 §3.4 / §7.1：权重支持 YAML 自定义配置，YAML 优先，硬编码兜底
 def _load_default_weights() -> dict[str, dict[str, int]]:
-    from stage_config import _PLACEHOLDER_WEIGHTS
-    return _PLACEHOLDER_WEIGHTS
+    try:
+        from stage_config import get_weights
+        return get_weights()
+    except (ImportError, Exception):
+        from stage_config import _PLACEHOLDER_WEIGHTS
+        return _PLACEHOLDER_WEIGHTS
 
 
 class RuntimeScore:
@@ -85,7 +91,9 @@ class RuntimeScore:
         """
         delta = self._compute_delta(event)
         self._score += delta
-        self._events.append({**event, "delta": delta})
+        # V1.3 §13.2 Runtime Event 增加 timestamp 字段
+        event_with_ts = {**event, "delta": delta, "timestamp": int(time.time())}
+        self._events.append(event_with_ts)
         return delta
 
     def to_dict(self) -> dict[str, Any]:

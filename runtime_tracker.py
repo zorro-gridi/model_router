@@ -64,15 +64,16 @@ class RuntimeTracker:
     # ── Event Conversion ──────────────────────────────────────────────────
 
     def _convert(self, raw_event: dict) -> dict:
-        """将 PostToolUse 原始事件转为 RuntimeScore 事件格式。
+        """将 PostToolUse 原始事件转为 RuntimeScore 事件格式（V1.3 §7）。
 
-        提取规则：
+        提取规则（V1.3 §7 全 4 维度）：
           - tool_name → tool
           - tool_input.file_path → 提取扩展名作为 file_type
-          - file_lines 暂不计算（Stage 7 引入 diff 分析）
-          - runtime_signal 暂不提取（Stage 5 引入）
+          - file_lines：small(<200) / medium(200-800) / large(>800) — 基于行数估计
+          - runtime_signal：bash_nonzero_exit / test_failure / retry / many_grep_hits
         """
         tool_input = raw_event.get("tool_input", {}) or {}
+        tool_output = raw_event.get("tool_output", "") or ""
 
         # 提取文件扩展名
         file_path = tool_input.get("file_path", "")
@@ -80,11 +81,98 @@ class RuntimeTracker:
         if file_path:
             file_type = Path(file_path).suffix
 
+        # ── file_lines 维度：基于行数估计（V1.3 §7 file_lines 权重已激活）──
+        file_lines = self._extract_file_lines(tool_name=raw_event.get("tool_name", ""),
+                                              file_path=file_path,
+                                              content=tool_input.get("content", ""))
+
+        # ── runtime_signal 维度：检测异常/失败信号（V1.3 §7 runtime_signal 权重）──
+        runtime_signal = self._extract_runtime_signal(
+            tool_name=raw_event.get("tool_name", ""),
+            tool_output=tool_output,
+            tool_input=tool_input,
+        )
+
         return {
             "tool": raw_event.get("tool_name", ""),
             "file_type": file_type,
-            "file_lines": "",  # Stage 7 引入
+            "file_lines": file_lines,
+            "runtime_signal": runtime_signal,
         }
+
+    # ── Signal Extractors ────────────────────────────────────────────────
+
+    def _extract_file_lines(self, tool_name: str, file_path: str, content: str) -> str:
+        """估计文件/内容的行数规模。
+
+        阈值（与 stage_config._PLACEHOLDER_WEIGHTS["file_lines"] 一致）：
+          - small: < 200 行
+          - medium: 200-800 行
+          - large: > 800 行
+        """
+        if not file_path and not content:
+            return ""
+
+        line_count = 0
+        if content:
+            # Write/Edit/MultiEdit 工具的 content 字段直接反映改动行数
+            line_count = content.count("\n") + 1 if content else 0
+        elif file_path:
+            # 尝试从已读取文件估计（优先使用 tool_output，缺失时跳过）
+            line_count = 0
+
+        if line_count == 0:
+            return ""
+        if line_count < 200:
+            return "small"
+        if line_count <= 800:
+            return "medium"
+        return "large"
+
+    def _extract_runtime_signal(self, tool_name: str, tool_output: str, tool_input: dict) -> str:
+        """从工具输出中提取 runtime 信号。
+
+        识别以下信号（与 _PLACEHOLDER_WEIGHTS["runtime_signal"] 一致）：
+          - bash_nonzero_exit：Bash 退出码非零
+          - test_failure：测试相关输出包含失败标记
+          - grep_many_hits：Grep 返回大量命中
+          - file_not_found：文件操作失败
+          - large_diff：Edit/Write 涉及大改动
+        """
+        out = str(tool_output) if tool_output else ""
+        out_lower = out.lower()
+
+        # ── Bash 退出码检测 ──
+        if tool_name == "Bash":
+            if any(mark in out for mark in ("exit code 1", "exit code 2", "Error:", "FATAL", "fatal:")):
+                return "bash_nonzero_exit"
+
+        # ── 测试失败检测 ──
+        if any(mark in out_lower for mark in (
+            "test failed", "tests failed", "failed:", "failure:", "assertion error",
+            "✗", "✘", "test errors", "test failures",
+        )):
+            return "test_failure"
+
+        # ── Grep/Glob 大量命中 ──
+        if tool_name in ("Grep", "Glob"):
+            # 简单启发式：输出行数 > 50 视为"大量命中"
+            if out.count("\n") > 50:
+                return "grep_many_hits"
+
+        # ── 文件未找到 ──
+        if any(mark in out_lower for mark in (
+            "no such file", "file not found", "does not exist", "enoent",
+        )):
+            return "file_not_found"
+
+        # ── 大改动检测（Edit/Write/MultiEdit 一次性改动超过 100 行）──
+        if tool_name in ("Edit", "Write", "MultiEdit"):
+            content = tool_input.get("content", "") or ""
+            if isinstance(content, str) and content.count("\n") > 100:
+                return "large_diff"
+
+        return ""
 
     # ── Persistence ───────────────────────────────────────────────────────
 
