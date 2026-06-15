@@ -95,18 +95,18 @@ Return ONLY valid JSON (no markdown fences, no extra text).
 - "default": none of the above clearly matches / general chat
 
 ## Dimension 2 — pattern (V1.3 §5.1 Task Pattern, 12 types):
-- "explore": 探索与调研（read/analyze/investigate，不修改代码）
-- "architecture": 架构设计（系统级设计、技术选型、模块设计）
-- "feature": 新功能开发（adding new functionality, building new things）
-- "audit": 系统功能审计（security review, performance review, code review）
-- "implement": 功能实现（generic implementation, building things）
-- "debug": 故障排查（fix bug / error / unexpected behavior）
-- "refactor": 结构重构（restructure / cleanup / improve，不改变行为）
-- "test": 测试相关（write/run test, coverage, regression）
-- "research": 调查研究（investigating, comparing approaches）
-- "migration": 迁移改造（migrate / upgrade / port to new system）
-- "docs": 文档处理（documentation, comments, README）
-- "ops": 运维、脚本、配置类任务（CI/CD, scripts, config）
+- "explore": 探索与调研
+- "architecture": 架构设计
+- "feature": 新功能需求
+- "audit": 审计系统功能
+- "implement": 功能实现
+- "debug": 调试异常
+- "refactor": 模块重构
+- "test": 测试相关
+- "research": 调查研究
+- "migration": 模块迁移
+- "docs": 文档处理
+- "ops": 运维、脚本、配置类任务
 
 ## Dimension 3 — complexity (V1.3 §5 Task Complexity):
 - score: integer 0-100
