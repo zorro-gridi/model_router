@@ -36,6 +36,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_tracker import RuntimeTracker
 from todowrite_analyzer import TodoWriteAnalyzer
 
+# 跨包复用：与 hooks.compact.todowrite_sync 共用 TodoWrite payload 解析逻辑
+# 路径从 __file__ 推导而非 hardcode ~/.claude，确保 worktree / 异机部署也能解析
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from hooks.common.todo_payload import extract_todos_from_payload
+
 
 # ── Dispatch ──────────────────────────────────────────────────────────────
 
@@ -112,9 +117,12 @@ def _read_latest_signals(sid: str, project_root: str) -> tuple[int, dict | None]
 
 
 def _handle_todowrite(sid: str, project_root: str, raw_event: dict) -> None:
-    """处理 TodoWrite 事件：分析 todos → 写入 todowrite_signal。"""
-    tool_input = raw_event.get("tool_input", {}) or {}
-    todos = tool_input.get("todos")
+    """处理 TodoWrite 事件：分析 todos → 写入 todowrite_signal。
+
+    注：todos 可能为 None（payload 中无 todos 字段）。analyzer.analyze 内部
+    对 None 有兜底（_analyze 入口会返回 _empty_result），故无需在此判空。
+    """
+    todos = extract_todos_from_payload(raw_event) or []
 
     signal = _analyzer.analyze(todos)
 
