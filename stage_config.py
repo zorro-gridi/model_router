@@ -813,3 +813,70 @@ PATTERN_KEYWORDS: dict[str, list[tuple[str, int]]] = {
     pattern: [(kw, int(w)) for kw, w in c.get("keywords", [])]
     for pattern, c in PATTERN_CONFIG.items()
 }
+
+# ── 公开 API 声明 ────────────────────────────────────────────────────────────
+
+__all__ = [
+    "STAGE_CONFIG",
+    "PATTERN_CONFIG",
+    "COMPLEXITY_KEYWORDS",
+    "STAGE_KEYWORDS",
+    "PATTERN_KEYWORDS",
+    "_PLACEHOLDER_WEIGHTS",
+]
+
+# ── Runtime Complexity Score 权重（V1.3 §7 硬编码兜底）────────────────────
+
+# Stage 1 阶段在代码中硬编码；Stage 7 抽到 config/decision_weights.yaml。
+# 本字典被 runtime_score.py 读取（Stage 2）；单测用 test_stage_config_weights.py
+# 锁定形状契约，避免后续 stage 误改爆掉调用点。
+_PLACEHOLDER_WEIGHTS: dict[str, dict[str, int]] = {
+    "tool": {
+        "Read": 2,
+        "Edit": 4,
+        "Write": 3,
+        "MultiEdit": 5,
+        "Grep": 3,
+        "Glob": 2,
+        "WebSearch": 4,
+        "WebFetch": 3,
+        "Bash": 2,
+        "TodoWrite": 8,
+        "Agent": 5,
+        "NotebookEdit": 2,
+        "TodoRead": 1,
+    },
+    "file_type": {
+        ".py": 3,
+        ".ts": 3,
+        ".tsx": 3,
+        ".js": 3,
+        ".go": 3,
+        ".rs": 3,
+        ".java": 3,
+        ".cpp": 3,
+        ".c": 3,
+        ".h": 3,
+        ".swift": 3,
+        ".yaml": 2,
+        ".yml": 2,
+        ".toml": 2,
+        ".json": 1,
+        ".md": 1,
+        ".txt": 1,
+        ".lock": 0,
+        ".sum": 0,
+    },
+    "file_lines": {
+        "small": 1,
+        "medium": 2,
+        "large": 3,
+    },
+    "runtime_signal": {
+        "bash_nonzero_exit": 4,
+        "grep_large_hits": 3,
+        "search_large_hits": 3,
+        "edit_retry_loop": 2,
+        "test_failure": 5,
+    },
+}
