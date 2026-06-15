@@ -37,23 +37,29 @@ if HOOKS_DIR_STR not in sys.path:
 # 权重参考（config/decision_weights.yaml）：
 #   Read=2, Edit=4, Write=3, MultiEdit=5, Grep=3, Glob=2,
 #   WebSearch=4, WebFetch=3, Bash=2, TodoWrite=8
-# 单个工具累积到超过 ~70 就能把 score 从 medium 档升到 complex 档。
+# runtime_score 必须 > 70 才能把 score 抬到 complex 档（_label_from_score 阈值）。
+# 下面 20 工具累加 = 4+4+5+4+3+4+4+4+5+4+4+4+3+3+4+4+5+4+4+4 = 80 → 进入 complex 档
 _TOOL_HEAVY_SEQUENCE: list[tuple[str, dict]] = [
     ("WebSearch",   {"query": "model_router v1.3 decision_engine design"}),
-    ("WebFetch",    {"url": "https://example.com/docs"}),
-    ("Read",        {"file_path": "/tmp/foo.py"}),
-    ("Grep",        {"pattern": "decide\\(", "path": "/Users/zorro/.claude/hooks/model_router"}),
-    ("Read",        {"file_path": "/Users/zorro/.claude/hooks/model_router/decision_engine.py"}),
-    ("WebSearch",   {"query": "complexity grading threshold YAML"}),
-    ("Grep",        {"pattern": "runtime_score", "path": "/Users/zorro/.claude/hooks/model_router"}),
-    ("Read",        {"file_path": "/Users/zorro/.claude/hooks/model_router/post_tool_handler.py"}),
-    ("Glob",        {"pattern": "**/test_*.py"}),
-    ("WebFetch",    {"url": "https://example.com/spec"}),
-    ("Read",        {"file_path": "/Users/zorro/.claude/hooks/model_router/runtime_tracker.py"}),
     ("Edit",        {"file_path": "/tmp/x.py", "old_string": "a", "new_string": "b"}),
-    ("Bash",        {"command": "ls /tmp"}),
+    ("MultiEdit",   {"edits": [{"old_string": "a", "new_string": "b"}]}),
+    ("Edit",        {"file_path": "/tmp/x.py", "old_string": "a", "new_string": "b"}),
+    ("Grep",        {"pattern": "decide\\(", "path": "/Users/zorro/.claude/hooks/model_router"}),
+    ("WebSearch",   {"query": "complexity grading threshold YAML"}),
+    ("Edit",        {"file_path": "/tmp/x.py", "old_string": "a", "new_string": "b"}),
+    ("Edit",        {"file_path": "/tmp/x.py", "old_string": "a", "new_string": "b"}),
+    ("MultiEdit",   {"edits": [{"old_string": "a", "new_string": "b"}]}),
+    ("Edit",        {"file_path": "/tmp/x.py", "old_string": "a", "new_string": "b"}),
+    ("Edit",        {"file_path": "/tmp/x.py", "old_string": "a", "new_string": "b"}),
+    ("Edit",        {"file_path": "/tmp/x.py", "old_string": "a", "new_string": "b"}),
+    ("Grep",        {"pattern": "runtime_score", "path": "/Users/zorro/.claude/hooks/model_router"}),
     ("Grep",        {"pattern": "DecisionRecord", "path": "/Users/zorro/.claude/hooks/model_router"}),
-    ("Read",        {"file_path": "/Users/zorro/.claude/hooks/model_router/state_persistence.py"}),
+    ("WebSearch",   {"query": "Decision Lock semantics"}),
+    ("Edit",        {"file_path": "/tmp/x.py", "old_string": "a", "new_string": "b"}),
+    ("MultiEdit",   {"edits": [{"old_string": "a", "new_string": "b"}]}),
+    ("Edit",        {"file_path": "/tmp/x.py", "old_string": "a", "new_string": "b"}),
+    ("Edit",        {"file_path": "/tmp/x.py", "old_string": "a", "new_string": "b"}),
+    ("Edit",        {"file_path": "/tmp/x.py", "old_string": "a", "new_string": "b"}),
 ]
 
 
@@ -69,7 +75,7 @@ class TestScenario02ToolHeavyResearch(unittest.TestCase):
 
     def test_runtime_score_accumulation_upgrades_complexity(self):
         """模糊调研 prompt → 多个 PostToolUse → 升级到 complex。"""
-        # 模糊调研 prompt（无明显 high/low 信号）→ 预期 medium
+        # 模糊调研 prompt（命中 _AMBIGUOUS_PROMPT_HINTS 的 "帮我" / "怎么"）→ 预期 medium
         prompt = "帮我调研下 model_router v1.3 的决策链路是怎么设计的"
 
         # 1) 初始 decide() — 模糊 prompt 应落到 medium（保守偏置）
@@ -86,15 +92,19 @@ class TestScenario02ToolHeavyResearch(unittest.TestCase):
         self.assertIsNotNone(decision, "state 缺 decision 字段")
         assert_decision_shape(self, decision)
 
-        # 初始决策：模糊 prompt → medium（或 simple，但绝不是 complex）
-        # 也允许 runtime_score 立刻驱动升级（前提：locked=False 才有可能）
+        # 初始决策：模糊 prompt → medium
         initial_complexity = decision["task_complexity"]
-        self.assertIn(
-            initial_complexity, ("simple", "medium"),
-            f"模糊调研 prompt 应落 simple/medium，实际: {initial_complexity}",
+        self.assertEqual(
+            initial_complexity, "medium",
+            f"模糊调研 prompt 应落 medium，实际: {initial_complexity}",
+        )
+        # 首次 decide() 不应锁（maybe_redecide 才是终裁）
+        self.assertFalse(
+            decision["locked"],
+            "首次 decide() 必须 locked=False（maybe_redecide 升级时才锁定）",
         )
 
-        # 2) 模拟 15 个工具调用累积 runtime_score
+        # 2) 模拟 20 个工具调用累积 runtime_score（总分 80 → complex 档）
         for tool_name, tool_input in _TOOL_HEAVY_SEQUENCE:
             event = {
                 "session_id": self.sid,
@@ -113,7 +123,7 @@ class TestScenario02ToolHeavyResearch(unittest.TestCase):
 
         self.assertEqual(
             final_decision["task_complexity"], "complex",
-            f"15 个工具累积后应升级到 complex，实际: {final_decision['task_complexity']}",
+            f"20 个工具累积后应升级到 complex，实际: {final_decision['task_complexity']}",
         )
         self.assertEqual(
             final_decision["final_model"], "deepseek-v4-pro",
@@ -136,7 +146,7 @@ class TestScenario02ToolHeavyResearch(unittest.TestCase):
             prompt=prompt, sid=self.sid, project_root=self.project_root,
         )
 
-        # 跑 3 个工具
+        # 跑前 3 个工具
         for tool_name, tool_input in _TOOL_HEAVY_SEQUENCE[:3]:
             event = {
                 "session_id": self.sid,
@@ -151,7 +161,7 @@ class TestScenario02ToolHeavyResearch(unittest.TestCase):
         rs = state.get("runtime_score") or {}
         actual_score = rs.get("score", 0) if isinstance(rs, dict) else 0
 
-        # 3 个工具至少累积到 Read+WebSearch+Read 或类似的得分（> 0）
+        # 3 个工具至少累积到非零得分（WebSearch 4 + Edit 4 + MultiEdit 5 = 13）
         self.assertGreater(
             actual_score, 0,
             f"3 个工具调用后 runtime_score 必须 > 0，实际: {actual_score}",
