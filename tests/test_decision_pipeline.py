@@ -28,7 +28,7 @@ def _write_seed_decision(
     final_model: str = "MiniMax-M3",
     locked: bool = False,
 ) -> None:
-    """预先在 session_state_<sid>.json 写入一条 decide() 记录。"""
+    """预先在 model_router_state_<sid>.json 写入一条 decide() 记录。"""
     claude_dir = project_root / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
     rec = {
@@ -44,7 +44,7 @@ def _write_seed_decision(
         "decision_source": "prompt",
         "last_update": 1700000000,
     }
-    (claude_dir / f"session_state_{sid}.json").write_text(
+    (claude_dir / f"model_router_state_{sid}.json").write_text(
         json.dumps(
             {"version": "1.3", "session_id": sid, "decision": rec},
             ensure_ascii=False,
@@ -55,12 +55,12 @@ def _write_seed_decision(
 
 
 def _read_decision(project_root: Path, sid: str) -> dict:
-    p = project_root / ".claude" / f"session_state_{sid}.json"
+    p = project_root / ".claude" / f"model_router_state_{sid}.json"
     return json.loads(p.read_text(encoding="utf-8"))["decision"]
 
 
 def _read_state(project_root: Path, sid: str) -> dict:
-    p = project_root / ".claude" / f"session_state_{sid}.json"
+    p = project_root / ".claude" / f"model_router_state_{sid}.json"
     return json.loads(p.read_text(encoding="utf-8"))
 
 

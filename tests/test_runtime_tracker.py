@@ -95,7 +95,7 @@ class TestTrackAccumulatesToFile(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_track_writes_runtime_score_to_session_state(self):
-        """track() 应将 runtime_score 写入 session_state_<sid>.json。"""
+        """track() 应将 runtime_score 写入 model_router_state_<sid>.json。"""
         from runtime_tracker import RuntimeTracker
         tracker = RuntimeTracker()
         raw_event = {
@@ -104,7 +104,7 @@ class TestTrackAccumulatesToFile(unittest.TestCase):
         }
         tracker.track(self.sid, str(self.project_root), raw_event)
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         self.assertTrue(state_file.exists(), "track 后应存在 session_state 文件")
 
         data = json.loads(state_file.read_text())
@@ -127,7 +127,7 @@ class TestTrackAccumulatesToFile(unittest.TestCase):
             "tool_input": {"file_path": "/app/main.py"},
         })
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(state_file.read_text())
         # Read=2+py=3=5, Edit=4+py=3=7, total=12
         self.assertEqual(data["runtime_score"]["score"], 12)
@@ -143,7 +143,7 @@ class TestTrackAccumulatesToFile(unittest.TestCase):
                 "tool_input": {},
             })
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(state_file.read_text())
         self.assertIn("events", data["runtime_score"])
         self.assertEqual(len(data["runtime_score"]["events"]), 3)
@@ -174,7 +174,7 @@ class TestFlagOffNoOp(unittest.TestCase):
             delta = tracker.track(self.sid, str(self.project_root), raw_event)
 
         self.assertEqual(delta, 0, "flag 关闭时 delta 应为 0")
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         self.assertFalse(state_file.exists(), "flag 关闭时不应创建 session_state 文件")
 
     def test_flag_off_returns_zero(self):
@@ -197,7 +197,7 @@ class TestFlagOffNoOp(unittest.TestCase):
             "tool_name": "Read",
             "tool_input": {"file_path": "/app/readme.md"},
         })
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         self.assertTrue(state_file.exists(), "flag on 时应创建 session_state 文件")
 
 
@@ -216,7 +216,7 @@ class TestGracefulDegradation(unittest.TestCase):
 
     def test_corrupted_session_state_does_not_throw(self):
         """已损坏的 session_state 文件应被静默处理（从零开始）。"""
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         state_file.write_text("{ corrupted json !!!")
 
         from runtime_tracker import RuntimeTracker

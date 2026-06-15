@@ -2,10 +2,10 @@
 test_state_persistence.py — v1.3 SessionStateStore 单测
 =========================================================
 
-V1.3 §5 适配层：session_state_<sid>.json 双写 + 兼容读。
+V1.3 §5 适配层：model_router_state_<sid>.json 双写 + 兼容读。
 
 SessionStateStore 职责：
-  - write(): 双写 — 新 session_state_<sid>.json + 旧 9 文件
+  - write(): 双写 — 新 model_router_state_<sid>.json + 旧 9 文件
   - read_new(): 读新格式
   - read_legacy(): 从旧 9 文件聚合读
   - migrate(): 旧→新 一次性迁移
@@ -67,10 +67,10 @@ class TestWriteCreatesFiles(unittest.TestCase):
         }
 
     def test_write_creates_new_format_file(self):
-        """write() 应创建 session_state_<sid>.json。"""
+        """write() 应创建 model_router_state_<sid>.json。"""
         store = self._store()
         store.write(self.sid, str(self.project_root), decision=self._sample_decision())
-        new_file = self.claude_dir / f"session_state_{self.sid}.json"
+        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         self.assertTrue(new_file.exists(), f"新格式文件应存在: {new_file}")
 
     def test_write_creates_legacy_files(self):
@@ -91,7 +91,7 @@ class TestWriteCreatesFiles(unittest.TestCase):
 
 
 class TestNewFormatSchema(unittest.TestCase):
-    """session_state_<sid>.json 的 schema 验证。"""
+    """model_router_state_<sid>.json 的 schema 验证。"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -125,14 +125,14 @@ class TestNewFormatSchema(unittest.TestCase):
     def test_new_format_has_version_field(self):
         store = self._store()
         store.write(self.sid, str(self.project_root), decision=self._sample_decision())
-        new_file = self.claude_dir / f"session_state_{self.sid}.json"
+        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(new_file.read_text())
         self.assertEqual(data.get("version"), "1.3")
 
     def test_new_format_has_decision_field(self):
         store = self._store()
         store.write(self.sid, str(self.project_root), decision=self._sample_decision())
-        new_file = self.claude_dir / f"session_state_{self.sid}.json"
+        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(new_file.read_text())
         self.assertIn("decision", data)
         self.assertEqual(data["decision"]["task_pattern"], "bugfix")
@@ -140,14 +140,14 @@ class TestNewFormatSchema(unittest.TestCase):
     def test_new_format_has_session_id(self):
         store = self._store()
         store.write(self.sid, str(self.project_root), decision=self._sample_decision())
-        new_file = self.claude_dir / f"session_state_{self.sid}.json"
+        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(new_file.read_text())
         self.assertEqual(data.get("session_id"), self.sid)
 
     def test_new_format_includes_optional_stage(self):
         store = self._store()
         store.write(self.sid, str(self.project_root), decision=self._sample_decision(), stage="implement")
-        new_file = self.claude_dir / f"session_state_{self.sid}.json"
+        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(new_file.read_text())
         self.assertEqual(data.get("stage"), "implement")
 
@@ -155,7 +155,7 @@ class TestNewFormatSchema(unittest.TestCase):
         store = self._store()
         pattern = {"prediction": "bugfix", "confidence": 0.9, "ts": "2026-06-15T00:00:00"}
         store.write(self.sid, str(self.project_root), decision=self._sample_decision(), pattern=pattern)
-        new_file = self.claude_dir / f"session_state_{self.sid}.json"
+        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(new_file.read_text())
         self.assertEqual(data.get("pattern"), pattern)
 
@@ -208,7 +208,7 @@ class TestReadNew(unittest.TestCase):
 
     def test_read_new_handles_corrupted_json(self):
         """损坏的 JSON 文件应返回 None（不抛异常）。"""
-        new_file = self.claude_dir / f"session_state_{self.sid}.json"
+        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         new_file.write_text("{ not valid json ")
         store = self._store()
         data = store.read_new(self.sid, str(self.project_root))
@@ -303,7 +303,7 @@ class TestMigrate(unittest.TestCase):
         result = store.migrate(self.sid, str(self.project_root))
         self.assertTrue(result, "迁移应成功")
 
-        new_file = self.claude_dir / f"session_state_{self.sid}.json"
+        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         self.assertTrue(new_file.exists(), "迁移后新文件应存在")
         data = json.loads(new_file.read_text())
         self.assertEqual(data["version"], "1.3")
@@ -354,7 +354,7 @@ class TestFeatureFlag(unittest.TestCase):
         with patch.dict(os.environ, {"MODEL_ROUTER_V13_WRITE": "1"}):
             store = self._store()
             store.write(self.sid, str(self.project_root), decision=self._sample_decision(), stage="default")
-        new_file = self.claude_dir / f"session_state_{self.sid}.json"
+        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         old_file = self.claude_dir / f"stage_{self.sid}"
         self.assertTrue(new_file.exists(), "flag on 时应写新文件")
         self.assertTrue(old_file.exists(), "flag on 时应写旧文件")
@@ -364,7 +364,7 @@ class TestFeatureFlag(unittest.TestCase):
         with patch.dict(os.environ, {"MODEL_ROUTER_V13_WRITE": "0"}):
             store = self._store()
             store.write(self.sid, str(self.project_root), decision=self._sample_decision(), stage="default")
-        new_file = self.claude_dir / f"session_state_{self.sid}.json"
+        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         old_file = self.claude_dir / f"stage_{self.sid}"
         self.assertFalse(new_file.exists(), "flag off 时应跳过新文件")
         self.assertTrue(old_file.exists(), "flag off 时仍应写旧文件")
@@ -405,8 +405,8 @@ class TestAtomicWrite(unittest.TestCase):
     def test_write_uses_tmp_and_replace(self):
         """写入应通过临时文件 + 原子替换完成。"""
         store = self._store()
-        new_file = self.claude_dir / f"session_state_{self.sid}.json"
-        tmp_file = self.claude_dir / f"session_state_{self.sid}.json.tmp"
+        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
+        tmp_file = self.claude_dir / f"model_router_state_{self.sid}.json.tmp"
 
         # 写之前都不应存在
         self.assertFalse(new_file.exists())
@@ -464,7 +464,7 @@ class TestThreadSafety(unittest.TestCase):
             t.join()
 
         # 验证文件是合法 JSON
-        new_file = self.claude_dir / f"session_state_{self.sid}.json"
+        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         self.assertTrue(new_file.exists())
         try:
             data = json.loads(new_file.read_text())

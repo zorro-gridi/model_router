@@ -2,10 +2,10 @@
 state_persistence.py — v1.3 持久化层：双写 + 兼容读
 =======================================================
 
-V1.3 §5 适配层：session_state_<sid>.json 双写 + 兼容读。
+V1.3 §5 适配层：model_router_state_<sid>.json 双写 + 兼容读。
 
 SessionStateStore 职责：
-  - write(): 双写 — 新 session_state_<sid>.json + 旧 9 文件
+  - write(): 双写 — 新 model_router_state_<sid>.json + 旧 9 文件
   - read_new(): 读新格式
   - read_legacy(): 从旧 9 文件（v1.2）聚合读
   - migrate(): 旧→新 一次性迁移
@@ -61,7 +61,7 @@ class SessionStateStore:
 
     @staticmethod
     def _new_file_path(sid: str, project_root: str) -> Path:
-        return Path(project_root) / ".claude" / f"session_state_{sid}.json"
+        return Path(project_root) / ".claude" / f"model_router_state_{sid}.json"
 
     @staticmethod
     def _ensure_claude_dir(project_root: str) -> Path:
@@ -99,7 +99,7 @@ class SessionStateStore:
         decision: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> None:
-        """双写：新 session_state_<sid>.json + 旧 9 文件。
+        """双写：新 model_router_state_<sid>.json + 旧 9 文件。
 
         Args:
             sid: Session ID。
@@ -137,7 +137,7 @@ class SessionStateStore:
 
         # ── 新文件写（受 flag 控制） ──
         if self._is_enabled():
-            new_path = claude_dir / f"session_state_{sid}.json"
+            new_path = claude_dir / f"model_router_state_{sid}.json"
             self._atomic_write(new_path, json.dumps(new_data, ensure_ascii=False, indent=2))
 
     def _write_legacy_files(self, claude_dir: Path, sid: str, **kwargs: Any) -> None:
@@ -174,7 +174,7 @@ class SessionStateStore:
     # ── Read ──────────────────────────────────────────────────────────────
 
     def read_new(self, sid: str, project_root: str) -> Optional[Dict[str, Any]]:
-        """读取新格式 session_state_<sid>.json。
+        """读取新格式 model_router_state_<sid>.json。
 
         Returns:
             dict 或 None（文件缺失 / JSON 损坏）。
@@ -244,7 +244,7 @@ class SessionStateStore:
     # ── Migrate ───────────────────────────────────────────────────────────
 
     def migrate(self, sid: str, project_root: str) -> bool:
-        """一次性迁移：旧 9 文件 → session_state_<sid>.json。
+        """一次性迁移：旧 9 文件 → model_router_state_<sid>.json。
 
         Returns:
             True 迁移成功；False 无旧文件可迁移。
@@ -268,6 +268,6 @@ class SessionStateStore:
             if value is not None:
                 new_data[key] = value
 
-        new_path = claude_dir / f"session_state_{sid}.json"
+        new_path = claude_dir / f"model_router_state_{sid}.json"
         self._atomic_write(new_path, json.dumps(new_data, ensure_ascii=False, indent=2))
         return True

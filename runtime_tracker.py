@@ -101,8 +101,8 @@ class RuntimeTracker:
     # ── Persistence ───────────────────────────────────────────────────────
 
     def _state_path(self, sid: str, project_root: str) -> Path:
-        """session_state_<sid>.json 的路径。"""
-        return Path(project_root) / ".claude" / f"session_state_{sid}.json"
+        """model_router_state_<sid>.json 的路径。"""
+        return Path(project_root) / ".claude" / f"model_router_state_{sid}.json"
 
     def _load(self, sid: str, project_root: str) -> RuntimeScore:
         """从 session_state 文件加载 RuntimeScore。文件缺失/损坏 → 返回空实例。"""
@@ -125,7 +125,7 @@ class RuntimeTracker:
         """
         claude_dir = Path(project_root) / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
-        path = claude_dir / f"session_state_{sid}.json"
+        path = claude_dir / f"model_router_state_{sid}.json"
 
         # 读取现有数据（保留其他字段）
         existing: dict = {}

@@ -11,7 +11,7 @@ stage_detector.py — UserPromptSubmit Hook
 
 阶段文件存储位置：
   分 session 阶段文件 stage_<session_id> 存放在 <项目根目录>/.claude/ 下，
-  与 session_state_<session_id>.json 路径规则一致。
+  与 model_router_state_<session_id>.json 路径规则一致。
   active_session 指针文件存放在 ~/.claude/hooks/model_router/，存储的是
   阶段文件的完整绝对路径，供 proxy.py（无 stdin 上下文）直接读取。
 
@@ -79,7 +79,7 @@ except Exception:
 
 # ── 分 session 阶段管理 ──
 # 每个 session 独立管理阶段，避免多会话互相覆盖。
-# 命名规则：stage_<session_id>（参照 hooks/session 的 session_state_<session_id> 模式）
+# 命名规则：stage_<session_id>（参照 hooks/session 的 model_router_state_<session_id> 模式）
 # 存放位置：<project_root>/.claude/stage_<session_id>
 # active_session 指针文件固定在 ~/.claude/hooks/model_router/，存储阶段文件的完整绝对路径。
 HOME_CLAUDE         = Path.home() / ".claude"
@@ -268,7 +268,7 @@ def _find_project_root(start: Path, session_id: str | None = None) -> Path:
 
     Anchor strategy (the location of the first per-session file IS the lock):
       1. If session_id is known, walk up looking for an existing
-         ``stage_<session_id>`` or ``session_state_<session_id>.json`` under
+         ``stage_<session_id>`` or ``model_router_state_<session_id>.json`` under
          ``.claude/``.  The directory containing it is the locked project root.
       2. Walk up looking for a ``.claude/`` config directory (skipping the
          global ``~/.claude`` unless we started inside it).
@@ -287,7 +287,7 @@ def _find_project_root(start: Path, session_id: str | None = None) -> Path:
         for _ in range(20):
             claude_dir = anchor_p / ".claude"
             if (claude_dir / f"stage_{session_id}").exists() or \
-               (claude_dir / f"session_state_{session_id}.json").exists():
+               (claude_dir / f"model_router_state_{session_id}.json").exists():
                 return anchor_p
             parent = anchor_p.parent
             if parent == anchor_p:  # reached filesystem root
@@ -974,7 +974,7 @@ def main():
 
         # ── V1.3 双写适配（Stage 3.3）──────────────────────────────────────────
         # 每次 hook 触发末尾，将当前 session 的完整状态写入
-        # session_state_<sid>.json（受 MODEL_ROUTER_V13_WRITE flag 控制）。
+        # model_router_state_<sid>.json（受 MODEL_ROUTER_V13_WRITE flag 控制）。
         # 旧文件仍由上方各 write_* 函数独立写入，旧消费方（proxy/stage_show）零感知。
         if session_id and cwd:
             try:
@@ -992,7 +992,7 @@ def main():
                     batch=read_batch(session_id, cwd),
                     fallback=read_fallback(session_id, cwd),
                 )
-                log("INFO", f"v1.3 dual-write snapshot → {_root}/.claude/session_state_{session_id}.json")
+                log("INFO", f"v1.3 dual-write snapshot → {_root}/.claude/model_router_state_{session_id}.json")
             except Exception as _e:
                 log("WARN", f"v1.3 dual-write failed (non-blocking): {_e!r}")
 

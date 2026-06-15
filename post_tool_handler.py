@@ -5,7 +5,7 @@ post_tool_handler.py — v1.3 PostToolUse Hook 入口（dispatcher）
 V1.3 §8 PostToolUse 接入 / dispatcher + 2 worker。
 
 从 stdin 读取 PostToolUse hook 原始 JSON → 按 tool_name
-路由到对应 worker → 写入 session_state_<sid>.json：
+路由到对应 worker → 写入 model_router_state_<sid>.json：
 
   - TodoWrite → todowrite_analyzer + runtime_tracker（双写）
   - 其他工具 → runtime_tracker（仅 runtime_score）
@@ -102,13 +102,13 @@ def dispatch(sid: str, project_root: str, raw_event: dict) -> None:
 
 
 def _read_latest_signals(sid: str, project_root: str) -> tuple[int, dict | None]:
-    """从 session_state_<sid>.json 读最新 runtime_score + todowrite_signal。
+    """从 model_router_state_<sid>.json 读最新 runtime_score + todowrite_signal。
 
     Returns:
         (runtime_score, todowrite_signal)；文件缺失/字段缺失时
         返回 (0, None)。
     """
-    path = Path(project_root) / ".claude" / f"session_state_{sid}.json"
+    path = Path(project_root) / ".claude" / f"model_router_state_{sid}.json"
     if not path.exists():
         return 0, None
     try:
@@ -141,7 +141,7 @@ def _write_todowrite_signal(sid: str, project_root: str, signal: dict) -> None:
     """将 todowrite_signal 合并写入 session_state 文件。"""
     claude_dir = Path(project_root) / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
-    path = claude_dir / f"session_state_{sid}.json"
+    path = claude_dir / f"model_router_state_{sid}.json"
 
     # 读取现有数据（保留其他字段如 runtime_score）
     existing: dict = {}

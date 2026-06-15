@@ -147,7 +147,7 @@ log = logging.getLogger("stage-router")
 # ── V1.3 读侧切换（Stage 6.2）─────────────────────────────────────────────────
 
 def _v13_resolve_decision(sid: str, project_root: str) -> dict | None:
-    """V1.3 读侧：从 session_state_<sid>.json（首选）→ 旧 9 文件（fallback）。
+    """V1.3 读侧：从 model_router_state_<sid>.json（首选）→ 旧 9 文件（fallback）。
 
     Feature flag:
       MODEL_ROUTER_V13_READ=0 → 跳过新格式,仅读旧文件（v1.2 兼容）。
@@ -222,7 +222,7 @@ def _resolve_stage_v13(active_path: Path) -> str | None:
     """v1.3 final_model → v1.2 stage 字符串（Stage 6.2 渐进期兜底）。
 
     触发场景：Stage 7 完成后旧 stage_<sid> 文件已被删除,但 proxy/STAGE_MODELS
-    查表仍需要 stage 字符串做键。此函数从 session_state_<sid>.json 的
+    查表仍需要 stage 字符串做键。此函数从 model_router_state_<sid>.json 的
     decision.final_model + decision.task_complexity 反推等价 stage。
 
     永不抛错（所有异常静默吞掉），让 read_stage() 在反推失败时仍能兜底 "default"。
@@ -343,7 +343,7 @@ def read_stage() -> str:
             )
 
     # Level 5: v1.3 决策反推（Stage 6.2 渐进期兜底 — 旧 stage_<sid> 文件可能已
-    # 被 Stage 7 删除，但 session_state_<sid>.json 还在）。仅在 flag 开启且
+    # 被 Stage 7 删除，但 model_router_state_<sid>.json 还在）。仅在 flag 开启且
     # 前 4 级全 miss 时尝试，避免无谓 IO。
     if active_path is not None:
         try:

@@ -177,7 +177,7 @@ def maybe_redecide(
 
     行为契约（Stage 5.1 / 5.2）：
       1. MODEL_ROUTER_V13_DECIDE=0 → 整体 no-op，返回 None。
-      2. session_state_<sid>.json 缺失或 decision 为空 → 不当场重决策，
+      2. model_router_state_<sid>.json 缺失或 decision 为空 → 不当场重决策，
          返回 None（避免在未初始化 session 上空跑）。
       3. decision.locked=True → 不重决策，返回 None。
       4. 计算候选 complexity：

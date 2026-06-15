@@ -59,7 +59,7 @@ class TestDispatchTodoWrite(unittest.TestCase):
         }
         dispatch(self.sid, str(self.project_root), raw_event)
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         self.assertTrue(state_file.exists(), "dispatch 后应存在 session_state 文件")
 
         data = json.loads(state_file.read_text())
@@ -81,7 +81,7 @@ class TestDispatchTodoWrite(unittest.TestCase):
         }
         dispatch(self.sid, str(self.project_root), raw_event)
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(state_file.read_text())
         self.assertIn("runtime_score", data,
                       "TodoWrite 也应累积 runtime_score")
@@ -111,7 +111,7 @@ class TestDispatchOtherTools(unittest.TestCase):
         }
         dispatch(self.sid, str(self.project_root), raw_event)
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(state_file.read_text())
         self.assertIn("runtime_score", data)
         self.assertGreater(data["runtime_score"]["score"], 0)
@@ -128,7 +128,7 @@ class TestDispatchOtherTools(unittest.TestCase):
         }
         dispatch(self.sid, str(self.project_root), raw_event)
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(state_file.read_text())
         self.assertIn("runtime_score", data)
 
@@ -142,7 +142,7 @@ class TestDispatchOtherTools(unittest.TestCase):
         }
         dispatch(self.sid, str(self.project_root), raw_event)
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(state_file.read_text())
         self.assertIn("runtime_score", data)
 
@@ -156,7 +156,7 @@ class TestDispatchOtherTools(unittest.TestCase):
         }
         dispatch(self.sid, str(self.project_root), raw_event)
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(state_file.read_text())
         self.assertIn("runtime_score", data)
 
@@ -173,7 +173,7 @@ class TestDispatchOtherTools(unittest.TestCase):
             "tool_input": {"file_path": "/app/main.py"},
         })
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(state_file.read_text())
         # Read=2+py=3=5, Edit=4+py=3=7, total=12
         self.assertGreaterEqual(data["runtime_score"]["score"], 12)
@@ -202,7 +202,7 @@ class TestFlagOffNoOp(unittest.TestCase):
                 "tool_input": {"file_path": "/app/main.py"},
             })
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         self.assertFalse(state_file.exists(),
                          "flag 关闭时不应创建 session_state 文件")
 
@@ -216,7 +216,7 @@ class TestFlagOffNoOp(unittest.TestCase):
                 "tool_input": {"todos": [{"content": "Fix bug", "status": "pending"}]},
             })
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         self.assertFalse(state_file.exists())
 
 
@@ -303,7 +303,7 @@ class TestMainReadsStdin(unittest.TestCase):
 
         main()
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         self.assertTrue(state_file.exists(),
                         "main() 应读取 stdin 并写入 session_state")
 
@@ -332,7 +332,7 @@ class TestMainReadsStdin(unittest.TestCase):
 
         main()
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         self.assertTrue(state_file.exists(),
                         "main() 应使用 cwd 作为 project_root")
 
@@ -370,7 +370,7 @@ class TestRouterTableCoverage(unittest.TestCase):
             except Exception as e:
                 self.fail(f"dispatch({tool}) 不应抛异常: {e}")
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         self.assertTrue(state_file.exists())
         data = json.loads(state_file.read_text())
         # 每个工具都累积了 score
@@ -404,7 +404,7 @@ class TestSessionStateFields(unittest.TestCase):
             },
         })
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(state_file.read_text())
         signal = data["todowrite_signal"]
 
@@ -431,7 +431,7 @@ class TestSessionStateFields(unittest.TestCase):
             },
         })
 
-        state_file = self.claude_dir / f"session_state_{self.sid}.json"
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         data = json.loads(state_file.read_text())
 
         # 两个字段都存在

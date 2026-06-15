@@ -7,7 +7,7 @@ stage_show.py — Stop Hook（PostToolBatch 也可用）
 
 阶段文件位置：
   分 session 阶段文件存于 <project_root>/.claude/stage_<session_id>，
-  与 session_state_<session_id>.json 同目录。
+  与 model_router_state_<session_id>.json 同目录。
   active_session 指针存于 ~/.claude/hooks/model_router/，内容为
   阶段文件的完整绝对路径。
 
@@ -73,7 +73,7 @@ def _find_project_root(start: Path, session_id: str | None = None) -> Path:
 
     Anchor strategy:
       1. If session_id is known, walk up looking for stage_<sid> or
-         session_state_<sid>.json under .claude/ — its parent IS the project root.
+         model_router_state_<sid>.json under .claude/ — its parent IS the project root.
       2. Walk up looking for .claude/ (skip global ~/.claude unless started there).
       3. Walk up looking for .git/ as fallback.
       4. Fall back to ~/.claude.
@@ -85,7 +85,7 @@ def _find_project_root(start: Path, session_id: str | None = None) -> Path:
         for _ in range(20):
             claude_dir = anchor_p / ".claude"
             if (claude_dir / f"stage_{session_id}").exists() or \
-               (claude_dir / f"session_state_{session_id}.json").exists():
+               (claude_dir / f"model_router_state_{session_id}.json").exists():
                 return anchor_p
             parent = anchor_p.parent
             if parent == anchor_p:
