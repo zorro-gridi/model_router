@@ -57,12 +57,22 @@ except ImportError:
     WORKFLOW_PLANNER = {
         "simple":  {"type": "single", "steps": ["execute"],
                     "models": ["MiniMax-M3"], "step_stages": ["default"]},
-        "medium":  {"type": "double", "steps": ["plan", "execute"],
-                    "models": ["deepseek-v4-pro", "MiniMax-M3"],
-                    "step_stages": ["plan", "implement"]},
-        "complex": {"type": "triple", "steps": ["plan", "execute", "audit"],
+        # 2026-06-15 策略调整：medium 升级为三模型编排（与原 complex 一致），
+        # complex 全程 strong model。
+        "medium":  {"type": "triple", "steps": ["plan", "execute", "audit"],
                     "models": ["deepseek-v4-pro", "MiniMax-M3", "deepseek-v4-pro"],
                     "step_stages": ["plan", "implement", "audit"]},
+        "complex": {"type": "triple", "steps": ["plan", "execute", "audit"],
+                    "models": ["deepseek-v4-pro", "deepseek-v4-pro", "deepseek-v4-pro"],
+                    "step_stages": ["plan", "implement", "audit"]},
+        # 【旧版 medium（保留备查）】
+        # "medium":  {"type": "double", "steps": ["plan", "execute"],
+        #             "models": ["deepseek-v4-pro", "MiniMax-M3"],
+        #             "step_stages": ["plan", "implement"]},
+        # 【旧版 complex（保留备查）】
+        # "complex": {"type": "triple", "steps": ["plan", "execute", "audit"],
+        #             "models": ["deepseek-v4-pro", "MiniMax-M3", "deepseek-v4-pro"],
+        #             "step_stages": ["plan", "implement", "audit"]},
     }
 
 try:

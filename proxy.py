@@ -993,6 +993,14 @@ def _write_complexity_from_proxy(score: int, label: str, confidence: float,
 # ── Workflow Planner（设计文档 §6.5 / §10 步骤 6-8）──────────────────────
 # 完整 plan：每个 complexity 包含 steps 序列、models 序列、step_stages 序列。
 #   simple  : [execute]                           / [NORMAL_MODEL]                            / [default]
+#   medium  : [plan, execute, audit]              / [STRONG_MODEL, NORMAL_MODEL, STRONG_MODEL] / [plan, implement, audit]
+#   complex : [plan, execute, audit]              / [STRONG_MODEL, STRONG_MODEL, STRONG_MODEL] / [plan, implement, audit]
+#
+# 2026-06-15 策略调整：
+#   - medium 升级为三模型编排（规划→执行→审计），与原 complex 一致，避免中等任务缺少审计步骤
+#   - complex 全程使用 strong model，避免 normal model 在复杂场景出错
+#
+# 【旧版配置（保留备查）】
 #   medium  : [plan, execute]                     / [STRONG_MODEL, NORMAL_MODEL]              / [plan, implement]
 #   complex : [plan, execute, audit]              / [STRONG_MODEL, NORMAL_MODEL, STRONG_MODEL] / [plan, implement, audit]
 #
@@ -1012,18 +1020,33 @@ WORKFLOW_PLANNER: dict[str, dict] = {
         "models":      [NORMAL_MODEL],
         "step_stages": ["default"],
     },
+    # 2026-06-15 策略调整：medium 升级为三模型编排"规划→执行→审计"（与旧 complex 结构一致），
+    # complex 全程 strong model（避免 normal model 在复杂场景出错）。
     "medium": {
-        "type":        "double",
-        "steps":       ["plan", "execute"],
-        "models":      [STRONG_MODEL, NORMAL_MODEL],
-        "step_stages": ["plan", "implement"],
-    },
-    "complex": {
         "type":        "triple",
         "steps":       ["plan", "execute", "audit"],
         "models":      [STRONG_MODEL, NORMAL_MODEL, STRONG_MODEL],
         "step_stages": ["plan", "implement", "audit"],
     },
+    "complex": {
+        "type":        "triple",
+        "steps":       ["plan", "execute", "audit"],
+        "models":      [STRONG_MODEL, STRONG_MODEL, STRONG_MODEL],
+        "step_stages": ["plan", "implement", "audit"],
+    },
+    # ── 以下为旧版配置（保留备查，方便回退）────────────────────────────
+    # "medium": {
+    #     "type":        "double",
+    #     "steps":       ["plan", "execute"],
+    #     "models":      [STRONG_MODEL, NORMAL_MODEL],
+    #     "step_stages": ["plan", "implement"],
+    # },
+    # "complex": {
+    #     "type":        "triple",
+    #     "steps":       ["plan", "execute", "audit"],
+    #     "models":      [STRONG_MODEL, NORMAL_MODEL, STRONG_MODEL],
+    #     "step_stages": ["plan", "implement", "audit"],
+    # },
 }
 
 # 兼容旧访问：仅含 type + steps 的简版（仅供日志 / 旧调用方引用）

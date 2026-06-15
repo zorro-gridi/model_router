@@ -635,11 +635,15 @@ LLM_CLASSIFIER_CONFIG: dict[str, object] = {
 # 但 implement.fb_model = deepseek-v4-flash（弱模型），
 # 导致 implement complex workflow = [flash, M3, flash] —— 违反"复杂任务用强模型"。
 #
-# 修复：定义全局 STRONG_MODEL / NORMAL_MODEL，build_workflow_plan 直接引用，
-# 任何 stage 的 complex workflow 都真正走"强+常规+强"。
+# 修复：定义全局 STRONG_MODEL / NORMAL_MODEL，build_workflow_plan 直接引用。
+#
+# 2026-06-15 策略调整：
+#   - medium → 三模型编排（规划→执行→审计），models = [STRONG, NORMAL, STRONG]
+#   - complex → 全程 strong model，models = [STRONG, STRONG, STRONG]，
+#     避免 normal model 在复杂场景出错。
 # ═══════════════════════════════════════════════════════════════════════════
 
-STRONG_MODEL:  str = "deepseek-v4-pro"   # 复杂任务的规划/审计模型（设计文档 §10）
+STRONG_MODEL:  str = "deepseek-v4-pro"   # 复杂任务的规划/执行/审计模型（设计文档 §10）
 NORMAL_MODEL: str = "MiniMax-M3"        # 常规模型（主力执行）
 
 # ── Per-API-Request 动态分类间隔（设计文档 §6.2 / §6.4）──

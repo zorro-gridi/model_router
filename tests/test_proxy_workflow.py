@@ -168,7 +168,7 @@ class TestProxyWorkflow(unittest.TestCase):
         self.assertIsNone(rec.get("workflow_step"),
                           f"simple 任务 workflow_step 应为 None: {rec.get('workflow_step')}")
 
-    # ── 2. complex → 三步物理切模型 ─────────────────────────
+    # ── 2. complex → 三步物理切模型（2026-06-15 策略调整：全程 strong）──
     def test_complex_task_three_step_routing(self):
         # 预激活 plan（模拟 stage_detector.activate 已发生）
         wo.activate("complex", self.sid, self.root)
@@ -181,11 +181,12 @@ class TestProxyWorkflow(unittest.TestCase):
         self.assertEqual(rec1.get("target_model"), STRONG_MODEL,
                          f"step1 应切到强模型，实际: {rec1.get('target_model')}")
 
-        # 第 2 次：step 2/3 → normal
+        # 第 2 次：step 2/3 → strong（2026-06-15 升级：complex 全程 strong，
+        # 避免 normal model 在复杂场景出错）
         rec2 = _run_one_do_POST(self.root, self.sid)
         self.assertEqual(rec2.get("workflow_step"), 2)
-        self.assertEqual(rec2.get("target_model"), NORMAL_MODEL,
-                         f"step2 应切到常规模型，实际: {rec2.get('target_model')}")
+        self.assertEqual(rec2.get("target_model"), STRONG_MODEL,
+                         f"step2 complex 全程 strong，实际: {rec2.get('target_model')}")
 
         # 第 3 次：step 3/3 → strong
         rec3 = _run_one_do_POST(self.root, self.sid)
@@ -216,13 +217,13 @@ class TestProxyWorkflow(unittest.TestCase):
         # 清 override
         (Path(self.root) / ".claude" / f"model_{self.sid}").unlink()
 
-    # ── 4. medium → 双步 [strong, normal] ────────────────────
-    def test_medium_task_double_step(self):
+    # ── 4. medium → 三步 [strong, normal, strong]（2026-06-15 升级：规划→执行→审计）──
+    def test_medium_task_triple_step(self):
         wo.activate("medium", self.sid, self.root)
 
         rec1 = _run_one_do_POST(self.root, self.sid,
                                 complexity_override={"label": "medium", "score": 50, "ts": 0})
-        self.assertEqual(rec1.get("workflow_type"), "double")
+        self.assertEqual(rec1.get("workflow_type"), "triple")
         self.assertEqual(rec1.get("workflow_step"), 1)
         self.assertEqual(rec1.get("target_model"), STRONG_MODEL)
 
@@ -230,9 +231,15 @@ class TestProxyWorkflow(unittest.TestCase):
         self.assertEqual(rec2.get("workflow_step"), 2)
         self.assertEqual(rec2.get("target_model"), NORMAL_MODEL)
 
-        # 第 3 次：plan 完成 → 落回 stage
+        # 第 3 步：strong model 审计
         rec3 = _run_one_do_POST(self.root, self.sid)
-        self.assertIsNone(rec3.get("workflow_step"))
+        self.assertEqual(rec3.get("workflow_step"), 3)
+        self.assertEqual(rec3.get("target_model"), STRONG_MODEL,
+                         f"medium step3 应切到强模型审计，实际: {rec3.get('target_model')}")
+
+        # 第 4 次：plan 完成 → 落回 stage
+        rec4 = _run_one_do_POST(self.root, self.sid)
+        self.assertIsNone(rec4.get("workflow_step"))
 
     # ── 5. workflow_step_<sid> 缺失时 → 不报错，走 stage 模型 ─
     def test_missing_workflow_file_falls_back(self):

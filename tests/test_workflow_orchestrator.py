@@ -5,7 +5,7 @@ test_workflow_orchestrator.py — workflow_orchestrator 单元测试
 
 覆盖：
   1. activate(complex)  →  triple plan, current_step=1
-  2. activate(medium)   →  double plan
+  2. activate(medium)   →  triple plan（2026-06-15 升级为三模型编排）
   3. simple             →  None（不激活）
   4. advance 1→2→3      →  越界自动 deactivate
   5. 中途 re-activate   →  保留 current_step，不重置
@@ -57,15 +57,16 @@ class TestWorkflowOrchestrator(unittest.TestCase):
             (self.tmpdir / ".claude" / f"workflow_step_{self.sid}").exists()
         )
 
-    # ── 2. medium → double plan ──────────────────────────────
-    def test_activate_medium_writes_double(self):
+    # ── 2. medium → triple plan（2026-06-15 升级：规划→执行→审计）──
+    def test_activate_medium_writes_triple(self):
         state = wo.activate("medium", self.sid, self.root)
         self.assertIsNotNone(state)
-        self.assertEqual(state["plan_type"], "double")
+        self.assertEqual(state["plan_type"], "triple")
         self.assertEqual(state["current_step"], 1)
-        self.assertEqual(len(state["models"]), 2)
+        self.assertEqual(len(state["models"]), 3)
         self.assertEqual(state["models"][0], "deepseek-v4-pro")
         self.assertEqual(state["models"][1], "MiniMax-M3")
+        self.assertEqual(state["models"][2], "deepseek-v4-pro")
 
     # ── 3. simple → 不激活 ──────────────────────────────────
     def test_activate_simple_returns_none(self):
