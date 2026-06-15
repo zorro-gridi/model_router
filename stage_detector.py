@@ -802,6 +802,57 @@ def main():
                     f"complexity (auto): score={auto_score} "
                     f"label={auto_label} conf={auto_conf}")
 
+        # ── V1.3 决策核心（V1.3 §6.4）：调 decision_engine.decide() 拿权威 DecisionRecord ──
+        # Stage 5/7 production bug 修复：之前 stage_detector 直接写 state 但
+        # decision 字段为 {}。E2E Scenario 1 (RED) 暴露后，这里调 decide()
+        # 拿到 locked=True DecisionRecord，写到 model_router_state_<sid>.json。
+        decision_dict: dict | None = None
+        if session_id and cwd and prompt:
+            try:
+                from decision_engine import decide as _v13_decide
+                import time as _t
+
+                # 复用本 hook 内已经拿到的 llm_result（避免二次 LLM 调用）；
+                # 没拿到 → 走 V1 关键词回退，让 decide() 的 classifier 接口完整。
+                def _v13_classifier(_p: str) -> dict:
+                    if llm_result:
+                        return dict(llm_result)
+                    # V1 关键词回退：pattern + complexity 拼成 llm 风格 dict
+                    pat = new_pattern
+                    conf = new_conf
+                    if not pat:
+                        pat, conf = detect_task_pattern(_p)
+                    cx = detect_complexity(_p, pat)
+                    return {
+                        "stage": new_stage or "",
+                        "pattern": pat or "feature",
+                        "pattern_confidence": conf or 0.5,
+                        "complexity_label": cx.get("label", "medium"),
+                        "complexity_score": int(cx.get("score", 50)),
+                        "complexity_confidence": float(cx.get("confidence", 0.5)),
+                        "reasoning": "v1 keyword fallback (no API key)",
+                    }
+
+                prompt_id = f"{session_id[-8:]}-p{int(_t.time())}"
+                rec = _v13_decide(
+                    prompt, session_id, prompt_id,
+                    classifier=_v13_classifier,
+                )
+                decision_dict = dict(rec.to_dict())
+                # ~model 显式覆盖：覆写 final_model（V1.3 §6.4 优先级最高）
+                if new_model:
+                    decision_dict["final_model"] = new_model
+                    decision_dict["decision_source"] = "explicit"
+                log("INFO",
+                    f"v1.3 decide: complexity={decision_dict['task_complexity']} "
+                    f"model={decision_dict['final_model']} "
+                    f"source={decision_dict['decision_source']} "
+                    f"locked={decision_dict['locked']}")
+            except Exception as _de:
+                log("WARN", f"decision_engine.decide() failed: {_de!r}; "
+                            f"decision 字段留空（向后兼容）")
+                decision_dict = None
+
         # ── V1.3 状态快照 ──────────────────────────────────────────────
         # 每次 hook 触发末尾，将当前 session 的完整状态写入
         # model_router_state_<sid>.json。v1.3 单文件为唯一持久化路径。
@@ -820,6 +871,7 @@ def main():
                     complexity=read_complexity(session_id, cwd),
                     batch=read_batch(session_id, cwd),
                     fallback=read_fallback(session_id, cwd),
+                    decision=decision_dict,
                 )
                 log("INFO", f"v1.3 dual-write snapshot → {_root}/.claude/model_router_state_{session_id}.json")
             except Exception as _e:
