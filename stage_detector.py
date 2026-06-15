@@ -15,13 +15,7 @@ stage_detector.py — UserPromptSubmit Hook
   active_session 指针文件存放在 ~/.claude/hooks/model_router/，存储的是
   阶段文件的完整绝对路径，供 proxy.py（无 stdin 上下文）直接读取。
 
-Operation-type（第二维度，2026-06-13 引入）：
-  与 stage 并列独立信号，由关键词或显式前缀触发：
-    ~write / ~read / ~search / ~refactor
-  op 文件位置：<project_root>/.claude/op_<session_id>，与 stage_<sid> 同目录，
-  仅前缀不同。proxy.py 端在 stage 路由之上叠加：检出 op → 完全覆盖 stage。
-
-Model-override（用户显式指定模型，2026-06-13 引入，最高优先级）：
+Model-override（用户显式指定模型，最高优先级，2026-06-13 引入）：
   用户可通过 ~model / ~m 前缀或自然语言（use / 用）指定模型简称：
     ~model ds-v4-pro   ~m mm3   use deepseek-v4-flash   用 mm3
   model 文件位置：<project_root>/.claude/model_<session_id>，与 stage_<sid>
@@ -134,67 +128,6 @@ def detect_stage(prompt: str) -> str | None:
 
     return None  # 不更改阶段
 
-
-# ────────────────────────────────────────────────────────────────────
-# Operation-type — [已废弃 2026-06-14]
-# ────────────────────────────────────────────────────────────────────
-# 废弃原因：write/read/search 只是"动作"不是"路由维度"。
-# Complexity 分类器（设计文档 §6.4）已吞掉 op 的原始职责。
-# 下方所有 op 相关函数均已替换为 no-op stub，调用方不会出错。
-# 原有实现以注释形式保留，便于未来参考或回退。
-#
-# OPERATION_KEYWORDS: list[tuple[str, list[str]]] = [
-#     ("write", [
-#         "写,", "写。", "写 ", "写入", "更新", "改写", "改", "编辑", "写代码", "创建",
-#         "添加", "删除", "write", "update", "edit", "create", "delete", "add", "fix", "修改",
-#     ]),
-#     ("read", [
-#         "读一下", "阅读", "查看", "看一下", "理解", "解释", "分析", "总结", "概括",
-#         "read", "view", "explain", "summarize", "understand", "分析一下",
-#     ]),
-#     ("search", [
-#         "搜索", "查找", "找一下", "检索", "搜一下", "grep", "find", "search", "locate", "找找",
-#     ]),
-#     ("refactor", [
-#         "重构", "整理", "优化结构", "改结构", "refactor", "restructure", "reorganize",
-#         "clean up", "清理",
-#     ]),
-# ]
-#
-# OPERATION_PREFIX_RE = re.compile(
-#     r"(?:^|\s)~(write|read|search|refactor)\b",
-#     re.IGNORECASE,
-# )
-# ────────────────────────────────────────────────────────────────────
-
-
-# detect_operation — [已废弃 2026-06-14]
-# 原实现以注释保留：
-# def detect_operation(prompt: str) -> str | None:
-#     """
-#     返回检测到的 op 名，或 None（表示不更改当前 op）。
-#     优先级：显式命令 > 关键词匹配 > 不变
-#     与 detect_stage() 平行独立——两侧关键词可独立命中，proxy 端按 op 优先。
-#     """
-#     # 显式命令
-#     m = OPERATION_PREFIX_RE.search(prompt.strip())
-#     if m:
-#         return m.group(1).lower()
-#
-#     # 关键词匹配（遍历顺序即优先级）
-#     prompt_lower = prompt.lower()
-#     for op, keywords in OPERATION_KEYWORDS:
-#         if any(kw in prompt_lower for kw in keywords):
-#             return op
-#
-#     return None  # 不更改 op
-
-
-def detect_operation(prompt: str) -> str | None:
-    """[已废弃 2026-06-14] 始终返回 None。
-    op 路由已由 Complexity（§6.4）替代。
-    """
-    return None
 
 
 
@@ -325,20 +258,6 @@ def _stage_file_path(cwd: str | Path, session_id: str) -> Path:
     if not claude_dir.is_dir():
         claude_dir.mkdir(parents=True, exist_ok=True)
     return claude_dir / f"stage_{session_id}"
-
-
-# _op_file_path — [已废弃 2026-06-14]
-# 原实现：
-# def _op_file_path(stage_file: Path) -> Path:
-#     """从 stage_<sid> 路径派生 op_<sid> 路径。"""
-#     return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
-
-
-def _op_file_path(stage_file: Path) -> Path:
-    """[已废弃 2026-06-14] op 路由已由 Complexity 替代。
-    保留 stub 确保调用方（_reset_session_files）不报错。
-    """
-    return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
 
 
 
@@ -472,35 +391,6 @@ def read_stage(session_id: str | None = None,
     # 3. 兜底（无任何 session 信息时用 default）
     return "default"
 
-
-# read_operation — [已废弃 2026-06-14]
-# 原实现：
-# def read_operation(session_id: str | None = None,
-#                    cwd: str | Path | None = None) -> str | None:
-#     """...""" (完整实现见 git history)
-
-
-def read_operation(session_id: str | None = None,
-                   cwd: str | Path | None = None) -> str | None:
-    """[已废弃 2026-06-14] 始终返回 None。
-    op 路由已由 Complexity（§6.4）替代。
-    """
-    return None
-
-
-# write_operation — [已废弃 2026-06-14]
-# 原实现：
-# def write_operation(op: str, session_id: str | None = None,
-#                     cwd: str | Path | None = None) -> None:
-#     """...""" (完整实现见 git history)
-
-
-def write_operation(op: str, session_id: str | None = None,
-                    cwd: str | Path | None = None) -> None:
-    """[已废弃 2026-06-14] no-op。
-    op 路由已由 Complexity（§6.4）替代。
-    """
-    pass
 
 
 def write_model_override(model: str, session_id: str | None = None,
@@ -749,12 +639,6 @@ def main():
                 new_stage = llm_stage
                 log("INFO", f"stage from LLM: {new_stage}")
 
-        # ── Operation-type 检测 — [已废弃 2026-06-14] ──
-        # write/read/search 只是动作不是路由维度，Complexity（§6.4）已接管。
-        # detect_operation() 始终返回 None，write_operation() 是 no-op。
-        new_op = detect_operation(prompt)
-        old_op = read_operation(session_id, cwd)
-
         # ── Stage 写入/通知 ──
         stage_msg: str | None = None
         if new_stage and new_stage != old_stage:
@@ -770,28 +654,6 @@ def main():
             log("INFO", f"stage unchanged: {old_stage}")
         else:
             log("INFO", "no stage signal, passthrough")
-
-        # ── Op 写入/通知 — [已废弃 2026-06-14] ──
-        # 原逻辑：new_op != old_op 时写 op_<sid> + 通知用户。
-        # detect_operation() 始终返回 None，此块永远走 "no op signal"。
-        # op_msg 固定为 None，下方用户通知拼接直接跳过。
-        # 原实现：
-        # op_msg: str | None = None
-        # if new_op and new_op != old_op:
-        #     write_operation(new_op, session_id, cwd)
-        #     log("INFO", f"op: {old_op} → {new_op}")
-        #     from stage_config import OPERATION_INFO
-        #     info = OPERATION_INFO.get(new_op, "")
-        #     op_msg = (
-        #         f"操作类型: {(old_op or 'none')} → {new_op}"
-        #         + (f"（{info}）" if info else "")
-        #     )
-        # elif new_op == old_op:
-        #     log("INFO", f"op unchanged: {old_op}")
-        # else:
-        #     log("INFO", "no op signal, passthrough")
-        op_msg: str | None = None
-        log("INFO", "op detection disabled (deprecated 2026-06-14), passthrough")
 
         # ── Sticky Fallback 通知（用户未显式覆盖模型时提示）──
         fb_msg: str | None = None

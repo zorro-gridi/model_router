@@ -1,28 +1,22 @@
 """
-state_persistence.py — v1.3 持久化层：双写 + 兼容读
+state_persistence.py — v1.3 持久化层（单写 + 兼容读）
 =======================================================
 
-V1.3 §5 适配层：model_router_state_<sid>.json 双写 + 兼容读。
+V1.3 §5 适配层：model_router_state_<sid>.json 单文件持久化。
 
 SessionStateStore 职责：
-  - write(): 双写 — 新 model_router_state_<sid>.json + 旧 9 文件
+  - write(): 只写 model_router_state_<sid>.json
   - read_new(): 读新格式
-  - read_legacy(): 从旧 9 文件（v1.2）聚合读
+  - read_legacy(): 从旧文件（v1.2）聚合读（向后兼容）
   - migrate(): 旧→新 一次性迁移
-  - MODEL_ROUTER_V13_WRITE env flag（默认 True，关闭则只写旧文件）
 
-旧 9 文件（v1.2 遗留）：
-  stage_<sid>（plain text）、model_<sid>（plain text）、
-  pattern_<sid>（JSON）、complexity_<sid>（JSON）、batch_<sid>（JSON）、
-  fallback_<sid>（plain text/json）、reqcnt_<sid>（JSON）、
-  workflow_step_<sid>（JSON）、op_<sid>（JSON，已废弃）
+v1.3 已是唯一路径（不再需要 feature flag），write() 始终写入新格式。
 
 原子写入：所有 write 均通过 .tmp + os.replace() 保证原子性。
 
 设计约束：
   - 零依赖（除标准库）
   - 线程安全：os.replace() 是原子的，无需显式锁
-  - 兼容读：旧消费方（proxy/stage_show）暂不感知新格式
 """
 
 from __future__ import annotations
@@ -36,7 +30,7 @@ from typing import Any, Dict, Optional
 
 
 class SessionStateStore:
-    """V1.3 持久化层 — 双写 + 兼容读。
+    """V1.3 持久化层 — 单文件写 + 兼容读。
 
     使用方式：
         store = SessionStateStore()
@@ -48,14 +42,6 @@ class SessionStateStore:
     """
 
     VERSION = "1.3"
-
-    # ── Feature Flag ──────────────────────────────────────────────────────
-
-    @staticmethod
-    def _is_enabled() -> bool:
-        """MODEL_ROUTER_V13_WRITE flag：默认 True（开启双写）。"""
-        flag = os.environ.get("MODEL_ROUTER_V13_WRITE", "1")
-        return flag.lower() not in ("0", "false", "no", "off")
 
     # ── Path helpers ──────────────────────────────────────────────────────
 
@@ -99,18 +85,17 @@ class SessionStateStore:
         decision: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> None:
-        """双写：新 model_router_state_<sid>.json + 旧 9 文件。
+        """写入 model_router_state_<sid>.json（v1.3 单文件持久化）。
 
         Args:
             sid: Session ID。
             project_root: 项目根目录（包含 .claude/）。
             decision: DecisionRecord.to_dict() 或兼容 dict。
-            **kwargs: 可选旧字段 — stage, model_override, pattern,
+            **kwargs: 可选附加字段 — stage, model_override, pattern,
                       complexity, batch, fallback, reqcnt, workflow_step。
         """
         claude_dir = self._ensure_claude_dir(project_root)
 
-        # ── 新格式数据 ──
         new_data: Dict[str, Any] = {
             "version": self.VERSION,
             "session_id": sid,
@@ -132,44 +117,8 @@ class SessionStateStore:
             if key in kwargs and kwargs[key] is not None:
                 new_data[key] = kwargs[key]
 
-        # ── 旧文件双写（始终写，不依赖 flag） ──
-        self._write_legacy_files(claude_dir, sid, **kwargs)
-
-        # ── 新文件写（受 flag 控制） ──
-        if self._is_enabled():
-            new_path = claude_dir / f"model_router_state_{sid}.json"
-            self._atomic_write(new_path, json.dumps(new_data, ensure_ascii=False, indent=2))
-
-    def _write_legacy_files(self, claude_dir: Path, sid: str, **kwargs: Any) -> None:
-        """写入旧格式文件（v1.2 兼容双写）。"""
-        # Plain-text files
-        if "stage" in kwargs and kwargs["stage"] is not None:
-            self._atomic_write(
-                claude_dir / f"stage_{sid}",
-                f"{kwargs['stage']}\n",
-            )
-
-        if "model_override" in kwargs and kwargs["model_override"] is not None:
-            self._atomic_write(
-                claude_dir / f"model_{sid}",
-                f"{kwargs['model_override']}\n",
-            )
-
-        # JSON files
-        json_fields = (
-            "pattern",
-            "complexity",
-            "batch",
-            "fallback",
-            "reqcnt",
-            "workflow_step",
-        )
-        for key in json_fields:
-            if key in kwargs and kwargs[key] is not None:
-                self._atomic_write(
-                    claude_dir / f"{key}_{sid}",
-                    json.dumps(kwargs[key], ensure_ascii=False),
-                )
+        new_path = claude_dir / f"model_router_state_{sid}.json"
+        self._atomic_write(new_path, json.dumps(new_data, ensure_ascii=False, indent=2))
 
     # ── Read ──────────────────────────────────────────────────────────────
 
