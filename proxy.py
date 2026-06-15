@@ -1110,21 +1110,6 @@ def _write_complexity_from_proxy(score: int, label: str, confidence: float,
         pass
 
 
-# ── Workflow Planner（设计文档 §6.5 / §10 步骤 6-8）──────────────────────
-# 完整 plan：每个 complexity 包含 steps 序列、models 序列、step_stages 序列。
-#   simple  : [execute]                           / [NORMAL_MODEL]                            / [default]
-#   medium  : [plan, execute, audit]              / [STRONG_MODEL, NORMAL_MODEL, STRONG_MODEL] / [plan, implement, audit]
-#   complex : [plan, execute, audit]              / [STRONG_MODEL, STRONG_MODEL, STRONG_MODEL] / [plan, implement, audit]
-#
-# 2026-06-15 策略调整：
-#   - medium 升级为三模型编排（规划→执行→审计），与原 complex 一致，避免中等任务缺少审计步骤
-#   - complex 全程使用 strong model，避免 normal model 在复杂场景出错
-#
-# 【旧版配置（保留备查）】
-#   medium  : [plan, execute]                     / [STRONG_MODEL, NORMAL_MODEL]              / [plan, implement]
-#   complex : [plan, execute, audit]              / [STRONG_MODEL, NORMAL_MODEL, STRONG_MODEL] / [plan, implement, audit]
-#
-
 # ── Metrics / Trace（设计文档 §6.8 / §15）────────────────────────────────────
 # 每次路由决策写一条 JSONL 到 /tmp/stage_metrics.jsonl，供 /metrics /trace 查询。
 METRICS_LOG_FILE = Path("/tmp/stage_metrics.jsonl")
@@ -1132,37 +1117,8 @@ METRICS_MAX_RECORDS = 500  # 环形缓冲：最多保留最近 500 条
 
 
 def _read_workflow_state_safe() -> dict | None:
-    """供 /health / /trace 使用的兜底读取器。返回精简 dict 或 None。
-
-    与 do_POST 内联的不同点：本函数**只读**、不副作用；用于 GET 端点展示
-    当前 session 的 plan 进度（type / current_step / models / step_stages）。
-
-    失败一律返回 None，绝不抛异常。
-    多 session 并发修复（2026-06-14）：通过 _active_stage_path() 解析 session。
-    """
-    try:
-        from workflow_orchestrator import read_state as _wf_read
-        ap = _active_stage_path()
-        if not ap:
-            return None
-        sid = _extract_session_id_from_stage_path(ap)
-        if not sid:
-            return None
-        root = _find_project_root_for_stage_path(ap)
-        state = _wf_read(sid, str(root))
-        if not state:
-            return None
-        return {
-            "plan_type":    state.get("plan_type"),
-            "complexity":   state.get("complexity"),
-            "current_step": state.get("current_step"),
-            "total_steps":  len(state.get("models", [])),
-            "models":       list(state.get("models", [])),
-            "step_stages":  list(state.get("step_stages", [])),
-            "steps":        list(state.get("steps", [])),
-        }
-    except Exception:
-        return None
+    """v1.3: workflow_orchestrator 已删除，保留空壳供 /health /trace 兼容。"""
+    return None
 
 
 def _append_metric(record: dict) -> None:
