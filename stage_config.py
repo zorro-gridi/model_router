@@ -695,6 +695,8 @@ __all__ = [
     "STAGE_KEYWORDS",
     "PATTERN_KEYWORDS",
     "_PLACEHOLDER_WEIGHTS",
+    "load_yaml_weights",
+    "get_weights",
 ]
 
 # ── Runtime Complexity Score 权重（V1.3 §7 硬编码兜底）────────────────────

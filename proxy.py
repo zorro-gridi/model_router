@@ -14,13 +14,10 @@ Stage-Aware Model Router
   audit       → 工程审计：Opus（漏洞最贵）
   default     → 未指定：Sonnet
 
-Operation-type 路由 — [已废弃 2026-06-14]
+Operation-type 路由 — [已删除 2026-06-15 v1.3 Stage 7]
   废弃原因：write/read/search 只是"动作"，不是"任务属性"。
   真正影响模型选择的是"任务类型 + 任务复杂度 + 当前阶段"。
   Complexity 分类器（设计文档 §6.4）已吞掉 op 的原始职责。
-  兼容策略：OPERATION_CONFIG = {}，所有 `if op in OPERATION_MODELS` 自然为 False，
-  自动退化到 stage 路由，无需逐一修改下游消费代码。
-  下方 _op_file_path() / read_operation() 及相关路由分支已注释保留，用于追溯。
 
 Model-override 路由（2026-06-13 引入，最高优先级）：
   检出 model 覆盖时完全覆盖 stage 路由。
@@ -94,8 +91,7 @@ INTERNAL_SOURCE_HEADER = os.environ.get("STAGE_ROUTER_INTERNAL_HEADER", "X-Stage
 # 从统一配置文件导入（hooks/model_router/stage_config.py）
 from stage_config import (
     STAGE_MODELS, FALLBACK_MODELS,
-    OPERATION_MODELS, OPERATION_FALLBACK_MODELS,
-    STAGE_CONFIG, OPERATION_CONFIG,
+    STAGE_CONFIG,
     MODEL_TO_CONFIG,
     STRONG_MODEL,   # 设计文档 §10 路由算法：全局强模型
     RECLASSIFY_INTERVAL,          # per-API-request 动态分类间隔
@@ -449,50 +445,6 @@ def _find_state_by_timestamp(project_root: str, current_sid: str) -> tuple[str, 
     return candidates[0]
 
 
-# ── Operation-type 读取 — [已废弃 2026-06-14] ──
-# 废弃原因：write/read/search 只是"动作"不是路由维度。
-# Complexity 分类器（设计文档 §6.4）已吞掉 op 的原始职责。
-# OPERATION_CONFIG = {} 使得 `op in OPERATION_MODELS` 永远为 False，
-# 下游分支自然退化到 stage 路由。
-# 函数体注释保留以备未来参考或回退。
-
-# def _op_file_path(stage_file: Path) -> Path:
-#     """从 stage_<sid> 路径派生 op_<sid> 路径（同目录、仅前缀替换）。
-#     与 stage_detector._op_file_path 保持完全相同的派生规则。
-#     """
-#     return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
-#
-#
-# def read_operation() -> str | None:
-#     """
-#     读取当前 op，路径解析复用 stage_detector 的派生规则。
-#     proxy.py 是无 stdin 的 HTTP 服务器：从 active_session 指针拿到
-#     stage_<sid> 完整路径，再派生 op_<sid>。
-#     返回 None 表示"无 op 信号"——proxy 走 stage 路由（与升级前行为一致）。
-#     """
-#     try:
-#         active_path = ACTIVE_SESSION_FILE.read_text().strip()
-#         if active_path:
-#             content = _read_stage_file(_op_file_path(Path(active_path)))
-#             if content and content in OPERATION_MODELS:
-#                 return content
-#             if content:
-#                 log.warning(
-#                     f"op_<sid> 未知 op 值 '{content}'，忽略 op 走 stage 路由"
-#                 )
-#     except FileNotFoundError:
-#         pass
-#     return None
-
-
-def read_operation() -> Optional[str]:
-    """[已废弃 2026-06-14] 始终返回 None。
-    write/read/search 只是动作不是路由维度，
-    模型选择现由 Complexity 分类器（§6.4）接管。
-    """
-    return None
-
-
 # ── Model-override 读取（最高路由优先级）───────────────────────────────────────
 
 def _model_file_path(stage_file: Path) -> Path:
@@ -667,21 +619,21 @@ def _extract_prompt_text(body: bytes) -> str:
 
 def resolve_model_routing(model_name: str) -> tuple[str, str, str, str, str, str, str] | None:
     """
-    搜索 STAGE_CONFIG + OPERATION_CONFIG 查找 model_name 对应的路由参数。
+    搜索 STAGE_CONFIG 查找 model_name 对应的路由参数。
 
     返回 (base_url, model, api_key_env, protocol,
           fb_base_url, fb_model, fb_api_key_env, fb_protocol)
     或 None（未找到该 model 的配置）。
     """
     # 搜索所有配置，找到 model_name 作为 primary 或 fallback 的条目
-    for cfg in list(STAGE_CONFIG.values()) + list(OPERATION_CONFIG.values()):
+    for cfg in STAGE_CONFIG.values():
         if cfg["model"] == model_name:
             return (
                 cfg["base_url"], cfg["model"], cfg["api_key_env"], cfg["protocol"],
                 cfg["fb_base_url"], cfg["fb_model"], cfg["fb_api_key_env"], cfg["fb_protocol"],
             )
     # 也可作为 fallback model 匹配（用户可能想直接用备选模型）
-    for cfg in list(STAGE_CONFIG.values()) + list(OPERATION_CONFIG.values()):
+    for cfg in STAGE_CONFIG.values():
         if cfg["fb_model"] == model_name:
             # 反向：把 fb 当作 primary，原 primary 当作 fb
             return (
@@ -1490,9 +1442,8 @@ def _load_dotenv(env_path: Path) -> int:
 
 
 def _check_required_keys() -> list[str]:
-    """扫描 STAGE_MODELS + OPERATION_MODELS，收集所有需要的 API key 环境变量名，报告缺失项。"""
+    """扫描 STAGE_MODELS，收集所有需要的 API key 环境变量名，报告缺失项。"""
     needed = {entry[2] for entry in STAGE_MODELS.values()}
-    needed |= {entry[2] for entry in OPERATION_MODELS.values()}
     missing = [name for name in sorted(needed) if not os.environ.get(name, "").strip()]
     return missing
 
@@ -1683,21 +1634,11 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         complexity_source = complexity.get("source", "auto") if complexity else "auto"
 
         if not model_override:
-            # op 路由已废弃（2026-06-14）：OPERATION_MODELS = {}，
-            # read_operation() 始终返回 None，此分支自动退化到 stage。
-            op = read_operation()
-
             # ── Batch 强制流程覆盖（优先级 #2：设计文档 §5）──
             # ~batch 激活时直接跳到 PATTERN_CONFIG[template].default_flow[0]，
             # 绕过普通 stage 检测；同时把 PATTERN.primary_model 作为主模型来源。
-            # 修复 D5-3（2026-06-14）：之前 batch 文件只写 template+flow+ts，
-            # 没有 primary_model，所以下面那段 batch.get("primary_model") 是死代码。
             batch_template = batch.get("template") if batch else None
-            if op and op in OPERATION_MODELS:
-                base_url, model, key_env, protocol = OPERATION_MODELS[op]
-                fb_base, fb_model, fb_key, fb_proto = OPERATION_FALLBACK_MODELS[op]
-                routing_source = f"op={op}"
-            elif batch_template and batch_template in PATTERN_CONFIG:
+            if batch_template and batch_template in PATTERN_CONFIG:
                 # 强制 stage = PATTERN_CONFIG[template].default_flow[0]
                 flow = PATTERN_CONFIG[batch_template].get("default_flow", [])
                 stage = flow[0] if flow else read_stage()
@@ -1918,44 +1859,24 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                         routing_source=f"model={model_override}",
                     )
                 else:
-                    # 无法解析 → 降级到 op/stage
-                    op = read_operation()
-                    if op and op in OPERATION_MODELS:
-                        _, model, _, protocol = OPERATION_MODELS[op]
-                        _, fb_model, _, _ = OPERATION_FALLBACK_MODELS[op]
-                        payload.update(
-                            model_override=model_override, op=op, stage=None,
-                            model=model, protocol=protocol, fallback=fb_model,
-                            routing_source=f"op={op}",
-                        )
-                    else:
-                        stage = read_stage()
-                        _, model, _, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
-                        _, fb_model, _, _ = FALLBACK_MODELS.get(stage, FALLBACK_MODELS["default"])
-                        payload.update(
-                            model_override=model_override, op=None, stage=stage,
-                            model=model, protocol=protocol, fallback=fb_model,
-                            routing_source=f"stage={stage}",
-                        )
-            else:
-                op = read_operation()
-                if op and op in OPERATION_MODELS:
-                    _, model, _, protocol = OPERATION_MODELS[op]
-                    _, fb_model, _, _ = OPERATION_FALLBACK_MODELS[op]
-                    payload.update(
-                        model_override=None, op=op, stage=None,
-                        model=model, protocol=protocol, fallback=fb_model,
-                        routing_source=f"op={op}",
-                    )
-                else:
+                    # 无法解析 → 降级到 stage
                     stage = read_stage()
                     _, model, _, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
                     _, fb_model, _, _ = FALLBACK_MODELS.get(stage, FALLBACK_MODELS["default"])
                     payload.update(
-                        model_override=None, op=None, stage=stage,
+                        model_override=model_override, op=None, stage=stage,
                         model=model, protocol=protocol, fallback=fb_model,
                         routing_source=f"stage={stage}",
                     )
+            else:
+                stage = read_stage()
+                _, model, _, protocol = STAGE_MODELS.get(stage, STAGE_MODELS["default"])
+                _, fb_model, _, _ = FALLBACK_MODELS.get(stage, FALLBACK_MODELS["default"])
+                payload.update(
+                    model_override=None, op=None, stage=stage,
+                    model=model, protocol=protocol, fallback=fb_model,
+                    routing_source=f"stage={stage}",
+                )
 
             encoded = json.dumps(payload).encode()
             self.send_response(200)
@@ -2031,7 +1952,7 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 },
                 "current_session": {
                     "stage":     read_stage(),
-                    "op":        read_operation(),
+                    "op":        None,
                     "model_override": read_model_override(),
                     "pattern":   read_pattern(),
                     "complexity": read_complexity(),
