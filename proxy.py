@@ -153,8 +153,6 @@ log = logging.getLogger("stage-router")
 def _v13_resolve_decision(sid: str, project_root: str) -> dict | None:
     """V1.3 读侧：从 model_router_state_<sid>.json（首选）→ 旧 9 文件（fallback）。
 
-    v1.3 已是唯一路径，不再需要 MODEL_ROUTER_V13_READ flag。
-
     Returns:
         - 新格式胜出:返回 `state["decision"]`(可能为 `{}` 表示决策未初始化)
         - 旧格式 fallback:返回 read_legacy 聚合 dict（含 stage/model_override/...）

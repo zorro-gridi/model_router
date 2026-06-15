@@ -10,7 +10,6 @@ V1.3 §6.4 决策链路端到端：PostToolUse 累积 → maybe_redecide → loc
   - 未锁 + runtime_score ≥ 阈值 → 重决策（只升不降），写 session_state
   - 未锁 + todowrite_signal.is_implementation=True → 立即锁 + 评估升级
   - 升级规则：只升不降（complex 不降 medium；medium 不降 simple）
-  - flag MODEL_ROUTER_V13_DECIDE=0 → no-op，返回 None
 
 TDD：本阶段写失败测试，Stage 5.2 才会让它通过。
 """
