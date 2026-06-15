@@ -84,13 +84,15 @@ class StateTransitionError(ValueError):
     当 transition() 收到不在转移表中的 (state, event) 时抛出。
     """
 
-    def __init__(self, state: str, event: str) -> None:
+    def __init__(self, state: str, event: str, sid: str = "") -> None:
         self.state = state
         self.event = event
-        super().__init__(
-            f"非法状态转移：{state!r} + {event!r}。"
-            f"当前状态 {state!r} 不接受事件 {event!r}。"
-        )
+        self.sid = sid
+        parts = [f"非法状态转移：{state!r} + {event!r}。"]
+        if sid:
+            parts.append(f"sid={sid!r}，")
+        parts.append(f"当前状态 {state!r} 不接受事件 {event!r}。")
+        super().__init__("".join(parts))
 
 
 # ── 公开 API ─────────────────────────────────────────────────────────────────
