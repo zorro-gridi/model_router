@@ -22,7 +22,6 @@ V1.3 §6.1 / §10 路由策略 + §13.1 DecisionRecord schema。
 
 from __future__ import annotations
 
-import os
 import sys
 import time
 from dataclasses import dataclass, asdict
@@ -138,17 +137,6 @@ def _default_classifier(prompt: str) -> dict:
 
 # ── 公开 API ────────────────────────────────────────────────────────────────
 
-# ── maybe_redecide feature flag（V1.3 §6.4 PostToolUse 链路）────────────
-
-def _is_redecide_enabled() -> bool:
-    """MODEL_ROUTER_V13_DECIDE flag：默认 True（开启 PostToolUse 链路重决策）。
-
-    关闭时 maybe_redecide() 整体 no-op，PostToolUse 仅做观测不重决策。
-    """
-    flag = os.environ.get("MODEL_ROUTER_V13_DECIDE", "1")
-    return flag.lower() not in ("0", "false", "no", "off")
-
-
 # ── 复杂度比较（only-upgrade-never-downgrade 语义）─────────────────────
 
 _COMPLEXITY_RANK: dict[str, int] = {
@@ -176,8 +164,7 @@ def maybe_redecide(
     """V1.3 §6.4 PostToolUse 决策重算：runtime_score 累积 + TodoWrite 强信号。
 
     行为契约（Stage 5.1 / 5.2）：
-      1. MODEL_ROUTER_V13_DECIDE=0 → 整体 no-op，返回 None。
-      2. model_router_state_<sid>.json 缺失或 decision 为空 → 不当场重决策，
+      1. model_router_state_<sid>.json 缺失或 decision 为空 → 不当场重决策，
          返回 None（避免在未初始化 session 上空跑）。
       3. decision.locked=True → 不重决策，返回 None。
       4. 计算候选 complexity：
@@ -199,9 +186,6 @@ def maybe_redecide(
     Returns:
         新 DecisionRecord（升级/锁定时）或 None（无需重决策）。
     """
-    if not _is_redecide_enabled():
-        return None
-
     # 延迟导入避免循环 + 路径问题
     from state_persistence import SessionStateStore
 

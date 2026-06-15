@@ -7,7 +7,6 @@ V1.3 §8 PostToolUse 接入 / §7 Runtime Complexity Score。
 RuntimeTracker 是 RuntimeScore 的 PostToolUse 封装层：
   - track(sid, project_root, raw_event) → 转换 + 累积 + 持久化
   - 从 session_state 文件读取当前 score，累积后写回
-  - 受 MODEL_ROUTER_V13_OBSERVE flag 控制（关闭时 no-op）
   - 所有异常静默吞噬（不阻塞 hook）
 
 与 RuntimeScore（纯计算引擎）的关系：
@@ -30,14 +29,6 @@ from runtime_score import RuntimeScore
 class RuntimeTracker:
     """PostToolUse hook 的 RuntimeScore 跟踪器（Stage 4）。"""
 
-    # ── Feature Flag ──────────────────────────────────────────────────────
-
-    @staticmethod
-    def _is_enabled() -> bool:
-        """MODEL_ROUTER_V13_OBSERVE flag：默认 True（开启观测）。"""
-        flag = os.environ.get("MODEL_ROUTER_V13_OBSERVE", "1")
-        return flag.lower() not in ("0", "false", "no", "off")
-
     # ── Public API ────────────────────────────────────────────────────────
 
     def track(self, sid: str, project_root: str, raw_event: dict) -> int:
@@ -52,9 +43,6 @@ class RuntimeTracker:
         Returns:
             int: 本次事件的 delta 分。flag 关闭时返回 0。
         """
-        if not self._is_enabled():
-            return 0
-
         try:
             # 1. 转换原始事件为 RuntimeScore event 格式
             event = self._convert(raw_event)

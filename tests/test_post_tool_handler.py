@@ -9,7 +9,7 @@ V1.3 §8 PostToolUse 接入 / dispatcher + 2 worker。
   - TodoWrite → todowrite_analyzer（分析后写 session_state）
   - 其他工具 → runtime_tracker（累积 score 后写 session_state）
   - main() 从 stdin 读 JSON → 解析 → dispatch
-  - 受 MODEL_ROUTER_V13_OBSERVE flag 控制
+
   - 所有异常静默吞掉（不阻塞 hook）
 
 测试目标（TDD）：
@@ -22,13 +22,13 @@ V1.3 §8 PostToolUse 接入 / dispatcher + 2 worker。
 """
 
 import json
-import os
+
 import sys
 import tempfile
 import unittest
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+
 
 
 class TestDispatchTodoWrite(unittest.TestCase):
@@ -178,46 +178,6 @@ class TestDispatchOtherTools(unittest.TestCase):
         # Read=2+py=3=5, Edit=4+py=3=7, total=12
         self.assertGreaterEqual(data["runtime_score"]["score"], 12)
 
-
-class TestFlagOffNoOp(unittest.TestCase):
-    """MODEL_ROUTER_V13_OBSERVE=0 时 dispatch() 为 no-op。"""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.project_root = Path(self.tmp.name)
-        self.claude_dir = self.project_root / ".claude"
-        self.claude_dir.mkdir()
-        self.sid = "test-sid-pth-003"
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_flag_off_no_file_created(self):
-        """flag 关闭时不应创建 session_state 文件。"""
-        from post_tool_handler import dispatch
-
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_OBSERVE": "0"}):
-            dispatch(self.sid, str(self.project_root), {
-                "tool_name": "Edit",
-                "tool_input": {"file_path": "/app/main.py"},
-            })
-
-        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
-        self.assertFalse(state_file.exists(),
-                         "flag 关闭时不应创建 session_state 文件")
-
-    def test_flag_off_todowrite_no_file(self):
-        """flag 关闭时 TodoWrite 也不应写文件。"""
-        from post_tool_handler import dispatch
-
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_OBSERVE": "0"}):
-            dispatch(self.sid, str(self.project_root), {
-                "tool_name": "TodoWrite",
-                "tool_input": {"todos": [{"content": "Fix bug", "status": "pending"}]},
-            })
-
-        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
-        self.assertFalse(state_file.exists())
 
 
 class TestGracefulDegradation(unittest.TestCase):

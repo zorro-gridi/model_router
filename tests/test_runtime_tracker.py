@@ -7,7 +7,7 @@ V1.3 §8 PostToolUse 接入 / §7 Runtime Complexity Score。
 `RuntimeTracker` 是 PostToolUse hook 的 runtime_score 封装：
   - track(tool_event) → 转换事件 + 累积 + 持久化
   - 从 session_state 文件读取当前 score，累积后写回
-  - 受 MODEL_ROUTER_V13_OBSERVE flag 控制（关闭时 no-op）
+
   - 不抛异常阻塞 hook（异常静默 fallthrough）
 
 与 RuntimeScore（纯计算）的关系：
@@ -24,11 +24,11 @@ V1.3 §8 PostToolUse 接入 / §7 Runtime Complexity Score。
 """
 
 import json
-import os
+
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+
 
 
 class TestTrackConvertsEvent(unittest.TestCase):
@@ -148,57 +148,6 @@ class TestTrackAccumulatesToFile(unittest.TestCase):
         self.assertIn("events", data["runtime_score"])
         self.assertEqual(len(data["runtime_score"]["events"]), 3)
 
-
-class TestFlagOffNoOp(unittest.TestCase):
-    """MODEL_ROUTER_V13_OBSERVE=0 时 track() 为 no-op。"""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.project_root = Path(self.tmp.name)
-        self.claude_dir = self.project_root / ".claude"
-        self.claude_dir.mkdir()
-        self.sid = "test-sid-rt-003"
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_flag_off_no_file_created(self):
-        """flag 关闭时不应写 session_state 文件。"""
-        from runtime_tracker import RuntimeTracker
-        tracker = RuntimeTracker()
-        raw_event = {
-            "tool_name": "Edit",
-            "tool_input": {"file_path": "/app/main.py"},
-        }
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_OBSERVE": "0"}):
-            delta = tracker.track(self.sid, str(self.project_root), raw_event)
-
-        self.assertEqual(delta, 0, "flag 关闭时 delta 应为 0")
-        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
-        self.assertFalse(state_file.exists(), "flag 关闭时不应创建 session_state 文件")
-
-    def test_flag_off_returns_zero(self):
-        """flag 关闭时 track() 返回 0。"""
-        from runtime_tracker import RuntimeTracker
-        tracker = RuntimeTracker()
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_OBSERVE": "0"}):
-            delta = tracker.track(self.sid, str(self.project_root), {
-                "tool_name": "Bash",
-                "tool_input": {"command": "make test"},
-            })
-        self.assertEqual(delta, 0)
-
-    @patch.dict(os.environ, {"MODEL_ROUTER_V13_OBSERVE": "1"})
-    def test_flag_on_writes_file(self):
-        """flag 开启时正常写文件。"""
-        from runtime_tracker import RuntimeTracker
-        tracker = RuntimeTracker()
-        tracker.track(self.sid, str(self.project_root), {
-            "tool_name": "Read",
-            "tool_input": {"file_path": "/app/readme.md"},
-        })
-        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
-        self.assertTrue(state_file.exists(), "flag on 时应创建 session_state 文件")
 
 
 class TestGracefulDegradation(unittest.TestCase):

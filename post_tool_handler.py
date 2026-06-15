@@ -18,10 +18,6 @@ Stage 5 扩展（V1.3 §6.4 决策链路端到端）：
   - main() — CLI 入口，从 stdin 读 JSON，提取 sid/cwd
   - dispatch(sid, project_root, raw_event) — 可供测试调用的纯逻辑
 
-Feature Flag:
-  MODEL_ROUTER_V13_OBSERVE=0 → 完全 no-op（仅观测关闭）
-  MODEL_ROUTER_V13_DECIDE=0  → maybe_redecide 内部 no-op（决策关闭）
-
 设计约束：
   - 所有异常静默吞掉（不阻塞 PostToolUse hook）
   - 零依赖（除标准库 + 同目录模块）
@@ -41,14 +37,6 @@ from runtime_tracker import RuntimeTracker
 from todowrite_analyzer import TodoWriteAnalyzer
 
 
-# ── Feature Flag ──────────────────────────────────────────────────────────
-
-def _is_enabled() -> bool:
-    """MODEL_ROUTER_V13_OBSERVE flag：默认 True（开启观测）。"""
-    flag = os.environ.get("MODEL_ROUTER_V13_OBSERVE", "1")
-    return flag.lower() not in ("0", "false", "no", "off")
-
-
 # ── Dispatch ──────────────────────────────────────────────────────────────
 
 # 模块级单例（避免每次 dispatch 都创建实例）
@@ -64,9 +52,6 @@ def dispatch(sid: str, project_root: str, raw_event: dict) -> None:
         project_root: 项目根目录。
         raw_event: PostToolUse hook 原始事件 dict。
     """
-    if not _is_enabled():
-        return
-
     try:
         if not isinstance(raw_event, dict):
             return

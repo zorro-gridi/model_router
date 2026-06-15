@@ -9,7 +9,7 @@ SessionStateStore 职责：
   - read_new(): 读新格式
   - read_legacy(): 从旧 9 文件聚合读
   - migrate(): 旧→新 一次性迁移
-  - MODEL_ROUTER_V13_WRITE flag（默认 True，关闭则只写旧文件）
+
 
 旧 9 文件（v1.2）：stage_, model_, pattern_, complexity_, batch_,
   fallback_, reqcnt_, workflow_step_, op_（已废弃）
@@ -25,13 +25,13 @@ SessionStateStore 职责：
 """
 
 import json
-import os
+
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+
 
 
 class TestWriteCreatesFiles(unittest.TestCase):
@@ -316,58 +316,6 @@ class TestMigrate(unittest.TestCase):
         result = store.migrate(self.sid, str(self.project_root))
         self.assertFalse(result, "无旧文件时迁移应返回 False")
 
-
-class TestFeatureFlag(unittest.TestCase):
-    """MODEL_ROUTER_V13_WRITE flag 控制。"""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.project_root = Path(self.tmp.name)
-        self.claude_dir = self.project_root / ".claude"
-        self.claude_dir.mkdir()
-        self.sid = "test-sid-006"
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def _store(self):
-        from state_persistence import SessionStateStore
-        return SessionStateStore()
-
-    def _sample_decision(self):
-        return {
-            "session_id": self.sid,
-            "prompt_id": "p-6",
-            "task_pattern": "docs",
-            "task_complexity": "simple",
-            "prompt_confidence": 0.95,
-            "runtime_score": 0,
-            "todo_score": 0,
-            "final_model": "MiniMax-M3",
-            "locked": True,
-            "decision_source": "prompt",
-            "last_update": int(time.time()),
-        }
-
-    def test_flag_on_writes_both_formats(self):
-        """默认（flag on）应双写。"""
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_WRITE": "1"}):
-            store = self._store()
-            store.write(self.sid, str(self.project_root), decision=self._sample_decision(), stage="default")
-        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
-        old_file = self.claude_dir / f"stage_{self.sid}"
-        self.assertTrue(new_file.exists(), "flag on 时应写新文件")
-        self.assertTrue(old_file.exists(), "flag on 时应写旧文件")
-
-    def test_flag_off_skips_new_format(self):
-        """flag off 时只写旧文件。"""
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_WRITE": "0"}):
-            store = self._store()
-            store.write(self.sid, str(self.project_root), decision=self._sample_decision(), stage="default")
-        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
-        old_file = self.claude_dir / f"stage_{self.sid}"
-        self.assertFalse(new_file.exists(), "flag off 时应跳过新文件")
-        self.assertTrue(old_file.exists(), "flag off 时仍应写旧文件")
 
 
 class TestAtomicWrite(unittest.TestCase):
