@@ -14,6 +14,10 @@ Stage 5 扩展（V1.3 §6.4 决策链路端到端）：
   - track() 之后从 session_state 读 runtime_score + todowrite_signal
   - 调 decision_engine.maybe_redecide() 检查 lock 阈值
 
+V1.3 §4.3 / §9.3：is_first_todo_write 跟踪
+  - 首次 TodoWrite 标记后才触发升级逻辑
+  - 首次 TodoWrite 可选 LLM 深度分析（analyze_with_llm）
+
 入口函数：
   - main() — CLI 入口，从 stdin 读 JSON，提取 sid/cwd
   - dispatch(sid, project_root, raw_event) — 可供测试调用的纯逻辑
@@ -35,11 +39,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from runtime_tracker import RuntimeTracker
 from todowrite_analyzer import TodoWriteAnalyzer
-
-# 跨包复用：与 hooks.compact.todowrite_sync 共用 TodoWrite payload 解析逻辑
-# 路径从 __file__ 推导而非 hardcode ~/.claude，确保 worktree / 异机部署也能解析
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from hooks.common.todo_payload import extract_todos_from_payload
 
 
 # ── Dispatch ──────────────────────────────────────────────────────────────
@@ -119,15 +118,39 @@ def _read_latest_signals(sid: str, project_root: str) -> tuple[int, dict | None]
 def _handle_todowrite(sid: str, project_root: str, raw_event: dict) -> None:
     """处理 TodoWrite 事件：分析 todos → 写入 todowrite_signal。
 
-    注：todos 可能为 None（payload 中无 todos 字段）。analyzer.analyze 内部
-    对 None 有兜底（_analyze 入口会返回 _empty_result），故无需在此判空。
+    V1.3 §4.3 / §9.3:
+      - 跟踪 is_first_todo_write（读 state 判断是否已写入过 signal）
+      - 首次 TodoWrite 尝试 LLM 深度分析，失败回退关键词启发式
+      - 非首次 TodoWrite 使用关键词启发式（轻量）
     """
-    todos = extract_todos_from_payload(raw_event) or []
+    tool_input = raw_event.get("tool_input", {}) or {}
+    todos = tool_input.get("todos")
 
-    signal = _analyzer.analyze(todos)
+    # ── 判断 is_first_todo_write ──
+    is_first = not _has_existing_todowrite_signal(sid, project_root)
 
-    # 写入 session_state（追加 todowrite_signal 字段）
+    # ── 分析 ──
+    if is_first:
+        # 首次 TodoWrite：尝试 LLM 深度分析（V1.3 §9.2）
+        signal = _analyzer.analyze_with_llm(todos, is_first=True)
+    else:
+        # 非首次：关键词启发式（轻量）
+        signal = _analyzer.analyze(todos, is_first=False)
+
+    # ── 写入 session_state ──
     _write_todowrite_signal(sid, project_root, signal)
+
+
+def _has_existing_todowrite_signal(sid: str, project_root: str) -> bool:
+    """检查 session_state 中是否已存在 todowrite_signal 记录。"""
+    path = Path(project_root) / ".claude" / f"model_router_state_{sid}.json"
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    return "todowrite_signal" in data and isinstance(data["todowrite_signal"], dict)
 
 
 def _write_todowrite_signal(sid: str, project_root: str, signal: dict) -> None:

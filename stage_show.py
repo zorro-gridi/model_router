@@ -42,7 +42,11 @@ from pathlib import Path
 # 存放位置：<project_root>/.claude/stage_<session_id>
 # active_session 指针：~/.claude/hooks/model_router/active_session → 完整路径
 HOME_CLAUDE         = Path.home() / ".claude"
-HOOK_DIR            = HOME_CLAUDE / "hooks" / "model_router"
+# 测试隔离：允许通过 MODEL_ROUTER_HOOK_DIR 环境变量覆盖 HOOK_DIR 路径，
+# 使单测可在 tempdir 中独立维护 active_session，避免与并发 Claude Code 进程
+# 共享 ~/.claude/hooks/model_router/active_session 时产生 TOCTOU 竞态。
+_HOOK_DIR_OVERRIDE = os.environ.get("MODEL_ROUTER_HOOK_DIR")
+HOOK_DIR            = Path(_HOOK_DIR_OVERRIDE) if _HOOK_DIR_OVERRIDE else (HOME_CLAUDE / "hooks" / "model_router")
 ACTIVE_SESSION_FILE = HOOK_DIR / "active_session"
 GLOBAL_STAGE_FILE   = HOOK_DIR / "current_stage"
 
@@ -53,6 +57,36 @@ sys.path.insert(0, str(HOOK_DIR))
 from stage_config import STAGE_DISPLAY, PATTERN_INFO, PATTERN_CONFIG  # noqa: E402
 from stage_config import COMPLEXITY_LEVELS  # 用于显示复杂度档位
 from model_alias import resolve_model  # 用于显示模型简称
+
+# V1.3 §5.1 Task Pattern 中文 label 映射（与 llm_classifier.py 系统 prompt 对齐）
+# 优先于 PATTERN_CONFIG 的 legacy label。stage_config 可能尚未提供
+# get_pattern_label_v13（向后兼容旧版本），本地兜底实现一份。
+try:
+    from stage_config import get_pattern_label_v13  # noqa: E402
+except ImportError:
+    _PATTERN_LABEL_V13_FALLBACK: dict[str, str] = {
+        "explore":      "探索与调研",
+        "architecture": "架构设计",
+        "feature":      "新功能需求",
+        "audit":        "审计系统功能",
+        "implement":    "功能实现",
+        "debug":        "调试异常",
+        "refactor":     "模块重构",
+        "test":         "测试相关",
+        "research":     "调查研究",
+        "migration":    "模块迁移",
+        "docs":         "文档处理",
+        "ops":          "运维、脚本、配置类任务",
+    }
+
+    def get_pattern_label_v13(pattern: str) -> str:  # noqa: F811
+        """V1.3 风格中文 label 兜底实现（stage_config 缺失时使用）。"""
+        if not pattern:
+            return ""
+        if pattern in _PATTERN_LABEL_V13_FALLBACK:
+            return _PATTERN_LABEL_V13_FALLBACK[pattern]
+        cfg = PATTERN_CONFIG.get(pattern, {})
+        return cfg.get("label", pattern) or pattern
 
 
 def _read_stage_file(path: Path) -> str | None:
@@ -294,12 +328,14 @@ def main():
     lines.append(f"  {s_color}{emoji} {label} → {model}{RST}")
 
     # Task Pattern (Shadow Mode)
-    # 用 PATTERN_CONFIG 查中文 label 兜底，缺失或 label==key 时回退原文。
-    # 例如 "test" → "测试建设"；自定义 pattern key 不在配置中时仍可见 key 名。
+    # V1.3 §5.1 Task Pattern 12 种优先：pattern 命中 V1.3 模式时显示 V1.3 中文 label
+    # （如 "test" → "测试相关"、"bugfix" V1 旧名时回退 PATTERN_CONFIG legacy label）。
+    # 自定义 pattern key 不在配置中时仍可见 key 名。
     if pattern_data and pattern_data.get("prediction"):
         p_pred = pattern_data["prediction"]
         p_conf = pattern_data.get("confidence", 0.0)
-        p_label = PATTERN_CONFIG.get(p_pred, {}).get("label", p_pred)
+        # V1.3 优先 → PATTERN_CONFIG 兜底 → key 原文
+        p_label = get_pattern_label_v13(p_pred)
         # label 和 key 一致时不再重复显示 (e.g. "test" -> "test")，
         # 否则显示 "label (key=xxx)" 帮助区分。
         if p_label == p_pred:

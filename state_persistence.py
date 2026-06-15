@@ -123,6 +123,8 @@ class SessionStateStore:
             "fallback",
             "reqcnt",
             "workflow_step",
+            "context_summary",  # V1.3 §11 Context Summary Injector
+            "routing_reason",   # V1.3 §15.4 路由理由
         )
         for key in optional_fields:
             if key in kwargs and kwargs[key] is not None:

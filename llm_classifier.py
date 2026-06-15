@@ -74,14 +74,16 @@ DEFAULT_CLASSIFIER_CONFIG: dict = {
                              # 不设置则自动走 HTTPS_PROXY / ALL_PROXY 环境变量
 }
 
-# ── 分类 System Prompt ──
+# ── 分类 System Prompt（V1.3 设计 §5 任务分类体系）──
 # 要求 LLM 在一次回复中返回三维分类结果，纯 JSON，无额外文字。
+# V1.3 不再保留 Stage 作为路由维度，仅保留 Task Pattern + Task Complexity。
+# 兼容期：仍输出 stage 字段，但已不参与路由决策（V1.3 §16 推荐删除项）。
 CLASSIFIER_SYSTEM_PROMPT = """\
 You are a task classifier for a code assistant model routing system.
 Analyze the user's request and classify it along THREE dimensions.
 Return ONLY valid JSON (no markdown fences, no extra text).
 
-## Dimension 1 — stage (current work phase):
+## Dimension 1 — stage (current work phase, legacy/display only):
 - "explore": reading code, tracing call chains, understanding current state, investigating logs
 - "brainstorm": exploring ideas, creative thinking, possibilities, "what if"
 - "decide": making decisions, comparing options, evaluating trade-offs
@@ -92,18 +94,21 @@ Return ONLY valid JSON (no markdown fences, no extra text).
 - "audit": reviewing, security checking, code review, quality assurance (non-test review)
 - "default": none of the above clearly matches / general chat
 
-## Dimension 2 — pattern (task type):
-- "feature": adding new functionality, building new things
-- "bugfix": fixing bugs, errors, crashes, unexpected behavior
-- "refactor": restructuring code, cleaning up, improving structure
-- "test": writing tests, analyzing test results, test infrastructure
-- "research": investigating, comparing approaches, exploring options
-- "migration": migrating, upgrading versions, porting to new systems
-- "architecture": system-level design, technology selection, module design
-- "docs": documentation, comments, README, explanations
-- "audit": security review, performance review, code review
+## Dimension 2 — pattern (V1.3 §5.1 Task Pattern, 12 types):
+- "explore": 探索与调研
+- "architecture": 架构设计
+- "feature": 新功能需求
+- "audit": 审计系统功能
+- "implement": 功能实现
+- "debug": 调试异常
+- "refactor": 模块重构
+- "test": 测试相关
+- "research": 调查研究
+- "migration": 模块迁移
+- "docs": 文档处理
+- "ops": 运维、脚本、配置类任务
 
-## Dimension 3 — complexity:
+## Dimension 3 — complexity (V1.3 §5 Task Complexity):
 - score: integer 0-100
   - 0-10: trivial (typo fix, one-line change, simple question)
   - 11-30: simple (single file, clear requirements)
@@ -118,13 +123,15 @@ Return ONLY valid JSON (no markdown fences, no extra text).
 ## Response format (JSON only, no fences):
 {
   "stage": "implement",
-  "pattern": "feature",
+  "pattern": "implement",
   "pattern_confidence": 0.92,
   "complexity_score": 45,
   "complexity_label": "medium",
   "complexity_confidence": 0.88,
   "reasoning": "brief one-line explanation in Chinese"
-}"""
+}
+
+NOTE: pattern must be exactly one of the 12 values listed above."""
 
 
 def _build_http_client(proxy: Optional[str] = None, timeout: int = 15) -> httpx.Client:
@@ -317,13 +324,25 @@ def _parse_classifier_json(text: str) -> dict:
 
 
 # ── 合法的 stage / pattern 枚举值 ──
+# V1.3 §5.1 Task Pattern 重新定义为 12 种：
+#   explore / architecture / feature / audit / implement / debug /
+#   refactor / test / research / migration / docs / ops
+# 旧 V1 枚举（bugfix → debug、migration → migration）保留为兼容别名
+# 以避免破坏 LLM 输出（_PATTERN_ALIASES 自动归一化）。
 VALID_STAGES = {
     "explore", "brainstorm", "decide", "design", "plan",
     "implement", "test", "audit", "default",
 }
 VALID_PATTERNS = {
-    "feature", "bugfix", "refactor", "test", "research",
-    "migration", "architecture", "docs", "audit",
+    "explore", "architecture", "feature", "audit", "implement",
+    "debug", "refactor", "test", "research", "migration",
+    "docs", "ops",
+}
+# V1 旧 pattern → V1.3 新 pattern 兼容映射（仅归一化旧 V1 命名变体）
+_PATTERN_ALIASES: dict[str, str] = {
+    "bugfix": "debug",       # 旧 V1 用 bugfix，V1.3 改用 debug
+    "architecture": "architecture",  # 已是新名，保留兼容
+    "migration": "migration",        # 已是新名，保留兼容
 }
 VALID_COMPLEXITY_LABELS = {"simple", "medium", "complex"}
 
@@ -340,8 +359,11 @@ def _validate_and_normalize(raw: dict, prompt: str) -> dict:
 
     # ── pattern ──
     pattern = str(raw.get("pattern", "")).strip().lower()
+    # V1 旧枚举 → V1.3 新枚举 兼容归一化
+    if pattern in _PATTERN_ALIASES:
+        pattern = _PATTERN_ALIASES[pattern]
     if pattern not in VALID_PATTERNS:
-        pattern = "feature"  # 最常见的默认
+        pattern = "implement"  # V1.3 §5.1 默认（最常见的 pattern）
 
     # ── pattern_confidence ──
     try:
