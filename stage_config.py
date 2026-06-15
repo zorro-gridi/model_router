@@ -341,37 +341,70 @@ STAGE_CONFIG: dict[str, dict] = {
 #   primary_model    — Pattern 主推模型（文档第 11 章策略的细化）
 # ═══════════════════════════════════════════════════════════════════════════
 
+# V1.3 §5.1 Task Pattern 12 种（canonical 短标注，禁止附加详细描述）：
+#   explore / architecture / feature / audit / implement / debug /
+#   refactor / test / research / migration / docs / ops
+# V1 旧名 bugfix → V1.3 debug（保留为兼容别名，不影响路由决策）。
 PATTERN_CONFIG: dict[str, dict] = {
-    "feature": {
-        "label":        "功能开发",
-        "desc":         "新增功能",
-        "default_flow": ["plan", "design", "implement", "test", "audit"],
-        "default_complexity": "medium",
+    "explore": {
+        "label":        "探索与调研",
+        "default_flow": ["plan", "design"],
+        "default_complexity": "simple",
         "primary_model": "MiniMax-M3",
         # §14 配置单源化（D14-2/3 修复 2026-06-14）：关键词从 stage_detector 迁入此处。
         # 加权计票：每条 (关键词, 权重)；同 pattern 多个关键词命中时累加。
         "keywords": [
+            ("explore", 3), ("调研", 3), ("了解一下", 2), ("搞清楚", 2),
+            ("read code", 2), ("understand", 2), ("trace", 2), ("investigate", 2),
+            ("看看", 1), ("分析现状", 2), ("梳理", 1),
+        ],
+    },
+    "architecture": {
+        "label":        "架构设计",
+        "default_flow": ["explore", "plan", "design", "audit"],
+        "default_complexity": "complex",
+        "primary_model": "MiniMax-M3",
+        "keywords": [
+            ("架构", 3), ("architecture", 3), ("系统设计", 3), ("顶层设计", 3),
+            ("整体方案", 2), ("技术选型", 2), ("模块划分", 3),
+        ],
+    },
+    "feature": {
+        "label":        "新功能需求",
+        "default_flow": ["plan", "design", "implement", "test", "audit"],
+        "default_complexity": "medium",
+        "primary_model": "MiniMax-M3",
+        "keywords": [
             ("新增功能", 3), ("添加功能", 3), ("加个功能", 2), ("新增字段", 2),
             ("新功能", 2), ("做一个", 1), ("实现一个", 1),
             ("new feature", 3), ("add feature", 3), ("implement feature", 3),
-            ("support ", 1), ("支持 ", 1), ("实现", 1), ("加", 1),
+            ("support ", 1), ("支持 ", 1), ("加", 1),
         ],
     },
-    "bugfix": {
-        "label":        "缺陷修复",
-        "desc":         "修复缺陷",
+    "implement": {
+        "label":        "功能实现",
+        "default_flow": ["plan", "design", "implement", "test"],
+        "default_complexity": "medium",
+        "primary_model": "MiniMax-M3",
+        "keywords": [
+            ("实现", 3), ("实施", 3), ("写代码", 2), ("开发", 3),
+            ("develop", 3), ("build", 2), ("create", 2),
+            ("coding", 2), ("代码实现", 3), ("implement", 1),
+        ],
+    },
+    "debug": {
+        "label":        "调试异常",
         "default_flow": ["explore", "implement", "test"],
         "default_complexity": "medium",
         "primary_model": "MiniMax-M3",
         "keywords": [
             ("bug", 3), ("fix", 3), ("修复", 3), ("defect", 3),
             ("崩溃", 3), ("crash", 3), ("异常", 2), ("报错", 2), ("error", 2),
-            ("修", 1),
+            ("故障", 3), ("debug", 3), ("修", 1),
         ],
     },
     "refactor": {
-        "label":        "结构重构",
-        "desc":         "结构重构",
+        "label":        "模块重构",
         "default_flow": ["explore", "design", "implement", "test", "audit"],
         "default_complexity": "medium",
         "primary_model": "MiniMax-M3",
@@ -381,8 +414,7 @@ PATTERN_CONFIG: dict[str, dict] = {
         ],
     },
     "test": {
-        "label":        "测试建设",
-        "desc":         "写测试或分析测试结果",
+        "label":        "测试相关",
         "default_flow": ["explore", "test", "audit"],
         "default_complexity": "medium",
         "primary_model": "MiniMax-M3",
@@ -392,8 +424,7 @@ PATTERN_CONFIG: dict[str, dict] = {
         ],
     },
     "research": {
-        "label":        "资料调研",
-        "desc":         "资料调研/方案比较",
+        "label":        "调查研究",
         "default_flow": ["explore", "plan", "design"],
         "default_complexity": "medium",
         "primary_model": "deepseek-v4-flash",
@@ -403,31 +434,18 @@ PATTERN_CONFIG: dict[str, dict] = {
         ],
     },
     "migration": {
-        "label":        "迁移改造",
-        "desc":         "迁移/改造",
+        "label":        "模块迁移",
         "default_flow": ["plan", "design", "implement", "test", "audit"],
         "default_complexity": "complex",
         "primary_model": "MiniMax-M3",
         "keywords": [
             ("migration", 3), ("migrate", 3), ("迁移", 3), ("迁到", 2),
             ("迁过去", 2), ("升级", 2), ("upgrade", 2),
-            ("迁移到", 3), ("升级到", 2), ("改造", 2),
-        ],
-    },
-    "architecture": {
-        "label":        "架构级任务",
-        "desc":         "架构级任务",
-        "default_flow": ["explore", "plan", "design", "audit"],
-        "default_complexity": "complex",
-        "primary_model": "MiniMax-M3",
-        "keywords": [
-            ("架构", 3), ("architecture", 3), ("系统设计", 3), ("顶层设计", 3),
-            ("整体方案", 2), ("技术选型", 2), ("模块划分", 3),
+            ("迁移到", 3), ("升级到", 2), ("无损迁移", 3),
         ],
     },
     "docs": {
-        "label":        "文档编写",
-        "desc":         "文档、说明、注释",
+        "label":        "文档处理",
         "default_flow": ["explore", "implement"],
         "default_complexity": "simple",
         "primary_model": "deepseek-v4-flash",
@@ -437,8 +455,7 @@ PATTERN_CONFIG: dict[str, dict] = {
         ],
     },
     "audit": {
-        "label":        "代码审计",
-        "desc":         "代码审查、安全审查、性能审查",
+        "label":        "审计系统功能",
         "default_flow": ["explore", "audit"],
         "default_complexity": "complex",
         "primary_model": "MiniMax-M3",
@@ -447,10 +464,8 @@ PATTERN_CONFIG: dict[str, dict] = {
             ("审计", 3), ("漏洞", 2), ("vulnerability", 3), ("性能审查", 2),
         ],
     },
-    # V1.3 §5.1 Task Pattern 12 种中的最后一种：ops（运维/脚本/配置类任务）
     "ops": {
         "label":        "运维配置",
-        "desc":         "运维、脚本、配置类任务（CI/CD, scripts, config）",
         "default_flow": ["explore", "implement", "test"],
         "default_complexity": "medium",
         "primary_model": "MiniMax-M3",
@@ -460,6 +475,20 @@ PATTERN_CONFIG: dict[str, dict] = {
             ("script", 2), ("脚本", 2), ("cron", 3),
             ("config", 2), ("配置", 2), ("yaml", 2), ("toml", 2),
             ("env", 1), ("环境变量", 2),
+        ],
+    },
+    # V1 旧名兼容别名（保留冗余）：V1 用 bugfix，V1.3 改用 debug。
+    # llm_classifier._PATTERN_ALIASES 已在分类边界归一化 bugfix→debug，
+    # 此处保留为 V1 旧记录（state_persistence、shadow 模式 raw 写入）的查找回退。
+    "bugfix": {
+        "label":        "缺陷修复",
+        "default_flow": ["explore", "implement", "test"],
+        "default_complexity": "medium",
+        "primary_model": "MiniMax-M3",
+        "keywords": [
+            ("bug", 3), ("fix", 3), ("修复", 3), ("defect", 3),
+            ("崩溃", 3), ("crash", 3), ("异常", 2), ("报错", 2), ("error", 2),
+            ("修", 1),
         ],
     },
 }
@@ -504,16 +533,26 @@ COMPLEXITY_KEYWORDS: list[tuple[str, int]] = [
 ]
 
 # Pattern 基础分（PATTERN_BASE_SCORE）
+# V1.3 §5.1 Task Pattern 12 种全覆盖；V1 旧名 bugfix 保留为兼容别名（同 debug 分数）。
+# 分值沿用既有标定（feature=50, refactor=55, test=40, research=50, migration=75,
+# architecture=80, docs=20, audit=70），新增条目按 V1.3 设计语义给值：
+#   - implement = 50（与 feature 持平：开发实施类任务与新功能设计复杂度相当）
+#   - debug     = 45（沿用 V1 bugfix 标定）
+#   - explore   = 30（探索与调研通常是低复杂度的读 + 理解类任务）
 PATTERN_BASE_SCORE: dict[str, int] = {
+    "explore":      30,
+    "architecture": 80,
     "feature":      50,
-    "bugfix":       45,
+    "implement":    50,
+    "debug":        45,
     "refactor":     55,
     "test":         40,
     "research":     50,
     "migration":    75,
-    "architecture": 80,
     "docs":         20,
     "audit":        70,
+    # V1 旧名兼容别名
+    "bugfix":       45,
 }
 
 # Stage 倍率（设计文档 §9 原则："复杂度必须基于当前阶段判断"）
@@ -647,17 +686,24 @@ PATTERN_INFO: dict[str, str] = {
 # 用于 statusline / shadow 模式显示。当 pattern 命中 V1.3 12 种之一时，
 # 优先返回 V1.3 中文 label；命中 V1 旧名（bugfix/feature 等）时回退到
 # PATTERN_CONFIG 的 legacy label。缺失时返回 key 原文。
+#
+# 用户精细化说明（2026-06-15 严格区分 feature/implement/audit/debug/migration）：
+#   - feature   = 新功能设计（偏方案）   ← 区别于 implement 的开发实施
+#   - implement = 功能实现（开发实施）
+#   - migration = 无损迁移（不进行改造） ← 区别于 refactor 的改造、重构
+#   - audit     = 系统功能审计（对已实现功能的完整性验证，对齐设计方案）
+#   - debug     = 故障排查（处理已实现功能的异常）  ← 区别于 audit
 PATTERN_LABEL_V13: dict[str, str] = {
     "explore":      "探索与调研",
     "architecture": "架构设计",
-    "feature":      "新功能开发",
+    "feature":      "新功能设计",
     "audit":        "系统功能审计",
     "implement":    "功能实现",
     "debug":        "故障排查",
     "refactor":     "结构重构",
     "test":         "测试相关",
     "research":     "调查研究",
-    "migration":    "迁移改造",
+    "migration":    "无损迁移",
     "docs":         "文档处理",
     "ops":          "运维配置",
 }
