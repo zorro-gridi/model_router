@@ -14,7 +14,6 @@ stage_show.py — Stop Hook（PostToolBatch 也可用）
 显示内容（按优先级）：
   🎯 <model>          用户显式 ~model 覆盖（最高路由优先级）
   <emoji> <label> → <model>  当前阶段 + 主模型
-  <emoji> <label> → <model> (op 覆盖 stage)  当 op 覆盖时
   📐 模式: <pattern> (conf=0.x) [shadow]  Shadow Mode 任务模式标注
 
 Claude Code settings.json 配置：
@@ -52,7 +51,6 @@ sys.path.insert(0, str(HOOK_DIR))
 
 # 从统一配置文件导入（hooks/model_router/stage_config.py）
 from stage_config import STAGE_DISPLAY, PATTERN_INFO, PATTERN_CONFIG  # noqa: E402
-# OPERATION_DISPLAY 已废弃 2026-06-14（write/read/search 只是动作不是路由维度）
 from stage_config import COMPLEXITY_LEVELS  # 用于显示复杂度档位
 from model_alias import resolve_model  # 用于显示模型简称
 
@@ -117,17 +115,6 @@ def _stage_file_path(cwd: str | Path, session_id: str) -> Path:
     return project_root / ".claude" / f"stage_{session_id}"
 
 
-# _op_file_path — [已废弃 2026-06-14]
-# 原实现见 git history。
-# def _op_file_path(stage_file: Path) -> Path:
-#     return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
-
-
-def _op_file_path(stage_file: Path) -> Path:
-    """[已废弃] stub，确保引用方不报错。"""
-    return stage_file.with_name(stage_file.name.replace("stage_", "op_", 1))
-
-
 def _model_file_path(stage_file: Path) -> Path:
     """从 stage_<sid> 路径派生 model_<sid> 路径（同目录、仅前缀替换）。"""
     return stage_file.with_name(stage_file.name.replace("stage_", "model_", 1))
@@ -160,13 +147,6 @@ def read_stage(event: dict | None = None) -> str:
         pass
 
     return "default"
-
-
-# read_operation — [已废弃 2026-06-14]
-# op 路由已由 Complexity（§6.4）替代。原实现见 git history。
-def read_operation(event: dict | None = None) -> str | None:
-    """[已废弃] 始终返回 None。"""
-    return None
 
 
 def read_model_override(event: dict | None = None) -> str | None:
