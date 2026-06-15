@@ -159,7 +159,7 @@ class TestDecidePureFunction(unittest.TestCase):
         self.assertEqual(rec.task_pattern, "migration")
         self.assertEqual(rec.task_complexity, "complex")
         self.assertEqual(rec.final_model, "deepseek-v4-pro")  # 升级模型
-        self.assertTrue(rec.locked)
+        self.assertFalse(rec.locked)  # 首次决策可改：locked=False 由 maybe_redecide 锁定
         self.assertEqual(rec.decision_source, "prompt")
 
     def test_explicit_simple_prompt_yields_simple_decision(self):
@@ -178,7 +178,7 @@ class TestDecidePureFunction(unittest.TestCase):
             )
         self.assertEqual(rec.task_complexity, "simple")
         self.assertEqual(rec.final_model, "MiniMax-M3")  # 默认基线
-        self.assertTrue(rec.locked)
+        self.assertFalse(rec.locked)  # 首次决策可改：locked=False 由 maybe_redecide 锁定
 
     def test_ambiguous_prompt_is_biased_towards_medium(self):
         """模糊 prompt → 保守偏置：不低于 medium。"""

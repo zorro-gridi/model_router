@@ -77,7 +77,10 @@ class TestScenario01SimpleQA(unittest.TestCase):
             decision["final_model"], "MiniMax-M3",
             f"简单问答应走基线模型，实际: {decision['final_model']}",
         )
-        self.assertTrue(decision["locked"], "decide() 必须返回 locked=True")
+        self.assertFalse(
+            decision["locked"],
+            "首次 decide() 必须是 locked=False（maybe_redecide 升级时才锁定）",
+        )
         self.assertEqual(decision["decision_source"], "prompt")
 
     def test_proxy_resolve_decision_returns_real_decision(self):

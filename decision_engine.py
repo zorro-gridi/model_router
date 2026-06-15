@@ -11,8 +11,11 @@ V1.3 §6.1 / §10 路由策略 + §13.1 DecisionRecord schema。
   - 依赖注入：`classifier` 参数默认从 llm_classifier.classify 拉；
     单测时可传入自定义函数
   - 保守偏置：模糊 prompt（无明显高/低复杂度信号）→ 强制 medium 及以上
-  - 一次锁定：decide() 返回的 record 默认 `locked=True`（后续 maybe_redecide
-    在 Stage 5 才会被引入；本阶段只关注"首次决策即锁定"的语义）
+  - 首次决策可改：decide() 返回的 record 默认 `locked=False`（首次只是
+    "暂定"，后续 PostToolUse 累积 runtime_score 或命中 TodoWrite 强信号，
+    maybe_redecide() 才会升级并 lock；一旦 locked=True 永不变）
+  - 这样分工：decide() 给"prompt 先验"，maybe_redecide() 才是
+    "Runtime 实证后的终裁"
 
 后续阶段（Stage 2/5/6）会在此基础上：
   - 接入状态机 transition 校验
@@ -268,7 +271,8 @@ def decide(
                     默认走 `llm_classifier.classify`。
 
     Returns:
-        DecisionRecord（locked=True，runtime_score=0，todo_score=0）。
+        DecisionRecord（locked=False — 首次决策只是暂定；
+        runtime_score 累积或 TodoWrite 强信号由 maybe_redecide() 升级并 lock）。
     """
     classify = classifier or _default_classifier
     raw = classify(prompt)
@@ -298,7 +302,7 @@ def decide(
         runtime_score=0,    # Stage 1 决策时无 runtime 数据
         todo_score=0,       # Stage 1 决策时无 todowrite 数据
         final_model=final_model,
-        locked=True,        # 一次决策，整段锁定（V1.3 §6.4）
+        locked=False,       # 首次决策可改：maybe_redecide 升级时才锁定
         decision_source="prompt",
         last_update=int(time.time()),
     )
