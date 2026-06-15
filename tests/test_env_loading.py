@@ -26,6 +26,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+# _load_env.py lives at ~/.claude/hooks/_load_env.py，按其自己的契约：
+#   sys.path.insert(0, os.path.expanduser('~/.claude/hooks'))
+#   from _load_env import load_plugin_env
+# 模型路由测试目录是 model_router/，不会自动看到 hooks/。
+# 这里手工添加，让测试能 import 到 _load_env。
+_HOOKS_DIR = os.path.expanduser("~/.claude/hooks")
+if _HOOKS_DIR not in sys.path:
+    sys.path.insert(0, _HOOKS_DIR)
+
 
 class TestLoadPluginEnvSharedLayer(unittest.TestCase):
     """load_plugin_env 必须从共享层 hooks/.env 读 env（不只是 plugin-private 层）。"""
