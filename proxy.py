@@ -100,6 +100,7 @@ INTERNAL_SOURCE_HEADER = os.environ.get("STAGE_ROUTER_INTERNAL_HEADER", "X-Stage
 from stage_config import (
     STAGE_MODELS, FALLBACK_MODELS,
     STAGE_CONFIG,
+    PATTERN_CONFIG,
     MODEL_TO_CONFIG,
     STRONG_MODEL,   # 设计文档 §10 路由算法：全局强模型
     RECLASSIFY_INTERVAL,          # per-API-request 动态分类间隔

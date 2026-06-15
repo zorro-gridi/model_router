@@ -935,6 +935,7 @@ from stage_config import (  # noqa: E402  配置单源化派生
     COMPLEXITY_THRESHOLDS,
     PATTERN_BASE_SCORE,
     STAGE_COMPLEXITY_MULTIPLIER,
+    shift_complexity,
 )
 
 
