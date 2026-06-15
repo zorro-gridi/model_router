@@ -806,48 +806,68 @@ def main():
         # Stage 5/7 production bug 修复：之前 stage_detector 直接写 state 但
         # decision 字段为 {}。E2E Scenario 1 (RED) 暴露后，这里调 decide()
         # 拿到 locked=True DecisionRecord，写到 model_router_state_<sid>.json。
+        #
+        # Stage 8 lock-respect 修复（Scenario 5 RED）：之前每次 UserPromptSubmit
+        # 都无条件调 decide() 覆写 locked decision。现在先读已有 state，
+        # locked=True 且无 ~model 显式覆盖 → 保留原 decision 不重算。
         decision_dict: dict | None = None
         if session_id and cwd and prompt:
             try:
                 from decision_engine import decide as _v13_decide
+                from state_persistence import SessionStateStore as _V13Store
                 import time as _t
 
-                # 复用本 hook 内已经拿到的 llm_result（避免二次 LLM 调用）；
-                # 没拿到 → 走 V1 关键词回退，让 decide() 的 classifier 接口完整。
-                def _v13_classifier(_p: str) -> dict:
-                    if llm_result:
-                        return dict(llm_result)
-                    # V1 关键词回退：pattern + complexity 拼成 llm 风格 dict
-                    pat = new_pattern
-                    conf = new_conf
-                    if not pat:
-                        pat, conf = detect_task_pattern(_p)
-                    cx = detect_complexity(_p, pat)
-                    return {
-                        "stage": new_stage or "",
-                        "pattern": pat or "feature",
-                        "pattern_confidence": conf or 0.5,
-                        "complexity_label": cx.get("label", "medium"),
-                        "complexity_score": int(cx.get("score", 50)),
-                        "complexity_confidence": float(cx.get("confidence", 0.5)),
-                        "reasoning": "v1 keyword fallback (no API key)",
-                    }
+                _root = str(_find_project_root(
+                    Path(cwd) if not isinstance(cwd, Path) else cwd, session_id))
 
-                prompt_id = f"{session_id[-8:]}-p{int(_t.time())}"
-                rec = _v13_decide(
-                    prompt, session_id, prompt_id,
-                    classifier=_v13_classifier,
-                )
-                decision_dict = dict(rec.to_dict())
-                # ~model 显式覆盖：覆写 final_model（V1.3 §6.4 优先级最高）
-                if new_model:
-                    decision_dict["final_model"] = new_model
-                    decision_dict["decision_source"] = "explicit"
-                log("INFO",
-                    f"v1.3 decide: complexity={decision_dict['task_complexity']} "
-                    f"model={decision_dict['final_model']} "
-                    f"source={decision_dict['decision_source']} "
-                    f"locked={decision_dict['locked']}")
+                # ── 检查已有 locked 决策 ──
+                _existing_state = _V13Store().read_new(session_id, _root)
+                _existing_decision = _existing_state.get("decision") if _existing_state else None
+                _is_locked = bool(_existing_decision and _existing_decision.get("locked"))
+
+                if _is_locked and not new_model:
+                    # locked 且无 ~model 显式覆盖 → 保留原决策，不重算
+                    decision_dict = dict(_existing_decision)
+                    log("INFO",
+                        f"v1.3 decide: SKIPPED (locked={_is_locked}, "
+                        f"model={decision_dict.get('final_model')})")
+                else:
+                    # 复用本 hook 内已经拿到的 llm_result（避免二次 LLM 调用）；
+                    # 没拿到 → 走 V1 关键词回退，让 decide() 的 classifier 接口完整。
+                    def _v13_classifier(_p: str) -> dict:
+                        if llm_result:
+                            return dict(llm_result)
+                        # V1 关键词回退：pattern + complexity 拼成 llm 风格 dict
+                        pat = new_pattern
+                        conf = new_conf
+                        if not pat:
+                            pat, conf = detect_task_pattern(_p)
+                        cx = detect_complexity(_p, pat)
+                        return {
+                            "stage": new_stage or "",
+                            "pattern": pat or "feature",
+                            "pattern_confidence": conf or 0.5,
+                            "complexity_label": cx.get("label", "medium"),
+                            "complexity_score": int(cx.get("score", 50)),
+                            "complexity_confidence": float(cx.get("confidence", 0.5)),
+                            "reasoning": "v1 keyword fallback (no API key)",
+                        }
+
+                    prompt_id = f"{session_id[-8:]}-p{int(_t.time())}"
+                    rec = _v13_decide(
+                        prompt, session_id, prompt_id,
+                        classifier=_v13_classifier,
+                    )
+                    decision_dict = dict(rec.to_dict())
+                    # ~model 显式覆盖：覆写 final_model（V1.3 §6.4 优先级最高）
+                    if new_model:
+                        decision_dict["final_model"] = new_model
+                        decision_dict["decision_source"] = "explicit"
+                    log("INFO",
+                        f"v1.3 decide: complexity={decision_dict['task_complexity']} "
+                        f"model={decision_dict['final_model']} "
+                        f"source={decision_dict['decision_source']} "
+                        f"locked={decision_dict['locked']}")
             except Exception as _de:
                 log("WARN", f"decision_engine.decide() failed: {_de!r}; "
                             f"decision 字段留空（向后兼容）")
