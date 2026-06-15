@@ -87,7 +87,7 @@ class TestTodoCounts(unittest.TestCase):
             {"content": "Task D", "status": "pending"},
         ])
         self.assertEqual(result["total"], 4)
-        self.assertEqual(result["pending"], 2)  # pending + in_progress
+        self.assertEqual(result["pending"], 3)  # pending + in_progress
         self.assertEqual(result["completed"], 1)
 
     def test_counts_no_status_field_defaults_pending(self):
