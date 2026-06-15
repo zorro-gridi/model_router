@@ -45,6 +45,15 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Optional
 
+# ── .env 自动加载（必须在所有读 env 的代码之前）──
+# Claude Code hook 子进程不会继承 shell export 的 env，必须从 .env 读 key 并
+# 注入 os.environ。统一用 _load_env.load_plugin_env：先读共享层 hooks/.env，
+# 再读 plugin-private 层 hooks/model_router/.env。已设置的 env 变量优先级
+# 更高（不覆盖）。
+sys.path.insert(0, os.path.expanduser("~/.claude/hooks"))
+from _load_env import load_plugin_env  # noqa: E402
+load_plugin_env(__file__)  # noqa: E402
+
 # ── 配置 ───────────────────────────────────────────────────────────────────────
 
 # ── 分 session 阶段管理 ──
@@ -58,7 +67,6 @@ GLOBAL_STAGE_FILE    = HOOK_DIR / "current_stage"   # 全局后备
 STATE_INDEX_FILE     = HOOK_DIR / "state_index.json"  # 设计文档 §13 Project Binding
 LOG_FILE             = Path.home() / ".claude" / "stage-router.log"
 PORT                 = 7878
-ENV_FILE             = Path(__file__).parent / ".env"   # hooks/model_router/.env
 
 # 用户服务的"内部请求"标记 header（防止 5xx 误触发 fallback）
 # 详见 _is_internal_request() 注释。Claude Code 的请求不会带这个 header。
@@ -1392,45 +1400,7 @@ def _from_openai_response(body: bytes) -> bytes:
         log.error(f"响应格式转换失败: {e}")
         return body
 
-# ── .env 加载 + 启动校验 ───────────────────────────────────────────────────────
-
-_DOTENV_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
-
-
-def _load_dotenv(env_path: Path) -> int:
-    """
-    从 .env 文件加载变量到 os.environ（仅在变量未设置时填入，避免覆盖）。
-
-    极简实现：跳过空行和 `#` 注释；值不带引号时去尾随空白；带引号时保留内部空白。
-    不依赖 python-dotenv，避免引入外部依赖。
-
-    Returns:
-        成功加载的变量数量。
-    """
-    if not env_path.exists():
-        return 0
-    loaded = 0
-    try:
-        for raw in env_path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            m = _DOTENV_LINE.match(line)
-            if not m:
-                continue
-            key, value = m.group(1), m.group(2)
-            # 去掉匹配的引号
-            if (value.startswith('"') and value.endswith('"')) or \
-               (value.startswith("'") and value.endswith("'")):
-                value = value[1:-1]
-            # 已设置的环境变量优先级更高（shell export 覆盖 .env）
-            if key not in os.environ:
-                os.environ[key] = value
-                loaded += 1
-    except OSError as e:
-        log.error(f"读取 {env_path} 失败: {e}")
-    return loaded
-
+# ── 启动校验 ───────────────────────────────────────────────────────────────────────
 
 def _check_required_keys() -> list[str]:
     """扫描 STAGE_MODELS，收集所有需要的 API key 环境变量名，报告缺失项。"""
@@ -1975,22 +1945,15 @@ def main():
 
     RouterHandler.dry_run = args.dry_run
 
-    # 1) 从本目录 .env 加载（shell 环境变量优先级更高，不会被覆盖）
-    n_loaded = _load_dotenv(ENV_FILE)
-    if n_loaded:
-        log.info(f"从 {ENV_FILE} 加载了 {n_loaded} 个环境变量")
-    elif not ENV_FILE.exists():
-        log.warning(
-            f"未找到 {ENV_FILE}，将仅依赖 shell 环境变量。"
-            f"可执行: cp {ENV_FILE}.example {ENV_FILE}  然后填入 key"
-        )
-
-    # 2) 启动期校验：缺少 API key 就直接报错退出（避免请求飞到一半才 500）
+    # .env 已在模块导入时通过 load_plugin_env(__file__) 加载完成（共享层 +
+    # plugin-private 层）。这里只做启动期校验：缺少 API key 就直接报错退出
+    # （避免请求飞到一半才 500）。
     missing = _check_required_keys()
     if missing:
         log.error("=" * 60)
         log.error(f"缺少必需的 API key 环境变量: {', '.join(missing)}")
-        log.error(f"请在 {ENV_FILE} 中填入，或在 shell 中 export。")
+        log.error("请在 ~/.claude/hooks/.env 或 ~/.claude/hooks/model_router/.env"
+                  " 中填入，或在 shell 中 export。")
         log.error("=" * 60)
         sys.exit(1)
 

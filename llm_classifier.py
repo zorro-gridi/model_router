@@ -51,42 +51,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import anthropic  # noqa: E402
 import httpx      # noqa: E402
 
-# ── .env 自动加载 ──
-# Claude Code hook 子进程不会继承 shell export 的 env，但 `hooks/model_router/.env`
-# 是项目约定的配置源（与 proxy.py 一致）。如果 LLM 分类器要稳定调用 LLM，
-# 必须自己从同目录 .env 读取 key 并注入 os.environ。已设置的 env 变量优先级
-# 更高（不会覆盖）。
-ENV_FILE = Path(__file__).resolve().parent / ".env"
-_DOTENV_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
-
-
-def _load_dotenv_once(env_path: Path = ENV_FILE) -> int:
-    """从 .env 加载变量到 os.environ（仅在变量未设置时填入）。"""
-    if not env_path.exists():
-        return 0
-    loaded = 0
-    try:
-        for raw in env_path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            m = _DOTENV_LINE.match(line)
-            if not m:
-                continue
-            key, value = m.group(1), m.group(2)
-            if (value.startswith('"') and value.endswith('"')) or \
-               (value.startswith("'") and value.endswith("'")):
-                value = value[1:-1]
-            if key not in os.environ:
-                os.environ[key] = value
-                loaded += 1
-    except OSError:
-        pass  # 读不到就静默，让上游 key 缺失时报清晰错误
-    return loaded
-
-
-# 模块导入时立即加载一次（最迟到首次调用 classify() 时 key 必然就位）
-_load_dotenv_once()
+# ── .env 自动加载（共享双层 loader）──
+# Claude Code hook 子进程不会继承 shell export 的 env，必须从 .env 读 key 并
+# 注入 os.environ。统一用 _load_env.load_plugin_env：先读共享层 hooks/.env，
+# 再读 plugin-private 层 hooks/model_router/.env。已设置的 env 变量优先级
+# 更高（不覆盖）。
+sys.path.insert(0, os.path.expanduser("~/.claude/hooks"))
+from _load_env import load_plugin_env  # noqa: E402
+load_plugin_env(__file__)  # noqa: E402
 
 # ── 默认配置（deepseek-v4-flash，Anthropic 协议）──
 DEFAULT_CLASSIFIER_CONFIG: dict = {
