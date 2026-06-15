@@ -186,6 +186,73 @@ def _v13_resolve_decision(sid: str, project_root: str) -> dict | None:
     return store.read_legacy(sid, project_root)
 
 
+# ── V1.3 决策反推 v1.2 stage（Stage 6.2 渐进期兜底）─────────────────────────
+
+def _v13_model_to_stage(final_model: str, task_complexity: str) -> str | None:
+    """v1.3 final_model + task_complexity → v1.2 stage 字符串（STAGE_MODELS key）。
+
+    唯一性约束（Stage 6.2a 设计）：
+      - deepseek-v4-pro  → decide（1-1 映射，唯一）
+      - deepseek-v4-flash → brainstorm（1-1 映射，唯一）
+      - MiniMax-M3 + complex → decide（升档语义）
+      - MiniMax-M3 + medium  → implement
+      - MiniMax-M3 + simple  → default
+
+    Args:
+        final_model: DecisionRecord.final_model 字段。
+        task_complexity: DecisionRecord.task_complexity 字段（"complex"/"medium"/"simple"）。
+
+    Returns:
+        STAGE_MODELS 字典中存在的 stage 字符串；无法映射时返回 None。
+    """
+    if final_model == "deepseek-v4-pro":
+        return "decide"
+    if final_model == "deepseek-v4-flash":
+        return "brainstorm"
+    if final_model == "MiniMax-M3":
+        if task_complexity == "complex":
+            return "decide"
+        if task_complexity == "medium":
+            return "implement"
+        return "default"
+    return None
+
+
+def _resolve_stage_v13(active_path: Path) -> str | None:
+    """v1.3 final_model → v1.2 stage 字符串（Stage 6.2 渐进期兜底）。
+
+    触发场景：Stage 7 完成后旧 stage_<sid> 文件已被删除,但 proxy/STAGE_MODELS
+    查表仍需要 stage 字符串做键。此函数从 session_state_<sid>.json 的
+    decision.final_model + decision.task_complexity 反推等价 stage。
+
+    永不抛错（所有异常静默吞掉），让 read_stage() 在反推失败时仍能兜底 "default"。
+
+    Args:
+        active_path: _active_stage_path() 返回的 stage_<sid> 路径（不一定真实存在）。
+
+    Returns:
+        v1.2 阶段字符串（"decide"/"brainstorm"/"implement"/"default" 等），
+        或 None（无 v1.3 决策 / 反推失败）。
+    """
+    try:
+        if not isinstance(active_path, Path):
+            return None
+        sid = _extract_session_id_from_stage_path(active_path)
+        if not sid:
+            return None
+        project_root = str(_find_project_root_for_stage_path(active_path))
+        resolved = _v13_resolve_decision(sid, project_root)
+        if not isinstance(resolved, dict) or not resolved:
+            return None
+        fm = resolved.get("final_model")
+        tc = resolved.get("task_complexity", "simple")
+        if not isinstance(fm, str) or not fm:
+            return None
+        return _v13_model_to_stage(fm, tc)
+    except Exception:
+        return None
+
+
 # ── 阶段读取（分 session 管理）─────────────────────────────────────────────────
 
 def _read_stage_file(path: Path) -> str | None:
@@ -274,6 +341,17 @@ def read_stage() -> str:
                 f"active_session 指向 {active_path} 未知阶段值 '{content}'，"
                 f"回退到 default"
             )
+
+    # Level 5: v1.3 决策反推（Stage 6.2 渐进期兜底 — 旧 stage_<sid> 文件可能已
+    # 被 Stage 7 删除，但 session_state_<sid>.json 还在）。仅在 flag 开启且
+    # 前 4 级全 miss 时尝试，避免无谓 IO。
+    if active_path is not None:
+        try:
+            v13_stage = _resolve_stage_v13(active_path)
+            if v13_stage and v13_stage in STAGE_MODELS:
+                return v13_stage
+        except Exception:
+            pass
 
     # 兜底
     return "default"
