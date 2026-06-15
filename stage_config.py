@@ -465,7 +465,7 @@ PATTERN_CONFIG: dict[str, dict] = {
         ],
     },
     "ops": {
-        "label":        "运维配置",
+        "label":        "运维、脚本、配置类任务",
         "default_flow": ["explore", "implement", "test"],
         "default_complexity": "medium",
         "primary_model": "MiniMax-M3",
@@ -536,7 +536,7 @@ COMPLEXITY_KEYWORDS: list[tuple[str, int]] = [
 # V1.3 §5.1 Task Pattern 12 种全覆盖；V1 旧名 bugfix 保留为兼容别名（同 debug 分数）。
 # 分值沿用既有标定（feature=50, refactor=55, test=40, research=50, migration=75,
 # architecture=80, docs=20, audit=70），新增条目按 V1.3 设计语义给值：
-#   - implement = 50（与 feature 持平：开发实施类任务与新功能设计复杂度相当）
+#   - implement = 50（与 feature 持平：开发实施类任务与新功能需求复杂度相当）
 #   - debug     = 45（沿用 V1 bugfix 标定）
 #   - explore   = 30（探索与调研通常是低复杂度的读 + 理解类任务）
 PATTERN_BASE_SCORE: dict[str, int] = {
@@ -684,28 +684,21 @@ PATTERN_INFO: dict[str, str] = {
 
 # V1.3 §5.1 Task Pattern 中文 label 映射（与 llm_classifier.py 系统 prompt 对齐）
 # 用于 statusline / shadow 模式显示。当 pattern 命中 V1.3 12 种之一时，
-# 优先返回 V1.3 中文 label；命中 V1 旧名（bugfix/feature 等）时回退到
+# 优先返回 V1.3 中文 label；命中 V1 旧名（bugfix 等）时回退到
 # PATTERN_CONFIG 的 legacy label。缺失时返回 key 原文。
-#
-# 用户精细化说明（2026-06-15 严格区分 feature/implement/audit/debug/migration）：
-#   - feature   = 新功能设计（偏方案）   ← 区别于 implement 的开发实施
-#   - implement = 功能实现（开发实施）
-#   - migration = 无损迁移（不进行改造） ← 区别于 refactor 的改造、重构
-#   - audit     = 系统功能审计（对已实现功能的完整性验证，对齐设计方案）
-#   - debug     = 故障排查（处理已实现功能的异常）  ← 区别于 audit
 PATTERN_LABEL_V13: dict[str, str] = {
     "explore":      "探索与调研",
     "architecture": "架构设计",
-    "feature":      "新功能设计",
-    "audit":        "系统功能审计",
+    "feature":      "新功能需求",
+    "audit":        "审计系统功能",
     "implement":    "功能实现",
-    "debug":        "故障排查",
-    "refactor":     "结构重构",
+    "debug":        "调试异常",
+    "refactor":     "模块重构",
     "test":         "测试相关",
     "research":     "调查研究",
-    "migration":    "无损迁移",
+    "migration":    "模块迁移",
     "docs":         "文档处理",
-    "ops":          "运维配置",
+    "ops":          "运维、脚本、配置类任务",
 }
 
 
