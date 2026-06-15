@@ -53,7 +53,7 @@ def _write_seed_decision(
     }
     (claude_dir / f"model_router_state_{sid}.json").write_text(
         json.dumps({"version": "1.3", "session_id": sid, "decision": rec},
-                   ensure_ascii=False, indent=2),
+               ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -82,17 +82,16 @@ class TestAlreadyLocked(unittest.TestCase):
         from decision_engine import maybe_redecide
 
         _write_seed_decision(
-            self.root, self.sid,
-            task_complexity="medium", locked=True,
+        self.root, self.sid,
+        task_complexity="medium", locked=True,
         )
 
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_DECIDE": "1"}):
-            result = maybe_redecide(
-                sid=self.sid,
-                project_root=str(self.root),
-                runtime_score=100,  # 即使高分也不重决策
-                todowrite_signal=None,
-            )
+        result = maybe_redecide(
+            sid=self.sid,
+            project_root=str(self.root),
+            runtime_score=100,  # 即使高分也不重决策
+            todowrite_signal=None,
+        )
 
         self.assertIsNone(result, "已锁必须返回 None")
 
@@ -101,21 +100,20 @@ class TestAlreadyLocked(unittest.TestCase):
         from decision_engine import maybe_redecide
 
         _write_seed_decision(
-            self.root, self.sid,
-            task_complexity="complex", locked=True,
+        self.root, self.sid,
+        task_complexity="complex", locked=True,
         )
 
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_DECIDE": "1"}):
-            maybe_redecide(
-                sid=self.sid,
-                project_root=str(self.root),
-                runtime_score=0,  # 低分不触发降级
-                todowrite_signal=None,
-            )
+        maybe_redecide(
+            sid=self.sid,
+            project_root=str(self.root),
+            runtime_score=0,  # 低分不触发降级
+            todowrite_signal=None,
+        )
 
         d = _read_decision(self.root, self.sid)
         self.assertEqual(d["task_complexity"], "complex",
-                         "已锁 record 的 complexity 字段不应被改")
+                     "已锁 record 的 complexity 字段不应被改")
 
 
 # ── 未锁 + runtime_score 不足 ──────────────────────────────────────────────
@@ -136,11 +134,10 @@ class TestBelowThreshold(unittest.TestCase):
 
         _write_seed_decision(self.root, self.sid, task_complexity="simple")
 
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_DECIDE": "1"}):
-            result = maybe_redecide(
-                sid=self.sid, project_root=str(self.root),
-                runtime_score=0, todowrite_signal=None,
-            )
+        result = maybe_redecide(
+            sid=self.sid, project_root=str(self.root),
+            runtime_score=0, todowrite_signal=None,
+        )
 
         self.assertIsNone(result)
 
@@ -150,16 +147,15 @@ class TestBelowThreshold(unittest.TestCase):
 
         _write_seed_decision(self.root, self.sid, task_complexity="simple")
 
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_DECIDE": "1"}):
-            result = maybe_redecide(
-                sid=self.sid, project_root=str(self.root),
-                runtime_score=10, todowrite_signal=None,
-            )
+        result = maybe_redecide(
+            sid=self.sid, project_root=str(self.root),
+            runtime_score=10, todowrite_signal=None,
+        )
 
         self.assertIsNone(result)
         d = _read_decision(self.root, self.sid)
         self.assertEqual(d["task_complexity"], "simple",
-                         "低分不应触发升级")
+                     "低分不应触发升级")
 
 
 # ── 未锁 + runtime_score 达阈值 ─────────────────────────────────────────────
@@ -181,11 +177,10 @@ class TestAboveThreshold(unittest.TestCase):
 
         _write_seed_decision(self.root, self.sid, task_complexity="simple")
 
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_DECIDE": "1"}):
-            result = maybe_redecide(
-                sid=self.sid, project_root=str(self.root),
-                runtime_score=50, todowrite_signal=None,
-            )
+        result = maybe_redecide(
+            sid=self.sid, project_root=str(self.root),
+            runtime_score=50, todowrite_signal=None,
+        )
 
         self.assertIsNotNone(result, "高 runtime_score 应触发重决策")
         d = _read_decision(self.root, self.sid)
@@ -200,11 +195,10 @@ class TestAboveThreshold(unittest.TestCase):
 
         _write_seed_decision(self.root, self.sid, task_complexity="medium")
 
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_DECIDE": "1"}):
-            result = maybe_redecide(
-                sid=self.sid, project_root=str(self.root),
-                runtime_score=85, todowrite_signal=None,
-            )
+        result = maybe_redecide(
+            sid=self.sid, project_root=str(self.root),
+            runtime_score=85, todowrite_signal=None,
+        )
 
         self.assertIsNotNone(result)
         d = _read_decision(self.root, self.sid)
@@ -219,15 +213,14 @@ class TestAboveThreshold(unittest.TestCase):
 
         _write_seed_decision(self.root, self.sid, task_complexity="complex")
 
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_DECIDE": "1"}):
-            maybe_redecide(
-                sid=self.sid, project_root=str(self.root),
-                runtime_score=0, todowrite_signal=None,
-            )
+        maybe_redecide(
+            sid=self.sid, project_root=str(self.root),
+            runtime_score=0, todowrite_signal=None,
+        )
 
         d = _read_decision(self.root, self.sid)
         self.assertEqual(d["task_complexity"], "complex",
-                         "complex 不应被降级")
+                     "complex 不应被降级")
 
 
 # ── TodoWrite 强信号 ────────────────────────────────────────────────────────
@@ -245,11 +238,11 @@ class TestTodoWriteStrongSignal(unittest.TestCase):
 
     def _todo_signal(self, is_impl: bool = True, pending: int = 3) -> dict:
         return {
-            "is_implementation": is_impl,
-            "total": pending,
-            "pending": pending,
-            "completed": 0,
-            "complexity_signal": min(pending / 10.0, 1.0),
+        "is_implementation": is_impl,
+        "total": pending,
+        "pending": pending,
+        "completed": 0,
+        "complexity_signal": min(pending / 10.0, 1.0),
         }
 
     def test_implementation_todo_promotes_and_locks(self):
@@ -258,17 +251,16 @@ class TestTodoWriteStrongSignal(unittest.TestCase):
 
         _write_seed_decision(self.root, self.sid, task_complexity="simple")
 
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_DECIDE": "1"}):
-            result = maybe_redecide(
-                sid=self.sid, project_root=str(self.root),
-                runtime_score=0,  # 0 分也锁
-                todowrite_signal=self._todo_signal(is_impl=True, pending=3),
-            )
+        result = maybe_redecide(
+            sid=self.sid, project_root=str(self.root),
+            runtime_score=0,  # 0 分也锁
+            todowrite_signal=self._todo_signal(is_impl=True, pending=3),
+        )
 
         self.assertIsNotNone(result)
         d = _read_decision(self.root, self.sid)
         self.assertIn(d["task_complexity"], ("medium", "complex"),
-                      "实施类 todo 至少抬升到 medium")
+                  "实施类 todo 至少抬升到 medium")
         self.assertTrue(d["locked"])
         self.assertEqual(d["decision_source"], "todowrite")
 
@@ -278,12 +270,11 @@ class TestTodoWriteStrongSignal(unittest.TestCase):
 
         _write_seed_decision(self.root, self.sid, task_complexity="simple")
 
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_DECIDE": "1"}):
-            result = maybe_redecide(
-                sid=self.sid, project_root=str(self.root),
-                runtime_score=0,
-                todowrite_signal=self._todo_signal(is_impl=False, pending=3),
-            )
+        result = maybe_redecide(
+            sid=self.sid, project_root=str(self.root),
+            runtime_score=0,
+            todowrite_signal=self._todo_signal(is_impl=False, pending=3),
+        )
 
         # 没 runtime 升级 + todo 不是实施 → 应返回 None（不锁）
         self.assertIsNone(result)
@@ -297,50 +288,15 @@ class TestTodoWriteStrongSignal(unittest.TestCase):
 
         _write_seed_decision(self.root, self.sid, task_complexity="complex")
 
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_DECIDE": "1"}):
-            maybe_redecide(
-                sid=self.sid, project_root=str(self.root),
-                runtime_score=0,
-                todowrite_signal=self._todo_signal(is_impl=True, pending=3),
-            )
+        maybe_redecide(
+            sid=self.sid, project_root=str(self.root),
+            runtime_score=0,
+            todowrite_signal=self._todo_signal(is_impl=True, pending=3),
+        )
 
         d = _read_decision(self.root, self.sid)
         self.assertEqual(d["task_complexity"], "complex")
         self.assertTrue(d["locked"])
-
-
-# ── flag 关闭 ──────────────────────────────────────────────────────────────
-
-class TestFlagOffNoOp(unittest.TestCase):
-    """MODEL_ROUTER_V13_DECIDE=0 → 整体 no-op。"""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        self.sid = "sid-flagoff-001"
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_flag_off_returns_none(self):
-        from decision_engine import maybe_redecide
-
-        _write_seed_decision(self.root, self.sid, task_complexity="simple")
-
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_DECIDE": "0"}):
-            result = maybe_redecide(
-                sid=self.sid, project_root=str(self.root),
-                runtime_score=1000,
-                todowrite_signal={
-                    "is_implementation": True, "total": 3, "pending": 3,
-                    "completed": 0, "complexity_signal": 0.3,
-                },
-            )
-
-        self.assertIsNone(result)
-        d = _read_decision(self.root, self.sid)
-        self.assertEqual(d["task_complexity"], "simple",
-                         "flag 关闭时 record 不应被改")
 
 
 # ── session_state 缺失 ─────────────────────────────────────────────────────
@@ -360,14 +316,13 @@ class TestMissingSessionState(unittest.TestCase):
         from decision_engine import maybe_redecide
 
         # 不预写 seed
-        with patch.dict(os.environ, {"MODEL_ROUTER_V13_DECIDE": "1"}):
-            result = maybe_redecide(
-                sid=self.sid, project_root=str(self.root),
-                runtime_score=100, todowrite_signal=None,
-            )
+        result = maybe_redecide(
+            sid=self.sid, project_root=str(self.root),
+            runtime_score=100, todowrite_signal=None,
+        )
 
         self.assertIsNone(result,
-                          "无 seed record → 不重决策（不应当场 decide）")
+                      "无 seed record → 不重决策（不应当场 decide）")
 
 
 if __name__ == "__main__":
