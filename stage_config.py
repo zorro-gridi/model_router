@@ -447,6 +447,21 @@ PATTERN_CONFIG: dict[str, dict] = {
             ("审计", 3), ("漏洞", 2), ("vulnerability", 3), ("性能审查", 2),
         ],
     },
+    # V1.3 §5.1 Task Pattern 12 种中的最后一种：ops（运维/脚本/配置类任务）
+    "ops": {
+        "label":        "运维配置",
+        "desc":         "运维、脚本、配置类任务（CI/CD, scripts, config）",
+        "default_flow": ["explore", "implement", "test"],
+        "default_complexity": "medium",
+        "primary_model": "MiniMax-M3",
+        "keywords": [
+            ("ci/cd", 3), ("pipeline", 3), ("workflow", 2),
+            ("deploy", 3), ("部署", 3), ("发布", 2),
+            ("script", 2), ("脚本", 2), ("cron", 3),
+            ("config", 2), ("配置", 2), ("yaml", 2), ("toml", 2),
+            ("env", 1), ("环境变量", 2),
+        ],
+    },
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -628,6 +643,45 @@ PATTERN_INFO: dict[str, str] = {
     for p, c in PATTERN_CONFIG.items()
 }
 
+# V1.3 §5.1 Task Pattern 中文 label 映射（与 llm_classifier.py 系统 prompt 对齐）
+# 用于 statusline / shadow 模式显示。当 pattern 命中 V1.3 12 种之一时，
+# 优先返回 V1.3 中文 label；命中 V1 旧名（bugfix/feature 等）时回退到
+# PATTERN_CONFIG 的 legacy label。缺失时返回 key 原文。
+PATTERN_LABEL_V13: dict[str, str] = {
+    "explore":      "探索与调研",
+    "architecture": "架构设计",
+    "feature":      "新功能开发",
+    "audit":        "系统功能审计",
+    "implement":    "功能实现",
+    "debug":        "故障排查",
+    "refactor":     "结构重构",
+    "test":         "测试相关",
+    "research":     "调查研究",
+    "migration":    "迁移改造",
+    "docs":         "文档处理",
+    "ops":          "运维配置",
+}
+
+
+def get_pattern_label_v13(pattern: str) -> str:
+    """返回 V1.3 风格的中文 label。
+
+    优先级：V1.3 显式映射 > PATTERN_CONFIG 兜底 > pattern key 原文。
+
+    Args:
+        pattern: pattern key（如 "test"、"bugfix"、"explore"）。
+
+    Returns:
+        str: 中文 label 或 key 原文。
+    """
+    if not pattern:
+        return ""
+    if pattern in PATTERN_LABEL_V13:
+        return PATTERN_LABEL_V13[pattern]
+    # V1 旧 pattern 名（bugfix / feature 等）→ 走 PATTERN_CONFIG 找 legacy label
+    cfg = PATTERN_CONFIG.get(pattern, {})
+    return cfg.get("label", pattern) or pattern
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 反向索引：model → (base_url, model, api_key_env, protocol)
 # 从 STAGE_CONFIG 的主模型和备用模型收集。
@@ -691,6 +745,8 @@ PATTERN_KEYWORDS: dict[str, list[tuple[str, int]]] = {
 __all__ = [
     "STAGE_CONFIG",
     "PATTERN_CONFIG",
+    "PATTERN_LABEL_V13",
+    "get_pattern_label_v13",
     "COMPLEXITY_KEYWORDS",
     "STAGE_KEYWORDS",
     "PATTERN_KEYWORDS",
