@@ -10,11 +10,6 @@ stage — 阶段管理 CLI
   stage status       # 查询代理健康状态
   stage log          # 实时查看路由日志
 
-操作类型子命令（第二维度，2026-06-13 引入）：
-  stage op <name>    # 手动设置 op（覆盖 stage 路由）
-  stage op reset     # 清除 op 信号（退回 stage 路由）
-  stage op list      # 列出所有有效 op 名称
-
 任务模式子命令（第三维度，2026-06-14 引入，Shadow Mode）：
   stage pattern              # 查看当前 session 的 pattern 标注
   stage pattern <name>       # 手动设置 pattern（写入 JSON）
@@ -22,16 +17,14 @@ stage — 阶段管理 CLI
   stage pattern list         # 列出所有有效 pattern 名称
 
 所有阶段：brainstorm | decide | design | plan | implement | audit | default
-所有 op：  write | read | search | refactor
 所有 pattern：feature | bugfix | refactor | test | research | migration |
               architecture | docs | audit
 
 阶段文件位置：
   分 session 阶段文件：<project_root>/.claude/stage_<session_id>
-  分 session op 文件： <project_root>/.claude/op_<session_id>（op_<sid> 与 stage_<sid> 同目录）
   分 session pattern： <project_root>/.claude/pattern_<session_id>（JSON）
   active_session 指针：~/.claude/hooks/model_router/active_session → 完整路径
-  全局后备：          ~/.claude/hooks/model_router/current_stage（仅 stage，op/pattern 无全局后备）
+  全局后备：          ~/.claude/hooks/model_router/current_stage（仅 stage，pattern 无全局后备）
 """
 
 import http.client
@@ -58,15 +51,13 @@ PROXY_PORT          = 7878
 # 与 proxy.py 同步的极简 .env 解析（不依赖 python-dotenv）
 _DOTENV_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
 
-# stage / op / pattern 有效值：与 stage_config 同源（避免重复硬编码）
+# stage / pattern 有效值：与 stage_config 同源（避免重复硬编码）
 sys.path.insert(0, str(HOOK_DIR))
 from stage_config import (                          # noqa: E402
     STAGE_CONFIG, PATTERN_CONFIG,
     COMPLEXITY_LEVELS, shift_complexity,
 )
-# OPERATION_CONFIG 已废弃 2026-06-14（write/read/search 只是动作不是路由维度）
 VALID_STAGES    = set(STAGE_CONFIG.keys())
-VALID_OPS: set[str] = set()        # 已废弃，永远为空
 VALID_PATTERNS  = set(PATTERN_CONFIG.keys())
 
 
@@ -108,7 +99,7 @@ COLORS = {
 
 # 从统一配置文件导入（需先将 HOOK_DIR 加入 sys.path）
 sys.path.insert(0, str(HOOK_DIR))
-from stage_config import STAGE_DESC  # OPERATION_DESC 已废弃 2026-06-14
+from stage_config import STAGE_DESC
 
 
 # ── 项目根目录查找（参照 compact/utils.py，但无 stdin——从 Path.cwd() 出发）──
@@ -244,28 +235,6 @@ def write_stage(stage: str) -> None:
         GLOBAL_STAGE_FILE.write_text(stage)
 
 
-def _op_file_path(stage_path: Path) -> Path:
-    """从 stage_<sid> 路径派生 op_<sid> 路径（同目录、仅前缀替换）。"""
-    return stage_path.with_name(stage_path.name.replace("stage_", "op_", 1))
-
-
-# read_operation / write_operation / clear_operation — [已废弃 2026-06-14]
-# op 路由已由 Complexity（§6.4）替代。原实现见 git history。
-def read_operation() -> str | None:
-    """[已废弃] 始终返回 None。"""
-    return None
-
-
-def write_operation(op: str) -> bool:
-    """[已废弃] no-op，始终返回 False（表示"无活跃 session"）。"""
-    return False
-
-
-def clear_operation() -> bool:
-    """[已废弃] no-op。"""
-    return False
-
-
 # ── Pattern 读 / 写 / 清（Shadow Mode，2026-06-14 引入）──
 
 def _pattern_file_path(stage_path: Path) -> Path:
@@ -324,14 +293,6 @@ def show_current():
     desc  = STAGE_DESC.get(stage, "")
     print(f"当前阶段: {color}{stage}\033[0m")
     print(f"  {desc}")
-    # op 路由已废弃（2026-06-14）
-    op = read_operation()
-    if op:
-        # 废弃：OPERATION_DESC 已移除，不会再进入此分支
-        print(f"当前 op:   \033[1;33m{op}\033[0m (覆盖 stage 路由) [已废弃]")
-    else:
-        print(f"当前 op:   \033[90mnone（已废弃）\033[0m")
-
     # ── Pattern（Shadow Mode，仅标注不影响路由）──
     pat = read_pattern()
     if pat and pat.get("prediction"):
@@ -385,21 +346,6 @@ def set_stage(stage: str):
     print(f"阶段切换: {old} → {color}{stage}\033[0m")
     print(f"  {STAGE_DESC.get(stage, '')}")
 
-
-# set_op / reset_op / list_ops — [已废弃 2026-06-14]
-# op 路由已由 Complexity（§6.4）替代。write/read/search 只是动作不是路由维度。
-def set_op(op: str):
-    print("⚠️  op 路由已废弃（2026-06-14）。write/read/search 只是动作不是路由维度。")
-    print("   模型选择现已由 Stage × Complexity（§6.4）接管。")
-
-
-def reset_op():
-    print("⚠️  op 路由已废弃（2026-06-14），无需清除。")
-
-
-def list_ops():
-    print("⚠️  op 路由已废弃（2026-06-14）。write/read/search 只是动作不是路由维度。")
-    print("   原支持的操作类型（已移除）：write read search refactor")
 
 
 def set_pattern(pattern: str):
@@ -522,13 +468,12 @@ def clear_batch() -> bool:
 
 
 def clear_all_overrides() -> int:
-    """~reset 等价：清 model/op/pattern/fallback/complexity/batch（stage 保留）。"""
+    """~reset 等价：清 model/pattern/fallback/complexity/batch（stage 保留）。"""
     stage_path = _get_active_stage_path()
     if not stage_path:
         return 0
     paths = [
         stage_path.with_name(stage_path.name.replace("stage_", "model_", 1)),
-        stage_path.with_name(stage_path.name.replace("stage_", "op_", 1)),
         stage_path.with_name(stage_path.name.replace("stage_", "pattern_", 1)),
         stage_path.with_name(stage_path.name.replace("stage_", "fallback_", 1)),
         _complexity_file_path(stage_path),
@@ -626,15 +571,9 @@ def proxy_status():
         data = json.loads(resp.read())
         stage = data.get("stage", "unknown")
         model = data.get("model", "unknown")
-        op = data.get("op")
         color = COLORS.get(stage, COLORS["reset"])
         print(f"✅ Stage Router 运行中")
-        if op:
-            print(f"   阶段: {color}{stage}\033[0m")
-            print(f"   op:   \033[1;33m{op}\033[0m (覆盖 stage)")
-            print(f"   模型: {model}")
-        else:
-            print(f"   阶段: {color}{stage}\033[0m → {model}")
+        print(f"   阶段: {color}{stage}\033[0m → {model}")
     except Exception:
         print(f"❌ Stage Router 未运行（端口 {PROXY_PORT}）")
         print(f"   启动命令: stage proxy")
@@ -666,33 +605,14 @@ def main():
     elif args[0] == "log":
         tail_log()
     elif args[0] == "reset":
-        # ~reset 全量清除：清 model/op/pattern/fallback/complexity/batch
+        # ~reset 全量清除：清 model/pattern/fallback/complexity/batch
         # stage 保留不动（用户仍可手动 stage <name> 切换）
         removed = clear_all_overrides()
         if removed:
             print(f"✅ ~reset: 已清除 {removed} 个 override 文件")
-            print("   (model/op/pattern/fallback/complexity/batch 均已清除)")
+            print("   (model/pattern/fallback/complexity/batch 均已清除)")
         else:
             print("ℹ️  ~reset: 当前没有 override 文件需要清除")
-    elif args[0] == "op":
-        # stage op <name> | stage op reset | stage op list
-        if len(args) < 2:
-            print("用法: stage op <write|read|search|refactor>")
-            print("      stage op reset")
-            print("      stage op list")
-            sys.exit(1)
-        sub = args[1]
-        if sub == "reset":
-            reset_op()
-        elif sub == "list":
-            list_ops()
-        elif sub in VALID_OPS:
-            set_op(sub)
-        else:
-            # op 路由已废弃（2026-06-14）
-            print(f"⚠️  op 路由已废弃: write/read/search 只是动作不是路由维度。")
-            print(f"   模型选择现已由 Stage × Complexity（§6.4）接管。")
-            sys.exit(1)
     elif args[0] == "pattern":
         # stage pattern [<name> | reset | list]
         if len(args) < 2:
