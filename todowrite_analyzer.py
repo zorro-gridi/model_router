@@ -262,40 +262,41 @@ class TodoWriteAnalyzer:
         complexity_score = 0.0
         dims_active = 0
 
-        # 维度 1: pending 数量（保留原有逻辑）
-        count_signal = min(pending / 10.0, 1.0) if pending > 0 else 0.0
-        complexity_score += count_signal * 0.25
+        # 维度 1: pending 数量（dominant signal — 10+ pending 直接驱动 high complexity）
+        # 阈值 0.5 在 5 个 pending 时跨越，对应"中等到复杂"任务
+        count_signal = min(pending / 5.0, 1.0) if pending > 0 else 0.0
+        complexity_score += count_signal * 0.5
         dims_active += 1
 
         # 维度 2: 跨文件
         if cross_file:
-            complexity_score += 0.25
+            complexity_score += 0.20
             dims_active += 1
 
         # 维度 3: 包含测试
         if has_tests:
-            complexity_score += 0.15
+            complexity_score += 0.10
             dims_active += 1
 
         # 维度 4: 包含迁移/兼容
         if has_migration:
-            complexity_score += 0.25
+            complexity_score += 0.20
             dims_active += 1
 
         # 维度 5: 包含重构
         if has_refactor:
-            complexity_score += 0.15
+            complexity_score += 0.10
             dims_active += 1
 
         # 维度 6: 依赖链
         if has_dependency_chain:
-            complexity_score += 0.15
+            complexity_score += 0.10
             dims_active += 1
 
         # 维度 7: pending todo 文本长度特征（复杂任务通常描述更详细）
         avg_content_len = sum(len(c) for c in all_content) / max(len(all_content), 1)
         if avg_content_len > 80:
-            complexity_score += 0.10
+            complexity_score += 0.05
             dims_active += 1
 
         # 归一化到 [0, 1]
