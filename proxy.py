@@ -97,7 +97,7 @@ from stage_config import (
     OPERATION_MODELS, OPERATION_FALLBACK_MODELS,
     STAGE_CONFIG, OPERATION_CONFIG,
     MODEL_TO_CONFIG,
-    STRONG_MODEL, NORMAL_MODEL,   # 设计文档 §10 路由算法：全局强/常规模型
+    STRONG_MODEL,   # 设计文档 §10 路由算法：全局强模型
     RECLASSIFY_INTERVAL,          # per-API-request 动态分类间隔
 )
 
@@ -1725,123 +1725,12 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 )
                 routing_source = f"stage={stage}"
 
-            # ── Workflow Plan 物理编排（设计文档 §6.5 / §10 步骤 6-8）──
-            # 由 workflow_orchestrator 落盘的 workflow_step_<sid> 文件驱动：
-            #   - 命中：按 plan.models[current_step-1] 强制切到本步对应模型
-            #   - 路由后 advance() 把 current_step+1 写回
-            #   - 越界时自动 deactivate 落回 stage 路由
-            #   - batch 模板激活时跳过（batch 自己有强流程）
-            workflow = build_workflow_plan(
-                stage_or_op=routing_source.split("=", 1)[1].split(" ")[0]
-                            if "=" in routing_source else "default",
-                is_op=routing_source.startswith("op="),
-                primary_model=model,
-                strong_model=STRONG_MODEL,
-                complexity_label=complexity_label,
-            )
-            # workflow dict 默认不含 current_step（plan 静态描述）；
-            # 下面若命中 workflow_step_<sid> 文件，会回填到 workflow["current_step"]
-            # 以便 /metrics /_append_metric 看到真实进度。
-            workflow.setdefault("current_step", None)
-            # 把 plan 也写到 metrics 用的 record 字段（兜底，per-step 字段在下方填充）
-            workflow_step_applied: int | None = None
-            workflow_type_applied: str | None = None
-            workflow_models_applied: list[str] | None = None
-
-            # 仅在非 batch / 非 op 时尝试读 workflow_step_<sid>（让 batch 强流程不被覆盖）
-            if not batch_template and not op:
-                try:
-                    from workflow_orchestrator import (  # noqa: E402
-                        read_state as _wf_read,
-                    )
-                    # 多 session 并发修复（2026-06-14）：通过 _active_stage_path() 解析。
-                    _rl_ap = _active_stage_path()
-                    _wf_project_root = (
-                        str(_find_project_root_for_stage_path(_rl_ap))
-                        if _rl_ap else ""
-                    )
-                    _wf_sid = (
-                        _extract_session_id_from_stage_path(_rl_ap)
-                        if _rl_ap else ""
-                    )
-                    wf_state = _wf_read(_wf_sid, _wf_project_root) if _wf_sid else None
-                except Exception as e:
-                    log.warning(f"workflow_orchestrator 读失败: {e!r}")
-                    wf_state = None
-
-                if wf_state:
-                    step_models = wf_state.get("models", [])
-                    step_stages = wf_state.get("step_stages", [])
-                    cur = int(wf_state.get("current_step", 1))
-                    n = len(step_models)
-                    if 1 <= cur <= n:
-                        target_model = step_models[cur - 1]
-                        target_routing = resolve_model_routing(target_model)
-                        if target_routing:
-                            (t_base, t_model, t_key, t_proto,
-                             tfb_base, tfb_model, tfb_key, tfb_proto) = target_routing
-                            # 把原 stage 模型存为 fb；本步路由设为主
-                            fb_base, fb_model, fb_key, fb_proto = (
-                                base_url, model, key_env, protocol
-                            )
-                            base_url, model, key_env, protocol = (
-                                t_base, t_model, t_key, t_proto
-                            )
-                            routing_source += (
-                                f" [workflow={wf_state['plan_type']}→"
-                                f"step{cur}/{n}:{target_model}]"
-                            )
-                            workflow_step_applied = cur
-                            workflow_type_applied = wf_state["plan_type"]
-                            workflow_models_applied = list(step_models)
-                            # 回填到 workflow dict，让 /metrics 看到真实进度
-                            workflow["current_step"] = cur
-                            workflow["plan_type"] = wf_state["plan_type"]
-                            workflow["models"] = list(step_models)
-                            workflow["step_stages"] = list(step_stages)
-                            # §18 R18-3：若本步是强模型，查配额；超额则
-                            # 退回到原 stage 主模型（用 fb 兜底）。**不**advance，
-                            # 留给下一次重试或下一 request 重新尝试。
-                            if target_model == STRONG_MODEL:
-                                rl_allowed, rl_reason = check_rate_limit(
-                                    STRONG_MODEL, _wf_project_root, _wf_sid
-                                )
-                                if not rl_allowed:
-                                    log.warning(
-                                        f"rate_limited: workflow step{cur}/{n} "
-                                        f"STRONG={STRONG_MODEL} "
-                                        f"reason={rl_reason} "
-                                        f"project={_wf_project_root} "
-                                        f"session={_wf_sid}; "
-                                        f"本步降级到 {model}"
-                                    )
-                                    # 退回原 fb（即原 stage 模型）
-                                    (base_url, model, key_env, protocol,
-                                     fb_base, fb_model, fb_key, fb_proto) = (
-                                        fb_base, fb_model, fb_key, fb_proto,
-                                        tfb_base, tfb_model, tfb_key, tfb_proto,
-                                    )
-                                    routing_source += (
-                                        f" [workflow-step-rate-limited"
-                                        f"({rl_reason})→{model}]"
-                                    )
-                                    workflow_step_applied = None  # 标记本步未生效
-                                else:
-                                    # 配额允许，扣 1 次
-                                    rate_limit_consume(
-                                        STRONG_MODEL, _wf_project_root, _wf_sid
-                                    )
-                            # workflow step 由 Hook (stage_detector.py) 在阶段跳转时推进，
-                            # proxy 只读取 current_step 并路由对应模型，自身不做 advance。
-                            # 参见设计文档 §6.5 / §10。
-                    else:
-                        # 越界（plan 已完成或数据损坏）→ deactivate 落回 stage 路由
-                        try:
-                            from workflow_orchestrator import deactivate as _wf_deact
-                            _wf_deact(_wf_sid, _wf_project_root)
-                        except Exception:
-                            pass
-                        routing_source += f" [workflow={wf_state.get('plan_type')}→completed]"
+            # v1.3: workflow_orchestrator 已删除，workflow dict 仅保留给日志行使用
+            workflow = {
+                "type":   "single",
+                "steps":  ["execute"],
+                "models": [model],
+            }
         else:
             # model_override 路径无 workflow 编排（用户已显式指定）
             workflow = {
