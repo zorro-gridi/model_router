@@ -802,10 +802,9 @@ def main():
                     f"complexity (auto): score={auto_score} "
                     f"label={auto_label} conf={auto_conf}")
 
-        # ── V1.3 双写适配（Stage 3.3）──────────────────────────────────────────
+        # ── V1.3 状态快照 ──────────────────────────────────────────────
         # 每次 hook 触发末尾，将当前 session 的完整状态写入
-        # model_router_state_<sid>.json（受 MODEL_ROUTER_V13_WRITE flag 控制）。
-        # 旧文件仍由上方各 write_* 函数独立写入，旧消费方（proxy/stage_show）零感知。
+        # model_router_state_<sid>.json。v1.3 单文件为唯一持久化路径。
         if session_id and cwd:
             try:
                 from state_persistence import SessionStateStore
@@ -827,7 +826,7 @@ def main():
                 log("WARN", f"v1.3 dual-write failed (non-blocking): {_e!r}")
 
         # ── 输出 additionalContext（model/stage/op/fallback/pattern/complexity 各自命中时合并提示）──
-        msgs = [m for m in (model_msg, stage_msg, op_msg, fb_msg, pattern_msg, complexity_msg) if m]
+        msgs = [m for m in (model_msg, stage_msg, fb_msg, pattern_msg, complexity_msg) if m]
         if msgs:
             output = {
                 "hookSpecificOutput": {
@@ -1083,7 +1082,7 @@ def clear_batch(session_id: str | None = None,
 
 def clear_all_overrides(session_id: str | None = None,
                         cwd: str | Path | None = None) -> int:
-    """~reset 全量清除：删除 model/op/pattern/fallback/complexity/batch
+    """~reset 全量清除：删除 model/pattern/fallback/complexity/batch
     全部 override 文件，stage 保留。返回删除的文件数。
     """
     if not session_id or not cwd:
@@ -1091,7 +1090,6 @@ def clear_all_overrides(session_id: str | None = None,
     stage_path = _stage_file_path(cwd, session_id)
     files = [
         _model_file_path(stage_path),
-        _op_file_path(stage_path),
         _pattern_file_path(stage_path),
         _fallback_file_path(stage_path),
         _complexity_file_path(stage_path),

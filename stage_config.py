@@ -7,7 +7,7 @@ stage_config.py — 阶段 × 复杂度 × 模式 统一配置
 均从此导入，确保所有组件展示和路由的模型一致。
 
 修改流程：
-  1. 只修改本文件的 STAGE_CONFIG / OPERATION_CONFIG / PATTERN_CONFIG /
+  1. 只修改本文件的 STAGE_CONFIG / PATTERN_CONFIG /
      COMPLEXITY_CONFIG 字典
   2. 所有导入方自动同步，无需逐个修改
 
@@ -328,94 +328,6 @@ STAGE_CONFIG: dict[str, dict] = {
 # ═══════════════════════════════════════════════════════════════════════════
 # Operation-type 路由 — [已废弃 2026-06-14]
 # ═══════════════════════════════════════════════════════════════════════════
-#
-# 废弃原因（决策分析）：
-#   write / read / search 只是"动作"，不是"任务属性"。
-#   同一个 write 可以对应"写测试"、"写架构"、"写文档"、"写代码"，
-#   但它们的复杂度天差地别——write 无法作为路由决策信号。
-#
-#   真正影响模型选择的是"任务类型 + 任务复杂度 + 当前阶段"：
-#     测试任务内部就有：策略设计 → 用例生成 → 执行 → 结果分析 →
-#     根因定位 → 回归验证，每一步复杂度都不同。
-#   到这一步 write/read 已经没有决策价值。
-#
-#   同时，Complexity 分类器（设计文档 §6.4）的引入已吞掉 op 的原始职责
-#   ——系统已经从"关键词动作路由"进化到"上下文复杂度路由"。
-#
-# 兼容策略：
-#   OPERATION_CONFIG 保留为空 dict。所有消费方（proxy / stage_detector /
-#   stage_show / stage CLI）通过 `if op in OPERATION_CONFIG` 自然退化到
-#   不匹配分支，无需逐个修改条件判断。
-#
-#   原有四类 op 完整配置保留在下方的注释块中，便于：
-#     - 事后追溯"曾经存在这个设计"
-#     - 如果未来发现 Complexity 路由不如预期，可快速回退
-#
-# 原设计原则（已失效）：
-#   op 完全覆盖 stage 路由（"我说 search 就是 search"）。
-#   升级（2026-06-14）：op 默认主模型统一为 MiniMax-M3（设计文档第 11 章
-#   默认策略 + 第 7 章 Stage 表），仅 fallback 视任务性质选择 deepseek。
-#
-# 原有 OPERATION_CONFIG（write / read / search / refactor）完整定义：
-#   OPERATION_CONFIG: dict[str, dict] = {
-#       "write": {
-#           "emoji":       "✏️",
-#           "label":       "写入",
-#           "desc":        "主 MiniMax-M3，便宜 fallback",
-#           "model":       "MiniMax-M3",
-#           "base_url":    "https://api.minimaxi.com/anthropic",
-#           "api_key_env": "MINIMAX_API_KEY",
-#           "protocol":    "anthropic",
-#           "fb_model":       "deepseek-v4-flash",
-#           "fb_base_url":    "https://api.deepseek.com/anthropic",
-#           "fb_api_key_env": "DEEPSEEK_API_KEY",
-#           "fb_protocol":    "anthropic",
-#       },
-#       "read": {
-#           "emoji":       "👁️",
-#           "label":       "读取",
-#           "desc":        "主 MiniMax-M3，稳 fallback",
-#           "model":       "MiniMax-M3",
-#           "base_url":    "https://api.minimaxi.com/anthropic",
-#           "api_key_env": "MINIMAX_API_KEY",
-#           "protocol":    "anthropic",
-#           "fb_model":       "deepseek-v4-pro",
-#           "fb_base_url":    "https://api.deepseek.com/anthropic",
-#           "fb_api_key_env": "DEEPSEEK_API_KEY",
-#           "fb_protocol":    "anthropic",
-#       },
-#       "search": {
-#           "emoji":       "🔎",
-#           "label":       "搜索",
-#           "desc":        "主 MiniMax-M3，备 deepseek-v4-flash",
-#           "model":       "MiniMax-M3",
-#           "base_url":    "https://api.minimaxi.com/anthropic",
-#           "api_key_env": "MINIMAX_API_KEY",
-#           "protocol":    "anthropic",
-#           "fb_model":       "deepseek-v4-flash",
-#           "fb_base_url":    "https://api.deepseek.com/anthropic",
-#           "fb_api_key_env": "DEEPSEEK_API_KEY",
-#           "fb_protocol":    "anthropic",
-#       },
-#       "refactor": {
-#           "emoji":       "🔧",
-#           "label":       "重构",
-#           "desc":        "主 MiniMax-M3，备 deepseek-v4-pro",
-#           "model":       "MiniMax-M3",
-#           "base_url":    "https://api.minimaxi.com/anthropic",
-#           "api_key_env": "MINIMAX_API_KEY",
-#           "protocol":    "anthropic",
-#           "fb_model":       "deepseek-v4-pro",
-#           "fb_base_url":    "https://api.deepseek.com/anthropic",
-#           "fb_api_key_env": "DEEPSEEK_API_KEY",
-#           "fb_protocol":    "anthropic",
-#       },
-#   }
-# ═══════════════════════════════════════════════════════════════════════════
-
-OPERATION_CONFIG: dict[str, dict] = {}
-
-# ═══════════════════════════════════════════════════════════════════════════
 # Pattern Library（设计文档第 8 章）
 #
 # 任务模式是 Workflow Planner 的核心输入。本轮进入 Shadow Mode：
@@ -701,36 +613,6 @@ STAGE_INFO: dict[str, str] = {
     for stage, c in STAGE_CONFIG.items()
 }
 
-# proxy.py 用：op → (base_url, model, api_key_env, protocol)
-OPERATION_MODELS: dict[str, tuple[str, str, str, str]] = {
-    op: (c["base_url"], c["model"], c["api_key_env"], c["protocol"])
-    for op, c in OPERATION_CONFIG.items()
-}
-
-# proxy.py 用：op → 备用 (fb_base_url, fb_model, fb_api_key_env, fb_protocol)
-OPERATION_FALLBACK_MODELS: dict[str, tuple[str, str, str, str]] = {
-    op: (c["fb_base_url"], c["fb_model"], c["fb_api_key_env"], c["fb_protocol"])
-    for op, c in OPERATION_CONFIG.items()
-}
-
-# stage_show.py 用：op → (emoji, label, model)
-OPERATION_DISPLAY: dict[str, tuple[str, str, str]] = {
-    op: (c["emoji"], c["label"], c["model"])
-    for op, c in OPERATION_CONFIG.items()
-}
-
-# stage CLI 用：op → 格式化描述行
-OPERATION_DESC: dict[str, str] = {
-    op: f"{c['emoji']} {c['model']:20s} — {c['desc']}"
-    for op, c in OPERATION_CONFIG.items()
-}
-
-# stage_detector.py 用：op → "操作类型 → 模型，简述"
-OPERATION_INFO: dict[str, str] = {
-    op: f"{c['label']}操作 → {c['model']}，{c['desc']}"
-    for op, c in OPERATION_CONFIG.items()
-}
-
 # Pattern 派生视图
 PATTERN_FLOW: dict[str, list[str]] = {
     p: c["default_flow"] for p, c in PATTERN_CONFIG.items()
@@ -748,25 +630,15 @@ PATTERN_INFO: dict[str, str] = {
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 反向索引：model → (base_url, model, api_key_env, protocol)
-# 从 STAGE_CONFIG + OPERATION_CONFIG 的主模型和备用模型收集。
+# 从 STAGE_CONFIG 的主模型和备用模型收集。
 # proxy.py 用于 sticky fallback：当主模型不可用后，直接从 fallback 模型名
-# 反查出完整的路由配置（不再需要知道原 stage/op），也用于 model_override 路由。
+# 反查出完整的路由配置（不再需要知道原 stage），也用于 model_override 路由。
 # ═══════════════════════════════════════════════════════════════════════════
 
 MODEL_TO_CONFIG: dict[str, tuple[str, str, str, str]] = {}
 for c in STAGE_CONFIG.values():
     MODEL_TO_CONFIG[c["model"]] = (c["base_url"], c["model"], c["api_key_env"], c["protocol"])
     MODEL_TO_CONFIG[c["fb_model"]] = (c["fb_base_url"], c["fb_model"], c["fb_api_key_env"], c["fb_protocol"])
-for c in OPERATION_CONFIG.values():
-    # OPERATION_CONFIG 可能使用与 STAGE_CONFIG 相同的模型名，值应一致
-    MODEL_TO_CONFIG.setdefault(
-        c["model"],
-        (c["base_url"], c["model"], c["api_key_env"], c["protocol"]),
-    )
-    MODEL_TO_CONFIG.setdefault(
-        c["fb_model"],
-        (c["fb_base_url"], c["fb_model"], c["fb_api_key_env"], c["fb_protocol"]),
-    )
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 关键词派生视图（§14 配置单源化 — D14-2/3/4 修复 2026-06-14）
@@ -880,3 +752,58 @@ _PLACEHOLDER_WEIGHTS: dict[str, dict[str, int]] = {
         "test_failure": 5,
     },
 }
+
+# ── YAML 权重加载器（V1.3 §7 配置化）─────────────────────────────────────
+
+import os as _os
+from pathlib import Path as _Path
+
+_WEIGHTS_YAML_PATH = _Path(__file__).resolve().parent / "config" / "decision_weights.yaml"
+
+
+def load_yaml_weights() -> dict[str, dict[str, int]]:
+    """加载 decision_weights.yaml → 注入 runtime_score 权重。
+
+    启动时调用一次；YAML 缺失或损坏时降级为 _PLACEHOLDER_WEIGHTS 硬编码兜底。
+    """
+    try:
+        import yaml as _yaml
+    except ImportError:
+        return _PLACEHOLDER_WEIGHTS
+
+    if not _WEIGHTS_YAML_PATH.exists():
+        return _PLACEHOLDER_WEIGHTS
+
+    try:
+        raw = _WEIGHTS_YAML_PATH.read_text(encoding="utf-8")
+        data = _yaml.safe_load(raw)
+    except Exception:
+        return _PLACEHOLDER_WEIGHTS
+
+    if not isinstance(data, dict):
+        return _PLACEHOLDER_WEIGHTS
+
+    # 验证顶层 key 结构与 _PLACEHOLDER_WEIGHTS 对齐
+    expected_keys = {"tool", "file_type", "file_lines", "runtime_signal"}
+    loaded: dict[str, dict[str, int]] = {}
+    for key in expected_keys:
+        section = data.get(key)
+        if isinstance(section, dict):
+            loaded[key] = {str(k): int(v) for k, v in section.items()}
+        else:
+            # 某个 section 缺失或格式错误 → 用硬编码兜底
+            loaded[key] = _PLACEHOLDER_WEIGHTS.get(key, {})
+
+    return loaded
+
+
+# 模块级缓存：首次导入时加载一次
+_YAML_WEIGHTS: dict[str, dict[str, int]] | None = None
+
+
+def get_weights() -> dict[str, dict[str, int]]:
+    """获取当前生效的权重（YAML 优先，降级硬编码）。"""
+    global _YAML_WEIGHTS
+    if _YAML_WEIGHTS is None:
+        _YAML_WEIGHTS = load_yaml_weights()
+    return _YAML_WEIGHTS

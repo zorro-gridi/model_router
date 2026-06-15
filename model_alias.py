@@ -51,16 +51,13 @@ MODEL_ALIASES: dict[str, str] = {
 # ── 已知的有效规范模型名（从 stage_config 各配置收集中生成，供校验用）──
 
 def _collect_known_models() -> set[str]:
-    """从 STAGE_CONFIG + OPERATION_CONFIG 收集所有已配置的模型名。
+    """从 STAGE_CONFIG 收集所有已配置的模型名。
     延迟导入避免循环依赖——本模块在 stage_config.py 之前也可能被加载。
     """
     models: set[str] = set()
     try:
-        from stage_config import STAGE_CONFIG, OPERATION_CONFIG
+        from stage_config import STAGE_CONFIG
         for c in STAGE_CONFIG.values():
-            models.add(c["model"])
-            models.add(c["fb_model"])
-        for c in OPERATION_CONFIG.values():
             models.add(c["model"])
             models.add(c["fb_model"])
     except ImportError:
