@@ -95,6 +95,17 @@ class SessionStateStore:
                       complexity, batch, fallback, reqcnt, workflow_step。
         """
         claude_dir = self._ensure_claude_dir(project_root)
+        new_path = claude_dir / f"model_router_state_{sid}.json"
+
+        # 读取现有状态，保留其他组件写入的字段
+        # （如 RuntimeTracker 写的 runtime_score、TodoWriteAnalyzer 写的
+        #   todowrite_signal）。否则 create-from-scratch 会覆盖这些字段。
+        existing: Dict[str, Any] = {}
+        if new_path.exists():
+            try:
+                existing = json.loads(new_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                existing = {}
 
         new_data: Dict[str, Any] = {
             "version": self.VERSION,
@@ -117,7 +128,12 @@ class SessionStateStore:
             if key in kwargs and kwargs[key] is not None:
                 new_data[key] = kwargs[key]
 
-        new_path = claude_dir / f"model_router_state_{sid}.json"
+        # 保留 existing 中 write() 不管理的字段（runtime_score、todowrite_signal 等）
+        managed_keys = {"version", "session_id", "decision", "last_update"} | set(optional_fields)
+        for key, value in existing.items():
+            if key not in managed_keys and key not in new_data:
+                new_data[key] = value
+
         self._atomic_write(new_path, json.dumps(new_data, ensure_ascii=False, indent=2))
 
     # ── Read ──────────────────────────────────────────────────────────────
