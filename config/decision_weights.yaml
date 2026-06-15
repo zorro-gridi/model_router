@@ -1,0 +1,64 @@
+# ── decision_weights.yaml — v1.3 决策权重配置 ─────────────────────────────
+#
+# V1.3 §7 Runtime Complexity Score 权重表。启动时由 stage_config.load_yaml_weights()
+# 加载；YAML 缺失或损坏降级为 stage_config._PLACEHOLDER_WEIGHTS 硬编码兜底。
+#
+# 四类权重：
+#   tool         — 工具调用本身信号（每种 tool_name 命中后得分）
+#   file_type    — 操作文件类型信号（按扩展名加权）
+#   file_lines   — 文件规模分层（小/中/大）
+#   runtime_signal — 运行时异常信号（bash 非零退出、测试失败等）
+#
+# 调参建议：
+#   - TodoWrite 权重必须 > Bash（强信号 vs 普通信号，test_stage_config_weights 锁契约）
+#   - 全部字段保持 int（loader 会强制 int 转换）
+#   - 修改后无需重启服务，下次冷启动自动加载
+# ─────────────────────────────────────────────────────────────────────────
+
+tool:
+  Read: 2
+  Edit: 4
+  Write: 3
+  MultiEdit: 5
+  Grep: 3
+  Glob: 2
+  WebSearch: 4
+  WebFetch: 3
+  Bash: 2
+  TodoWrite: 8 # V1.3 §9：强信号，比 Bash 普通信号高一档
+  Agent: 5
+  NotebookEdit: 2
+  TodoRead: 1
+
+file_type:
+  .py: 3
+  .ts: 3
+  .tsx: 3
+  .js: 3
+  .go: 3
+  .rs: 3
+  .java: 3
+  .cpp: 3
+  .c: 3
+  .h: 3
+  .swift: 3
+  .yaml: 2
+  .yml: 2
+  .toml: 2
+  .json: 1
+  .md: 1
+  .txt: 1
+  .lock: 0 # lock 文件不应计复杂度
+  .sum: 0 # 校验和文件
+
+file_lines:
+  small: 1 # < 50 行
+  medium: 2 # 50-300 行
+  large: 3 # > 300 行
+
+runtime_signal:
+  bash_nonzero_exit: 4 # Bash 命令非零退出
+  grep_large_hits: 3 # Grep 命中数过多（> 100）
+  search_large_hits: 3 # WebSearch 命中数过多
+  edit_retry_loop: 2 # 同文件 Edit 重试循环
+  test_failure: 5 # 测试失败（强信号，提示进入调试阶段）

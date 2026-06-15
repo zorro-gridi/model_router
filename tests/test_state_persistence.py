@@ -2,25 +2,25 @@
 test_state_persistence.py — v1.3 SessionStateStore 单测
 =========================================================
 
-V1.3 §5 适配层：model_router_state_<sid>.json 双写 + 兼容读。
+V1.3 §5 适配层：model_router_state_<sid>.json 单写 + 兼容读。
 
 SessionStateStore 职责：
-  - write(): 双写 — 新 model_router_state_<sid>.json + 旧 9 文件
+  - write(): 单写 — 仅新 model_router_state_<sid>.json（Stage 7.1）
   - read_new(): 读新格式
-  - read_legacy(): 从旧 9 文件聚合读
-  - migrate(): 旧→新 一次性迁移
+  - read_legacy(): 从旧 9 文件聚合读（仅作为 read fallback）
+  - migrate(): 旧→新 一次性迁移（仅冷启动一次性）
 
 
 旧 9 文件（v1.2）：stage_, model_, pattern_, complexity_, batch_,
   fallback_, reqcnt_, workflow_step_, op_（已废弃）
 
 测试目标（TDD）：
-  1. write() 创建新格式文件 + 旧文件（双写）
+  1. write() 仅创建新格式文件（Stage 7.1 单写，不再双写）
   2. 新格式 schema 正确（version, decision, state, stage 等）
   3. read_new() 正确反序列化
-  4. read_legacy() 从旧文件聚合
+  4. read_legacy() 从旧文件聚合（仅兼容读，不在写侧出现）
   5. migrate() 一次性迁移
-  6. feature flag 关闭时只写旧文件
+  6. 旧 9 文件在全新 session 中不生成
   7. 并发写入不损坏文件
 """
 
@@ -35,7 +35,7 @@ from pathlib import Path
 
 
 class TestWriteCreatesFiles(unittest.TestCase):
-    """write() 双写：新格式 + 旧文件。"""
+    """write() 单写：仅新格式文件（Stage 7.1 清理旧写侧）。"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -73,8 +73,8 @@ class TestWriteCreatesFiles(unittest.TestCase):
         new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
         self.assertTrue(new_file.exists(), f"新格式文件应存在: {new_file}")
 
-    def test_write_creates_legacy_files(self):
-        """write() 应同时创建旧 9 文件（双写）。"""
+    def test_write_does_not_create_legacy_files(self):
+        """write() 不应再生成旧 9 文件（Stage 7.1 单写，清理旧写侧）。"""
         store = self._store()
         store.write(
             self.sid, str(self.project_root),
@@ -83,11 +83,14 @@ class TestWriteCreatesFiles(unittest.TestCase):
             pattern={"prediction": "feature", "confidence": 0.8, "ts": "2026-06-15T00:00:00"},
             complexity={"score": 45, "label": "medium", "confidence": 0.85, "source": "llm", "ts": "2026-06-15T00:00:00"},
         )
-        # 至少 stage_ 和 pattern_ 应存在
+        # 旧 9 文件不应再生成（Stage 7.1 之后全新 session 只生新格式）
         stage_file = self.claude_dir / f"stage_{self.sid}"
         pattern_file = self.claude_dir / f"pattern_{self.sid}"
-        self.assertTrue(stage_file.exists(), f"旧 stage 文件应存在: {stage_file}")
-        self.assertTrue(pattern_file.exists(), f"旧 pattern 文件应存在: {pattern_file}")
+        self.assertFalse(stage_file.exists(), f"Stage 7.1: 旧 stage 文件不应再生成: {stage_file}")
+        self.assertFalse(pattern_file.exists(), f"Stage 7.1: 旧 pattern 文件不应再生成: {pattern_file}")
+        # 新格式文件应正常生成
+        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
+        self.assertTrue(new_file.exists(), f"新格式文件应生成: {new_file}")
 
 
 class TestNewFormatSchema(unittest.TestCase):
