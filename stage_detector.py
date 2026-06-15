@@ -972,6 +972,30 @@ def main():
                         # orchestrator 失败不应阻断 stage/pattern/complexity 写入
                         log("WARN", f"workflow_orchestrator.activate 失败: {_wf_exc!r}")
 
+        # ── V1.3 双写适配（Stage 3.3）──────────────────────────────────────────
+        # 每次 hook 触发末尾，将当前 session 的完整状态写入
+        # session_state_<sid>.json（受 MODEL_ROUTER_V13_WRITE flag 控制）。
+        # 旧文件仍由上方各 write_* 函数独立写入，旧消费方（proxy/stage_show）零感知。
+        if session_id and cwd:
+            try:
+                from state_persistence import SessionStateStore
+                store = SessionStateStore()
+                _root = str(_find_project_root(
+                    Path(cwd) if not isinstance(cwd, Path) else cwd, session_id))
+                store.write(
+                    sid=session_id,
+                    project_root=_root,
+                    stage=(new_stage if new_stage else old_stage),
+                    model_override=read_model_override(session_id, cwd),
+                    pattern=read_pattern(session_id, cwd),
+                    complexity=read_complexity(session_id, cwd),
+                    batch=read_batch(session_id, cwd),
+                    fallback=read_fallback(session_id, cwd),
+                )
+                log("INFO", f"v1.3 dual-write snapshot → {_root}/.claude/session_state_{session_id}.json")
+            except Exception as _e:
+                log("WARN", f"v1.3 dual-write failed (non-blocking): {_e!r}")
+
         # ── 输出 additionalContext（model/stage/op/fallback/pattern/complexity 各自命中时合并提示）──
         msgs = [m for m in (model_msg, stage_msg, op_msg, fb_msg, pattern_msg, complexity_msg) if m]
         if msgs:
