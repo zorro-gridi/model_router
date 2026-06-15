@@ -804,19 +804,26 @@ def read_batch() -> dict | None:
     return None
 
 
-# ── Per-API-Request 动态重新分类（设计目标：每 N 次 API 请求触发一次 LLM 分类）──
+# ── 分类策略（2026-06-16 简化：仅在 UserPromptSubmit 时分类一次）────────────
 #
-# 背景：Hook 只在 UserPromptSubmit 时运行一次分类。复杂任务的一次 user prompt
-# 可能触发 CC 发起 10~30+ 次 API 请求，任务阶段可能在请求中途发生变化
-# （如从 plan → implement → audit）。仅靠 Hook 一次分类无法感知中途的阶段跳变。
-#
-# 机制：
+# 旧策略（已弃用，保留代码以备回滚——见下方被注释的 _increment_and_should_classify
+# 和 do_POST 中的 per-api-classify 块）：
 #   1. Hook (UserPromptSubmit) → 分类 + 写入 stage/pattern/complexity + 重置 counter=0
-#   2. Proxy (per API request)  → counter++；若 counter >= interval → 重新分类 + 重置 counter
-#   3. 重新分类结果立即更新 stage/pattern/complexity 文件，后续请求使用新路由
+#   2. Proxy (per API request)  → counter++；若 counter >= interval → 重新分类
+#   3. 重新分类结果立即更新 stage/pattern/complexity 文件
+#   目的：感知复杂任务中途的阶段跳变（plan → implement → audit）。
+#
+# 新策略（2026-06-16 起生效）：
+#   仅在 UserPromptSubmit Hook 触发时分类一次，写入 stage/pattern/complexity 文件。
+#   Proxy 只读取不再重分类——避免了 per-API-request 频繁触发 LLM 调用造成的
+#   额外延迟 / cost / 误判（中途跳变在实际使用中带来的收益低于其代价）。
+#   如需重新分类，用户提交下一条 prompt 时 Hook 会自动跑一次。
 #
 # 计数文件: <project_root>/.claude/reqcnt_<sid>.json
-# 间隔可通过 STAGE_ROUTER_RECLASSIFY_INTERVAL 环境变量配置，默认 3。
+#   文件结构保留，但 proxy 不再自增；Hook 在 UserPromptSubmit 后会调用
+#   reset_reqcnt() 把 counter 重置为 0（接口保留，避免破坏未来切换）。
+# 间隔可通过 STAGE_ROUTER_RECLASSIFY_INTERVAL 环境变量配置，默认 3
+#   （当前已无效，仅为兼容旧 hook / 测试代码保留）。
 
 RECLASSIFY_INTERVAL = int(os.environ.get(
     "STAGE_ROUTER_RECLASSIFY_INTERVAL",
@@ -864,27 +871,41 @@ def _write_reqcnt(data: dict) -> None:
 
 
 def _increment_and_should_classify() -> bool:
-    """递增请求计数器，返回是否需要触发重新分类。
+    """递增请求计数器，返回是否需要触发重新分类（2026-06-16 起已禁用）。
 
-    每次 proxy 接收到 CC API 请求时调用。
-    返回 True 表示计数器已到达间隔阈值，应触发 LLM 重新分类。
+    旧行为：每次 proxy 接收到 CC API 请求时调用；计数器到达阈值时返回 True，
+    触发 LLM 重新分类。详见模块顶部"分类策略"注释。
+
+    新行为（2026-06-16 起）：始终返回 False，不再自增计数器、不再触发 per-API
+    重新分类。仅保留为接口占位，便于未来切换回旧策略或供测试使用。
+
+    Returns:
+        永远 False（不再触发 per-API 分类）。
     """
-    data = _read_reqcnt_raw()
-    interval = int(data.get("interval", RECLASSIFY_INTERVAL))
-    if interval <= 0:
-        return False  # 间隔为 0 表示禁用 per-request 分类
-    count = int(data.get("count", 0)) + 1
-    data["count"] = count
-    if count >= interval:
-        data["count"] = 0  # 重置
-        _write_reqcnt(data)
-        return True
-    _write_reqcnt(data)
+    # === 旧逻辑（2026-06-16 弃用，保留以便回滚）===
+    # data = _read_reqcnt_raw()
+    # interval = int(data.get("interval", RECLASSIFY_INTERVAL))
+    # if interval <= 0:
+    #     return False  # 间隔为 0 表示禁用 per-request 分类
+    # count = int(data.get("count", 0)) + 1
+    # data["count"] = count
+    # if count >= interval:
+    #     data["count"] = 0  # 重置
+    #     _write_reqcnt(data)
+    #     return True
+    # _write_reqcnt(data)
+    # return False
+    # === 旧逻辑结束 ===
     return False
 
 
 def reset_reqcnt() -> None:
-    """重置请求计数器为 0（由 Hook 在 UserPromptSubmit 分类后调用）。"""
+    """重置请求计数器为 0（由 Hook 在 UserPromptSubmit 分类后调用）。
+
+    2026-06-16 简化后：Proxy 端不再自增 / 不再触发 per-API 分类，本函数仍保留
+    给 Hook 端调用——Hook 在每次 UserPromptSubmit 分类完成后调用一次，把
+    counter 重置为 0，保持旧文件的初始状态不变，便于未来切回旧策略时
+    counter 从 0 开始自增。接口签名 / 文件结构都不变。"""
     p = _active_stage_path()
     if not p:
         return
@@ -1514,54 +1535,57 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 except OSError as e:
                     log.warning(f"prompt ~model reset 删除 model_<sid> 失败: {e}")
 
-        # ── Per-API-Request 分类：每 N 次 API 请求触发一次 LLM 重新分类 ──
-        # 计数器在 UserPromptSubmit (Hook) 时重置为 0。
-        # 本回合若计数器到达阈值，提取 prompt 上下文 → 调用 llm_classifier →
-        # 更新 stage/pattern/complexity 文件 → 后续路由分支自动使用新分类结果。
-        # 为保证分类上下文提取需要 session_id/project_root，先临时解析一次。
-        # 多 session 并发修复（2026-06-14）：通过 _active_stage_path() 解析。
-        _prx_ap_path = _active_stage_path()
-        if _prx_ap_path:
-            _prx_sid = _extract_session_id_from_stage_path(_prx_ap_path)
-            _prx_root = str(_find_project_root_for_stage_path(_prx_ap_path))
-        else:
-            _prx_sid = _prx_root = None
-
-        if _prx_sid and _prx_root and _increment_and_should_classify():
-            _ctx = _extract_classification_context(body)
-            if _ctx:
-                log.info(
-                    f"[per-api-classify:session={_prx_sid}] "
-                    f"计数器到达阈值，触发 LLM 重新分类..."
-                )
-                try:
-                    _clf_result = _proxy_llm_classify(_ctx)
-                    _new_stage = _clf_result.get("stage", "default")
-                    _new_pattern = _clf_result.get("pattern", "feature")
-                    _new_score = _clf_result.get("complexity_score", 50)
-                    _new_label = _clf_result.get("complexity_label", "medium")
-                    _new_pconf = _clf_result.get("pattern_confidence", 0.5)
-                    _new_cconf = _clf_result.get("complexity_confidence", 0.5)
-                    _new_reason = _clf_result.get("reasoning", "")
-                    log.info(
-                        f"[per-api-classify:session={_prx_sid}] "
-                        f"结果: stage={_new_stage} pattern={_new_pattern} "
-                        f"complexity={_new_label}({_new_score}) "
-                        f"reason={_new_reason}"
-                    )
-                    # 写回 state 文件 —— 下一条请求的 read_stage() / read_pattern()
-                    # / read_complexity() 自动使用新分类结果
-                    _write_stage_from_proxy(_new_stage)
-                    _write_pattern_from_proxy(_new_pattern, _new_pconf)
-                    _write_complexity_from_proxy(
-                        _new_score, _new_label, _new_cconf,
-                        source="proxy_per_api",
-                    )
-                except Exception as _clf_exc:
-                    log.warning(
-                        f"[per-api-classify:session={_prx_sid}] "
-                        f"LLM 分类失败（静默，保留现有分类）: {_clf_exc}"
-                    )
+        # ── Per-API-Request 分类（2026-06-16 起已禁用，保留代码以备回滚）────
+        # 旧逻辑：计数器在 UserPromptSubmit (Hook) 时重置为 0；本回合若计数器到达
+        # 阈值，提取 prompt 上下文 → 调用 llm_classifier → 更新 stage/pattern/
+        # complexity 文件 → 后续路由分支自动使用新分类结果。
+        # 新逻辑：不再触发 per-API 重新分类，全部交给 Hook 在下次 UserPromptSubmit
+        # 时跑一次；proxy 只读取已写入的 stage/pattern/complexity 文件。
+        #
+        # === 旧 per-api-classify 块（已注释，需要时取消注释即可恢复）===
+        # _prx_ap_path = _active_stage_path()
+        # if _prx_ap_path:
+        #     _prx_sid = _extract_session_id_from_stage_path(_prx_ap_path)
+        #     _prx_root = str(_find_project_root_for_stage_path(_prx_ap_path))
+        # else:
+        #     _prx_sid = _prx_root = None
+        #
+        # if _prx_sid and _prx_root and _increment_and_should_classify():
+        #     _ctx = _extract_classification_context(body)
+        #     if _ctx:
+        #         log.info(
+        #             f"[per-api-classify:session={_prx_sid}] "
+        #             f"计数器到达阈值，触发 LLM 重新分类..."
+        #         )
+        #         try:
+        #             _clf_result = _proxy_llm_classify(_ctx)
+        #             _new_stage = _clf_result.get("stage", "default")
+        #             _new_pattern = _clf_result.get("pattern", "feature")
+        #             _new_score = _clf_result.get("complexity_score", 50)
+        #             _new_label = _clf_result.get("complexity_label", "medium")
+        #             _new_pconf = _clf_result.get("pattern_confidence", 0.5)
+        #             _new_cconf = _clf_result.get("complexity_confidence", 0.5)
+        #             _new_reason = _clf_result.get("reasoning", "")
+        #             log.info(
+        #                 f"[per-api-classify:session={_prx_sid}] "
+        #                 f"结果: stage={_new_stage} pattern={_new_pattern} "
+        #                 f"complexity={_new_label}({_new_score}) "
+        #                 f"reason={_new_reason}"
+        #             )
+        #             # 写回 state 文件 —— 下一条请求的 read_stage() / read_pattern()
+        #             # / read_complexity() 自动使用新分类结果
+        #             _write_stage_from_proxy(_new_stage)
+        #             _write_pattern_from_proxy(_new_pattern, _new_pconf)
+        #             _write_complexity_from_proxy(
+        #                 _new_score, _new_label, _new_cconf,
+        #                 source="proxy_per_api",
+        #             )
+        #         except Exception as _clf_exc:
+        #             log.warning(
+        #                 f"[per-api-classify:session={_prx_sid}] "
+        #                 f"LLM 分类失败（静默，保留现有分类）: {_clf_exc}"
+        #             )
+        # === 旧 per-api-classify 块结束 ===
 
         # 2) 读 model_<sid> 文件（stage_detector 上一回合写入的覆盖）
         if not model_override:
