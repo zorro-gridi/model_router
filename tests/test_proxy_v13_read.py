@@ -54,10 +54,14 @@ def _write_legacy_files(project_root: Path, sid: str, **fields) -> None:
     """写入旧 9 文件（v1.2 格式）。kwargs: stage/model_override/pattern/complexity/..."""
     claude_dir = project_root / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
+    # 字段名 → 文件名前缀的映射（与 state_persistence.read_legacy() 一致）
+    # v1.2 文件名是短名（model_<sid>），不是 model_override_<sid>
+    prefix_map = {"model_override": "model"}
     for key, val in fields.items():
         if val is None:
             continue
-        path = claude_dir / f"{key}_{sid}"
+        prefix = prefix_map.get(key, key)
+        path = claude_dir / f"{prefix}_{sid}"
         if key in ("stage", "model_override"):
             path.write_text(f"{val}\n", encoding="utf-8")
         else:

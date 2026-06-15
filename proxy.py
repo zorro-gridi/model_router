@@ -144,6 +144,48 @@ logging.basicConfig(
 )
 log = logging.getLogger("stage-router")
 
+# ── V1.3 读侧切换（Stage 6.2）─────────────────────────────────────────────────
+
+def _v13_resolve_decision(sid: str, project_root: str) -> dict | None:
+    """V1.3 读侧：从 session_state_<sid>.json（首选）→ 旧 9 文件（fallback）。
+
+    Feature flag:
+      MODEL_ROUTER_V13_READ=0 → 跳过新格式,仅读旧文件（v1.2 兼容）。
+      MODEL_ROUTER_V13_READ=1（默认）→ 优先新格式,失败回退旧文件。
+
+    Returns:
+        - 新格式胜出:返回 `state["decision"]`(可能为 `{}` 表示决策未初始化)
+        - 旧格式 fallback:返回 read_legacy 聚合 dict（含 stage/model_override/...）
+        - 都没有:None
+    """
+    flag = os.environ.get("MODEL_ROUTER_V13_READ", "1").lower()
+    v13_on = flag not in ("0", "false", "no", "off")
+
+    # 延迟导入：state_persistence 启动期不可用时不影响 proxy 启动
+    try:
+        from state_persistence import SessionStateStore
+    except Exception:
+        return None
+
+    store = SessionStateStore()
+
+    if v13_on:
+        new_state = store.read_new(sid, project_root)
+        if isinstance(new_state, dict):
+            decision = new_state.get("decision")
+            # decision 字段缺失或 None → 视为未初始化 → 返回 {}（proxy 据此判空）
+            if decision is None:
+                return {}
+            if isinstance(decision, dict):
+                return decision
+            # 决策字段类型异常 → 回退到 legacy
+        # 新文件不存在或损坏 → fallback 到 legacy
+        return store.read_legacy(sid, project_root)
+
+    # flag 关闭 → 不读新格式,直接读 legacy
+    return store.read_legacy(sid, project_root)
+
+
 # ── 阶段读取（分 session 管理）─────────────────────────────────────────────────
 
 def _read_stage_file(path: Path) -> str | None:
