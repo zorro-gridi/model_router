@@ -10,6 +10,13 @@ V1.3 §7 决策权重配置化。
   3. YAML 文件损坏 / schema 不匹配 → 降级为 _PLACEHOLDER_WEIGHTS
   4. `get_weights()` 模块级缓存，重复调用应返回同一对象
   5. YAML 顶层必须有 4 类：tool / file_type / file_lines / runtime_signal
+
+runtime_signal 字段漂移（已知，未在测试中强制）：
+  - 加载契约只锁"4 大类存在 + core tool 键"，不锁 runtime_signal 具体 key
+  - YAML 声明 vs runtime_tracker.py 实际产出的 key 不一致是**已知漂移**
+    （详见 decision_weights.yaml 顶部"重要说明"小节）
+  - 后续若修复漂移（让 runtime_tracker 产出与 YAML 一致的 key），需
+    在本文件加 TestRuntimeSignalKeyAlignment 用例锁住新契约
 """
 
 import os

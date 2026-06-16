@@ -4,15 +4,46 @@
 # 加载；YAML 缺失或损坏降级为 stage_config._PLACEHOLDER_WEIGHTS 硬编码兜底。
 #
 # 四类权重：
-#   tool         — 工具调用本身信号（每种 tool_name 命中后得分）
-#   file_type    — 操作文件类型信号（按扩展名加权）
-#   file_lines   — 文件规模分层（小/中/大）
+#   tool           — 工具调用本身信号（每种 tool_name 命中后得分）
+#   file_type      — 操作文件类型信号（按扩展名加权）
+#   file_lines     — 文件规模分层（小/中/大）
 #   runtime_signal — 运行时异常信号（bash 非零退出、测试失败等）
 #
 # 调参建议：
 #   - TodoWrite 权重必须 > Bash（强信号 vs 普通信号，test_stage_config_weights 锁契约）
 #   - 全部字段保持 int（loader 会强制 int 转换）
 #   - 修改后无需重启服务，下次冷启动自动加载
+#
+# ── 重要：runtime_signal 字段是项目自定义概念，非 Claude Code 内置 ─────────
+#
+# Claude Code hooks 系统只暴露生命周期事件（PostToolUse / PostToolUseFailure
+# / PreToolUse / UserPromptSubmit / Stop 等），协议头不包含任何"信号分值"
+# 字段。本表 runtime_signal 下的 key 是 model_router 项目**自建**的：
+#
+#   数据源 — 完全依赖 PostToolUse 的 tool_output 字符串解析：
+#     raw_event["tool_output"] = tool 执行返回的 stdout/stderr 文本
+#     协议头无 exit_code / is_error / status 等结构化字段
+#
+#   实际生产者 — hooks/model_router/runtime_tracker.py:_extract_runtime_signal()
+#     通过子串匹配（"exit code 1"、"Error:"、"tests failed" 等）推断信号类型
+#
+#   已知限制（vs Claude Code 协议字段）：
+#     1. 字符串匹配易误报（如编译告警含 "Error:" 也算 bash_nonzero_exit）
+#     2. 退出码只能"猜"，不能直接读（PostToolUseFailure 事件是官方通道，
+#        但本项目目前未消费，未用其 error 字段）
+#     3. Claude Code 升级若改 tool_output 格式，所有 signal 会静默失效
+#
+#   YAML key 与代码产出 key 的对应（见 runtime_tracker._extract_runtime_signal）：
+#     yaml 声明              代码实际产出         状态
+#     ──────────────────    ──────────────────   ──────────
+#     bash_nonzero_exit  →  bash_nonzero_exit  ✓ 一致
+#     grep_large_hits    →  grep_many_hits     ✗ 漂移（YAML 权重不被命中）
+#     search_large_hits  →  (无)               ✗ 完全缺失
+#     edit_retry_loop    →  large_diff         ✗ 漂移 + 语义不同
+#     test_failure       →  test_failure       ✓ 一致（但通用字符串匹配）
+#
+#   配套测试：tests/test_yaml_weights.py（锁"4 大类存在"）
+#   详见：hooks/model_router/runtime_tracker.py 第 132-175 行
 # ─────────────────────────────────────────────────────────────────────────
 
 tool:
@@ -57,8 +88,9 @@ file_lines:
   large: 3 # > 300 行
 
 runtime_signal:
-  bash_nonzero_exit: 4 # Bash 命令非零退出
-  grep_large_hits: 3 # Grep 命中数过多（> 100）
-  search_large_hits: 3 # WebSearch 命中数过多
-  edit_retry_loop: 2 # 同文件 Edit 重试循环
-  test_failure: 5 # 测试失败（强信号，提示进入调试阶段）
+  # ── 以下 key 与代码产出的对应见顶部"重要说明"小节 ──
+  bash_nonzero_exit: 4 # Bash 命令非零退出  [code:bash_nonzero_exit ✓]
+  grep_large_hits: 3 # Grep 命中数过多（> 100）  [code:grep_many_hits ✗ 漂移]
+  search_large_hits: 3 # WebSearch 命中数过多  [code:无 ✗ 完全缺失]
+  edit_retry_loop: 2 # 同文件 Edit 重试循环  [code:large_diff ✗ 漂移]
+  test_failure: 5 # 测试失败（强信号，提示进入调试阶段）  [code:test_failure ✓]
