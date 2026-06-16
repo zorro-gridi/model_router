@@ -75,6 +75,15 @@ PORT                 = int(os.environ.get("STAGE_ROUTER_PORT", "7878"))
 # 详见 _is_internal_request() 注释。Claude Code 的请求不会带这个 header。
 INTERNAL_SOURCE_HEADER = os.environ.get("STAGE_ROUTER_INTERNAL_HEADER", "X-Stage-Router-Source")
 
+# ── Sticky Fallback TTL（2026-06-16 引入）─────────────────────
+# sticky fallback 文件的总有效期。TTL 到期后 read_fallback() 自动 unlink，
+# 回到主 provider 路由。最坏情况 3h 自动恢复。
+STICKY_TTL_SECONDS = int(os.environ.get("STAGE_ROUTER_STICKY_TTL_SECONDS", "10800"))  # 默认 3h
+
+# auto-recovery 清 sticky 时的 grace period：探测发现恢复时若 sticky failed_at
+# 在最近 N 秒内写入，跳过清除，避免清掉探测期间用户新写的 sticky（罕见但可能）。
+AUTO_RECOVERY_GRACE_SECONDS = int(os.environ.get("STAGE_ROUTER_AUTO_RECOVERY_GRACE_SECONDS", "30"))
+
 # 阶段 → (provider_base_url, model, api_key_env, protocol)
 #
 # 协议方向（默认端到端都是 Anthropic Messages API）：
@@ -677,51 +686,132 @@ def read_fallback() -> str | None:
     读取当前 session 的 sticky fallback provider 名。
 
     多 session 并发修复（2026-06-14）：通过 _active_stage_path() 解析 session。
-    向后兼容（2026-06-16）：
-      - 新格式：fallback_<sid> 存 provider 名（"minimax"/"deepseek"）→ 直接返回
-      - 旧格式：fallback_<sid> 存 model 名（"deepseek-v4-flash"）→ 通过
-        MODEL_TO_PROVIDER 自动转换为 provider 名
+    格式演进：
+      - v3（2026-06-16）：fallback_<sid> 是 JSON `{"provider": ..., "failed_at": ts,
+        "expire_ts": ts}`。TTL 到期自动 unlink 并返回 None。
+      - v2：content 是 provider 名（"minimax"/"deepseek"）→ 直接返回
+      - v1：content 是 model 名（"deepseek-v4-flash"）→ 通过 MODEL_TO_PROVIDER
+        自动转换为 provider 名（视为过期，会自动清除）
+
     返回 None 表示"无 sticky fallback"——正常走主模型路由。
     """
     p = _active_stage_path()
-    if p:
-        content = _read_stage_file(_fallback_file_path(p))
-        if content:
-            # 新格式：content 是 provider 名
-            if content in KNOWN_PROVIDER_NAMES:
-                return content
-            # 向后兼容：旧格式 content 是 model 名 → 映射到 provider
-            prov = MODEL_TO_PROVIDER.get(content)
-            if prov:
+    if not p:
+        return None
+    fb_path = _fallback_file_path(p)
+    content = _read_stage_file(fb_path)
+    if not content:
+        return None
+
+    # ── v3 JSON 格式 + TTL 校验 ──
+    if content.startswith("{"):
+        try:
+            data = json.loads(content)
+            provider = data.get("provider")
+            expire_ts = int(data.get("expire_ts", 0))
+            now = int(time.time())
+            if not provider or provider not in KNOWN_PROVIDER_NAMES:
+                log.warning(f"fallback_<sid> JSON 内容 provider 无效: {data!r}，清除")
+                _safe_unlink(fb_path)
+                return None
+            if expire_ts and now >= expire_ts:
                 log.info(
-                    f"fallback_<sid> 旧格式（model={content}）→ "
-                    f"自动映射到 provider={prov}"
+                    f"sticky fallback 已过期 (provider={provider}, "
+                    f"expire_ts={expire_ts}, now={now})，清除并回到主 provider 路由"
                 )
-                return prov
-            # 无法识别
-            log.warning(f"fallback_<sid> 内容无法识别: {content!r}")
+                _safe_unlink(fb_path)
+                return None
+            return provider
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            log.warning(f"fallback_<sid> JSON 解析失败（视为过期清除）: {e}")
+            _safe_unlink(fb_path)
+            return None
+
+    # ── v2 旧格式：provider 名 ──
+    if content in KNOWN_PROVIDER_NAMES:
+        log.debug(f"fallback_<sid> 旧格式（v2 provider={content}），"
+                  f"将由下次 write 自动升级到 v3")
+        return content
+
+    # ── v1 旧格式：model 名 → 映射到 provider（视为过期，自动清除）──
+    prov = MODEL_TO_PROVIDER.get(content)
+    if prov:
+        log.info(
+            f"fallback_<sid> 旧格式（v1 model={content}）→ 自动映射到 provider={prov}，"
+            f"并清除旧文件（避免卡住 session）"
+        )
+        _safe_unlink(fb_path)
+        return prov
+
+    # ── 无法识别：视为损坏，清除 ──
+    log.warning(f"fallback_<sid> 内容无法识别: {content!r}，清除")
+    _safe_unlink(fb_path)
     return None
 
 
 def write_fallback(provider: str) -> None:
-    """写入 sticky fallback provider 名到 fallback_<sid>（多 session 并发安全）。
+    """写入 sticky fallback provider 名到 fallback_<sid>（向后兼容 thin wrapper）。
 
-    provider 是失败的 provider 名（如 "minimax"）。
-    后续请求检测到主模型的 provider == sticky provider 时，
-    将切换到替代 provider 并内部按 complexity 动态选模型。
+    推荐使用 try_write_fallback() 以获知"是否是首个写入者"。
+    本函数保留是为了其他调用点（如 stage_detector）无需改签名。
+    """
+    try_write_fallback(provider)
+
+
+def try_write_fallback(provider: str) -> bool:
+    """原子写入 sticky fallback（O_CREAT|O_EXCL）。
+
+    并发 N 个请求首次失败时，仅首个调用会成功创建文件并返回 True；
+    其余返回 False。调用方据此决定是否执行 fb retry——避免并发放大
+    对替代 provider 的瞬时 N 倍流量冲击。
+
+    Args:
+        provider: 失败的 provider 名（如 "minimax"）。
+
+    Returns:
+        True  — 当前进程/线程是首个写入者，应执行 fb retry
+        False — sticky 已被其他并发请求写入，或写入失败；跳过 fb retry
     """
     p = _active_stage_path()
-    if p:
+    if not p:
+        return False
+    fb_path = _fallback_file_path(p)
+    try:
+        fb_path.parent.mkdir(parents=True, exist_ok=True)
+        now = int(time.time())
+        payload = json.dumps({
+            "provider": provider,
+            "failed_at": now,
+            "expire_ts": now + STICKY_TTL_SECONDS,
+        }, ensure_ascii=False)
+        # O_CREAT|O_EXCL：原子创建，失败 → FileExistsError
+        fd = os.open(str(fb_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         try:
-            fb_path = _fallback_file_path(p)
-            fb_path.parent.mkdir(parents=True, exist_ok=True)
-            fb_path.write_text(provider + "\n")
-            log.info(
-                f"sticky provider fallback 已激活: {provider} 不可用，"
-                f"后续请求将路由到替代 provider"
-            )
-        except Exception as e:
-            log.error(f"写入 fallback_<sid> 失败: {e}")
+            os.write(fd, payload.encode("utf-8"))
+        finally:
+            os.close(fd)
+        log.info(
+            f"sticky provider fallback 已激活: {provider} 不可用，"
+            f"TTL={STICKY_TTL_SECONDS}s（到 {now + STICKY_TTL_SECONDS}），"
+            f"后续请求将路由到替代 provider"
+        )
+        return True
+    except FileExistsError:
+        # 并发竞争：其他请求已写入
+        log.debug(f"sticky fallback 已被其他请求写入（O_EXCL 失败），跳过 fb retry")
+        return False
+    except Exception as e:
+        log.error(f"写入 fallback_<sid> 失败: {e}")
+        return False
+
+
+def _safe_unlink(path: Path) -> None:
+    """静默 unlink（缺失文件不报错）。"""
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError as e:
+        log.debug(f"unlink {path} 失败（已忽略）: {e}")
 
 
 def clear_fallback() -> None:
@@ -1434,6 +1524,7 @@ def forward_request(
     api_key_env: str,
     protocol: str = "anthropic",
     dry_run: bool = False,
+    timeout: float = 300,
 ) -> tuple[int, dict, bytes]:
     """
     将 CC 发来的 Anthropic Messages 请求转发到目标 provider。
@@ -1444,6 +1535,10 @@ def forward_request(
                            不做请求/响应格式转换（端到端都是 Anthropic 协议）。
       "openai"           — 上游是 OpenAI Chat Completions 兼容（如硅基流动）：
                            自动做 Anthropic ↔ OpenAI 协议转换。
+
+    timeout（2026-06-16 引入）：
+      单次 HTTP 请求超时秒数，默认 300s 保持向后兼容。
+      健康探测（health_checker.py）会传 5s 实现快速失败。
 
     注意：协议判断基于 STAGE_MODELS 中显式的 `protocol` 字段，
     不要再用 URL 启发式（如 "deepseek" in target_base）判断——
@@ -1548,7 +1643,7 @@ def forward_request(
 
     req = urllib.request.Request(url, data=new_body, headers=fwd_headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             resp_body = resp.read()
             resp_headers = dict(resp.headers)
             if protocol == "openai":
@@ -1974,15 +2069,41 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             #      两个 provider 同时出问题时 sticky 永不写入，导致无限循环：
             #      主→fail→备→fail→不写 sticky→主→fail→...
             #   3. 用户可通过 ~provider reset 或 ~model reset 随时清除
+            #
+            # 2026-06-16 原子写改造：try_write_fallback 用 O_CREAT|O_EXCL
+            # 仅首个写入者返回 True；并发失败的请求**跳过本次 fb retry**，
+            # 直接返回主模型错误（CC SDK 会触发新请求，新请求读 sticky 走
+            # provider swap 路径），避免对替代 provider 的 N 倍流量放大。
+            i_am_first_writer = False
             if not sticky_provider and not model_override:
                 failed_provider = MODEL_TO_PROVIDER.get(session_model)
                 if failed_provider:
-                    write_fallback(failed_provider)
-                    log.info(
-                        f"[{routing_source}] 主 provider {failed_provider} "
-                        f"不可用（status={status}），已写入 sticky fallback，"
-                        f"后续请求将直接路由到替代 provider"
-                    )
+                    i_am_first_writer = try_write_fallback(failed_provider)
+                    if i_am_first_writer:
+                        log.info(
+                            f"[{routing_source}] 主 provider {failed_provider} "
+                            f"不可用（status={status}），已原子写入 sticky fallback（TTL="
+                            f"{STICKY_TTL_SECONDS}s），本请求执行 fb retry"
+                        )
+                    else:
+                        log.debug(
+                            f"[{routing_source}] sticky 已被其他并发请求写入，"
+                            f"本请求跳过 fb retry，由 CC SDK 决定重试"
+                        )
+            if not i_am_first_writer and not sticky_provider and not model_override \
+                    and failed_provider:
+                # 并发写失败者：直接回写主模型的失败响应，不再向 fb 转发。
+                # CC SDK 的重试会触发新请求，新请求读 sticky → 走 provider swap。
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type",
+                                     resp_headers.get("content-type", "application/json"))
+                    self.send_header("Content-Length", str(len(resp_body)))
+                    self.end_headers()
+                    self.wfile.write(resp_body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
             status, resp_headers, resp_body = forward_request(
                 method="POST",
                 path=self.path,
@@ -2124,8 +2245,15 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         # 健康检查
         if self.path == "/health":
-            payload = {"status": "ok", "sticky_fallback": read_fallback(),
-                       "workflow": _read_workflow_state_safe()}
+            from health_checker import get_health_status
+            payload = {
+                "status": "ok",
+                "sticky_fallback": read_fallback(),
+                "workflow": _read_workflow_state_safe(),
+                # 2026-06-16：sticky TTL + 健康探测状态（供调试 / 监控）
+                "sticky_ttl_seconds": STICKY_TTL_SECONDS,
+                "health_probes": get_health_status(),
+            }
 
             model_override = read_model_override()
             if model_override:
@@ -2309,6 +2437,13 @@ def main():
         daemon_threads = True  # 主线程退出时未完成的 worker 线程自动结束
 
     server = _ThreadedRouterServer(("127.0.0.1", args.port), RouterHandler)
+
+    # ── 启动 sticky fallback 健康探测线程（2026-06-16 引入）──
+    # 守护线程：定期探测失败 provider 是否恢复，恢复则自动清除 sticky。
+    # PROBE_ENABLED=false 时不启动。
+    from health_checker import start_health_checker
+    start_health_checker()
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
