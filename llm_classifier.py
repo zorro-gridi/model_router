@@ -390,6 +390,12 @@ def classify(prompt: str, config_override: Optional[dict] = None) -> dict:
     # ── 校验 & 规范化 ──
     result = _validate_and_normalize(result, prompt)
 
+    # ── is_valid_prompt 透传 ──
+    # LLM 返回 is_valid_prompt=False 表示 prompt 是任务续接指令
+    # （如 "go ahead" / "continue" / "stop"），不应触发路由状态变更。
+    # 调用方（stage_detector / proxy）据此跳过 stage/pattern/complexity 覆写。
+    result["is_valid_prompt"] = raw.get("is_valid_prompt", True)
+
     result["source"] = "llm"
     _log_classify_result(result)
     return result

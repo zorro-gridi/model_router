@@ -646,6 +646,19 @@ def main():
                 log("WARN", f"LLM classifier failed, fallback to V1 heuristic: {e!r}")
                 # llm_result 保持 None → 下游走 V1 关键词分支
 
+            # ── is_valid_prompt 守卫 ──
+            # LLM 判定 prompt 为任务续接指令（如 "go ahead" / "continue" / "stop"），
+            # 不应触发路由状态变更。跳过后续所有 stage/pattern/complexity/decision 覆写，
+            # 保持 session 上一次的路由状态不变。
+            if llm_result and llm_result.get("is_valid_prompt") is False:
+                log("INFO",
+                    f"LLM classifier: is_valid_prompt=False, "
+                    f"跳过路由状态更新，保持 session 现有路由不变 "
+                    f"(reason={llm_result.get('reasoning', '')!r})"
+                )
+                # 提前返回，不写任何 state 文件
+                return None
+
         # ── Stage 检测 ──
         # 优先级：显式 ~stage > LLM 分类器 > V1 关键词
         new_stage = detect_stage(prompt)
