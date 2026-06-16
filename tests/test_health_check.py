@@ -429,9 +429,10 @@ class LeaderElectionTest(unittest.TestCase):
                 acquired2 = False
             finally:
                 os.close(fd2)
-            # 注：同进程持有 LOCK_EX 后新 fd flock LOCK_EX 也成功（POSIX 语义），
-            # 跨进程才会冲突。本测试主要验证 acquire/release 闭环不抛异常。
-            self.assertTrue(acquired2)
+            # 注：macOS / BSD flock 同进程新 fd 仍会抛 BlockingIOError（不可重入），
+            # 这正是我们要测的语义——持有者拒绝其他获取（包括同进程模拟的另一实例）。
+            # Linux 上同进程 flock 允许重入，跨进程才冲突；这里以 macOS 行为为准。
+            self.assertFalse(acquired2, "同进程新 fd flock LOCK_NB 应被已有 LOCK_EX 阻塞")
         finally:
             _release_leader_lock()
 
