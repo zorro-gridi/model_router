@@ -1828,6 +1828,7 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                         project_root=metric_project_root,
                         route_model=session_model,
                         task_complexity=complexity_label,
+                        fallback=read_fallback(),
                     )
                 except Exception as _state_exc:
                     log.warning(
