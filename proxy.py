@@ -1761,10 +1761,8 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 protocol=fb_proto,
                 dry_run=self.dry_run,
             )
-            # 备用模型成功 + 之前无 sticky + 非 model_override + 非 reset 请求 → 写入 sticky
-            # reset 请求排除：用户 ~model reset 已清除 sticky，不应立即被本次请求
-            # 的 fallback 重新写入（否则清理无意义，且复杂度分类可能不一致）。
-            if not sticky_fb and not _is_retriable(status) and not model_override and not prompt_is_reset:
+            # 备用模型成功 + 之前无 sticky + 非 model_override → 写入 sticky fallback
+            if not sticky_fb and not _is_retriable(status) and not model_override:
                 write_fallback(fb_model)
         elif _is_retriable(status) and internal_req:
             log.info(
