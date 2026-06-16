@@ -7,7 +7,7 @@ V1.3 §8 PostToolUse 接入 / dispatcher + 2 worker。
 从 stdin 读取 PostToolUse hook 原始 JSON → 按 tool_name
 路由到对应 worker → 写入 model_router_state_<sid>.json：
 
-  - TodoWrite → todowrite_analyzer + runtime_tracker（双写）
+  - TodoWrite / Task* → todowrite_analyzer + runtime_tracker（双写）
   - 其他工具 → runtime_tracker（仅 runtime_score）
 
 Stage 5 扩展（V1.3 §6.4 决策链路端到端）：
@@ -15,7 +15,7 @@ Stage 5 扩展（V1.3 §6.4 决策链路端到端）：
   - 调 decision_engine.maybe_redecide() 检查 lock 阈值
 
 V1.3 §4.3 / §9.3：is_first_todo_write 跟踪
-  - 首次 TodoWrite 标记后才触发升级逻辑
+  - 首次 TodoWrite / Task* 标记后才触发升级逻辑
   - 首次 TodoWrite 可选 LLM 深度分析（analyze_with_llm）
 
 入口函数：
@@ -47,6 +47,10 @@ from todowrite_analyzer import TodoWriteAnalyzer
 _tracker = RuntimeTracker()
 _analyzer = TodoWriteAnalyzer()
 
+# 触发 analyzer 写入 todowrite_signal 的工具名集合
+# v2026-06: 兼容旧 TodoWrite + 新 Task* 系列
+_TASK_TOOL_NAMES = ("TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput")
+
 
 def dispatch(sid: str, project_root: str, raw_event: dict) -> None:
     """按 tool_name 路由 PostToolUse 事件到对应 worker。
@@ -65,9 +69,11 @@ def dispatch(sid: str, project_root: str, raw_event: dict) -> None:
         # ── 所有工具都走 RuntimeTracker（累积 runtime_score） ──
         _tracker.track(sid, project_root, raw_event)
 
-        # ── TodoWrite 额外走 TodoWriteAnalyzer（写 todowrite_signal） ──
-        if tool_name == "TodoWrite":
-            _handle_todowrite(sid, project_root, raw_event)
+        # ── TodoWrite / Task* 额外走 TodoWriteAnalyzer（写 todowrite_signal） ──
+        # v2026-06: TodoWrite 已被 CC 2.1.142+ 移除，改用 Task* 系列。
+        # 共享同一个 analyzer 入口：磁盘权威源对 Task* 而言等同旧 TodoWrite 的 payload。
+        if tool_name in _TASK_TOOL_NAMES:
+            _handle_task_tool(sid, project_root, raw_event)
 
         # ── Stage 5.3: 调 maybe_redecide 检查 lock 阈值 ──
         # 读 session_state 取最新 runtime_score + todowrite_signal
@@ -115,18 +121,22 @@ def _read_latest_signals(sid: str, project_root: str) -> tuple[int, dict | None]
     return runtime_score, todo
 
 
-def _handle_todowrite(sid: str, project_root: str, raw_event: dict) -> None:
-    """处理 TodoWrite 事件：分析 todos → 写入 todowrite_signal。
+def _handle_task_tool(sid: str, project_root: str, raw_event: dict) -> None:
+    """处理 TodoWrite / Task* 事件：分析 task 列表 → 写入 todowrite_signal。
 
     V1.3 §4.3 / §9.3:
       - 跟踪 is_first_todo_write（读 state 判断是否已写入过 signal）
-      - 首次 TodoWrite 尝试 LLM 深度分析，失败回退关键词启发式
-      - 非首次 TodoWrite 使用关键词启发式（轻量）
+      - 首次触发尝试 LLM 深度分析，失败回退关键词启发式
+      - 非首次使用关键词启发式（轻量）
+
+    v2026-06: 由 ``_handle_todowrite`` 改名而来，同时支持新 CC 的 Task*
+    工具（TaskCreate / TaskUpdate / TaskList / TaskGet / TaskOutput）。
+    委托给 ``hooks.common.todo_payload.extract_tasks_from_payload`` 统一解析。
     """
     # ── 复用 hooks.common.todo_payload 解析，与 todowrite_sync 保持一致 ──
     # 区分两种"无 todos"：None（payload 里没有 todos 字段，不该触发任何写入）vs
     # []（调过 TodoWrite 但清空了，照常走 analyze 落 empty_result）。
-    todos = _extract_todos(raw_event)
+    todos = _extract_tasks(raw_event)
     if todos is None:
         # 缺字段 / 非 dict / tool_input 缺 todos → 不写 signal
         return
@@ -136,7 +146,7 @@ def _handle_todowrite(sid: str, project_root: str, raw_event: dict) -> None:
 
     # ── 分析 ──
     if is_first:
-        # 首次 TodoWrite：尝试 LLM 深度分析（V1.3 §9.2）
+        # 首次：尝试 LLM 深度分析（V1.3 §9.2）
         signal = _analyzer.analyze_with_llm(todos, is_first=True)
     else:
         # 非首次：关键词启发式（轻量）
@@ -146,25 +156,25 @@ def _handle_todowrite(sid: str, project_root: str, raw_event: dict) -> None:
     _write_todowrite_signal(sid, project_root, signal)
 
 
-def _extract_todos(raw_event: dict):
-    """委托给 hooks.common.todo_payload.extract_todos_from_payload。
+def _extract_tasks(raw_event: dict):
+    """委托给 ``hooks.common.todo_payload.extract_tasks_from_payload``。
 
     包一层的理由：
       1. handler 不直接依赖 hooks 包路径（避免 sys.path 不一致）
       2. 与 todowrite_sync 共用同一份解析逻辑，未来字段变动只改一处
-      3. ImportError 兜底：万一 hooks 包不可用（极少见）→ 退到手写解析
+      3. ImportError 兜底：万一 hooks 包不可用（极少见）→ 退到手写 TodoWrite 解析
     """
     try:
         # 兼容 inline import 与独立脚本两种调用方式
-        from hooks.common.todo_payload import extract_todos_from_payload
+        from hooks.common.todo_payload import extract_tasks_from_payload
     except ImportError:
-        # hooks 包不可用 → 退到手写解析（保持原行为）
+        # hooks 包不可用 → 退到手写 TodoWrite 解析（保持原行为，不支持 Task*）
         tool_input = raw_event.get("tool_input", {}) or {}
         if not isinstance(tool_input, dict):
             return None
         todos = tool_input.get("todos")
         return todos if isinstance(todos, list) else None
-    return extract_todos_from_payload(raw_event)
+    return extract_tasks_from_payload(raw_event)
 
 
 def _has_existing_todowrite_signal(sid: str, project_root: str) -> bool:
