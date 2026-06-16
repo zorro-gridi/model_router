@@ -880,18 +880,36 @@ def main():
         if session_id and cwd:
             try:
                 from state_persistence import SessionStateStore
+                from stage_config import STAGE_CONFIG
                 store = SessionStateStore()
                 _root = str(_find_project_root(
                     Path(cwd) if not isinstance(cwd, Path) else cwd, session_id))
+
+                # 初始化 route_model（最终实际路由模型），优先级：
+                #   1. model_override（显式 ~model 覆盖）
+                #   2. decision.final_model（LLM 分类器决策）
+                #   3. stage 默认主模型（STAGE_CONFIG）
+                #   4. 硬编码兜底
+                # proxy.py 在每次请求后会用 sticky swap / fallback retry 后的
+                # 最终模型回填此字段，保持 route_model 始终为最新路由状态。
+                resolved_stage = new_stage if new_stage else old_stage
+                init_route_model = (
+                    new_model
+                    or (decision_dict.get("final_model") if decision_dict else None)
+                    or STAGE_CONFIG.get(resolved_stage, {}).get("model")
+                    or "MiniMax-M3"
+                )
+
                 store.write(
                     sid=session_id,
                     project_root=_root,
-                    stage=(new_stage if new_stage else old_stage),
+                    stage=resolved_stage,
                     model_override=new_model,  # 本回合一次性 override（无持久文件）
                     pattern=read_pattern(session_id, cwd),
                     complexity=read_complexity(session_id, cwd),
                     batch=read_batch(session_id, cwd),
                     fallback=read_fallback(session_id, cwd),
+                    route_model=init_route_model,
                     decision=decision_dict,
                 )
                 log("INFO", f"v1.3 dual-write snapshot → {_root}/.claude/model_router_state_{session_id}.json")
