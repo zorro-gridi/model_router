@@ -57,6 +57,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from model_alias import detect_model_override  # 用户模型覆盖（最高路由优先级）
+# 2026-06-16：~model reset 现在对所有 session 生效，导入全局清除函数。
+# 延迟到函数体调用以避免 proxy 模块顶层副作用（load_plugin_env 等）影响 hook 启动。
+_clear_fallback_all = None  # type: ignore[var-annotated]
 
 # 阶段复杂度阈值（simple ≤ X，medium ≤ Y，> Y = complex）
 # 见 stage_config.COMPLEXITY_THRESHOLDS
@@ -598,9 +601,25 @@ def main():
 
         model_msg: str | None = None
         if is_reset:
-            # reset 现在是 no-op（无持久文件可清）；保留文案保持用户心智模型稳定
-            log("INFO", "prompt ~model reset: one-shot override, no persistent file to clear")
-            model_msg = "本回合无 model 覆盖需要清除（~model 是一次性指令）"
+            # 2026-06-16 行为变更：~model reset 现在对**所有 session** 生效。
+            # 原实现只清当前 session 的 fallback_<sid>，但 sticky 触发条件
+            # 是「主模型 API 失败」——进程/网络级问题，不分 session。
+            # 多 session 并发时所有 session 都会被同一波失败触发 sticky，
+            # reset 必须全局清才能让用户「主模型恢复后回到正常路由」的语义对齐。
+            # ~model 本身是一次性指令（不写 model_<sid>），但 sticky fallback
+            # 文件（fallback_<sid>）是持久存在的独立机制——仍然需要清。
+            global _clear_fallback_all
+            if _clear_fallback_all is None:
+                # 延迟 import：避免 proxy 顶层副作用（load_plugin_env 等）拖慢 hook
+                from proxy import clear_fallback_all as _cfa
+                _clear_fallback_all = _cfa
+            try:
+                n = _clear_fallback_all()
+                log("INFO", f"prompt ~model reset: 全局清除 sticky fallback ({n} 个文件)")
+                model_msg = f"~model reset：已清除 {n} 个 session 的 sticky fallback"
+            except Exception as _e:
+                log("WARN", f"~model reset clear_fallback_all 失败: {_e!r}")
+                model_msg = "~model reset 失败（fallback 清除异常）"
         elif new_model:
             # 仅打印 + 提示用户，不再写 model_<sid>
             log("INFO", f"prompt ~model one-shot override: {new_model} (no persist)")

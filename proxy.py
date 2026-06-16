@@ -685,6 +685,9 @@ def clear_fallback() -> None:
     用户执行 ~model reset 时调用：主模型（如 MiniMax-M3）网络恢复后，
     用户手动解除 sticky，后续请求回到正常 stage 路由。
     多 session 并发安全（通过 _active_stage_path() 解析当前 session）。
+
+    注意：~model reset 现在调用的是 clear_fallback_all()（全局清），
+    本函数保留供 stage_detector / 单 session 清理场景使用。
     """
     p = _active_stage_path()
     if p:
@@ -697,6 +700,69 @@ def clear_fallback() -> None:
                 log.debug("sticky fallback 文件不存在，无需清除")
         except Exception as e:
             log.error(f"清除 fallback_<sid> 失败: {e}")
+
+
+def clear_fallback_all() -> int:
+    """~model reset 全局生效：清除所有 session 的 sticky fallback 文件。
+
+    背景（2026-06-16 修复）：
+      原实现 clear_fallback() 只清当前 session 的 fallback_<sid>。
+      但 sticky 触发条件是「主模型 API 失败」——这是**进程/网络级问题**，
+      不分 session。多 session 并发时所有 session 都会被同一波失败触发 sticky，
+      用户执行 ~model reset 时只清一个 session 显然不够。
+
+    实现：
+      1. 主路径：从 state_index.json 读所有活跃 session 入口
+         （每个 entry 含 session_id + project_root）→ 派生 fallback_<sid> 删除。
+      2. 兜底：再扫一遍每个 project_root/.claude/ 目录里的 fallback_* glob，
+         防止 state_index 缺失/损坏时漏掉。
+
+    Returns:
+        实际删除的 fallback_<sid> 文件数。
+    """
+    removed = 0
+    seen_claude_dirs: set[Path] = set()
+
+    # ── 主路径：state_index.json → 所有活跃 session ──
+    all_entries = _read_state_index_all()
+    for path_key, entry in all_entries.items():
+        if not isinstance(entry, dict):
+            continue
+        sid = entry.get("session_id")
+        if not sid:
+            continue
+        try:
+            claude_dir = Path(path_key) / ".claude"
+        except (TypeError, ValueError):
+            continue
+        seen_claude_dirs.add(claude_dir)
+        fb_path = claude_dir / f"fallback_{sid}"
+        try:
+            if fb_path.exists():
+                fb_path.unlink()
+                removed += 1
+                log.info(f"  - 已清除: {fb_path}")
+        except Exception as e:
+            log.error(f"清除 {fb_path} 失败: {e}")
+
+    # ── 兜底：扫已知 .claude 目录里所有 fallback_*（防止 state_index 漏报）──
+    for claude_dir in seen_claude_dirs:
+        if not claude_dir.is_dir():
+            continue
+        try:
+            for fb_path in claude_dir.glob("fallback_*"):
+                if not fb_path.is_file():
+                    continue
+                try:
+                    fb_path.unlink()
+                    removed += 1
+                    log.info(f"  - 已清除（兜底扫描）: {fb_path}")
+                except Exception as e:
+                    log.error(f"清除 {fb_path} 失败: {e}")
+        except Exception as e:
+            log.debug(f"扫描 {claude_dir} 失败: {e}")
+
+    return removed
 
 
 # ── Pattern / Complexity / Batch / State-Index 读取（设计文档 §6.2-6.4 / §13）──
@@ -1620,8 +1686,14 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             # ~model 虽然已改为一次性的 model_override（不写 model_<sid> 持久文件），
             # 但 sticky fallback 文件（fallback_<sid>）是持久存在的独立机制——
             # 主模型（如 MiniMax-M3）网络恢复后，用户通过 ~model reset 手动解除 sticky。
-            log.info("prompt ~model reset：清除 sticky fallback，后续请求回到正常路由")
-            clear_fallback()
+            #
+            # 2026-06-16 行为变更：reset 现在对**所有 session** 生效。
+            # 原因：sticky 触发条件是「主模型 API 失败」——进程/网络级问题，
+            # 不分 session。多 session 并发时所有 session 都会被同一波失败触发 sticky，
+            # 用户执行 ~model reset 时只清当前 session 显然不够，必须全局清。
+            log.info("prompt ~model reset：全局清除所有 session 的 sticky fallback")
+            n = clear_fallback_all()
+            log.info(f"~model reset 已清除 {n} 个 sticky fallback 文件")
 
         # ── Per-API-Request 分类（2026-06-16 起已禁用，保留代码以备回滚）────
         # 旧逻辑：计数器在 UserPromptSubmit (Hook) 时重置为 0；本回合若计数器到达
