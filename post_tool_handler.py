@@ -41,6 +41,27 @@ from runtime_tracker import RuntimeTracker
 from todowrite_analyzer import TodoWriteAnalyzer
 
 
+# 共享 todos 提取器（hooks/common/todo_payload.py）：
+# 把"从 hook payload 解 todos"集中到一处，post_tool_handler 与
+# hooks.session.todowrite_sync 复用同一份实现，避免在两个调用方
+# 各写一份容错逻辑出现分歧。
+# 注意：不能在模块顶层直接 import —— post_tool_handler 作为子进程运行
+# 时 hooks/ 父包未必在 sys.path；测试代码会动态把 _repo_root 加到
+# sys.path，import 必须在函数体内做以走运行时路径。
+def _extract_todos(payload):
+    """从 PostToolUse payload 提取 todos 列表（透传到共享提取器）。
+
+    等价于 hooks.common.todo_payload.extract_todos_from_payload(payload)，
+    只是把入口名字以 _extract_todos 暴露在 post_tool_handler 命名空间内，
+    方便测试和外部调用方按既有约定引用。
+
+    共享函数自身的边界（缺字段、类型错误、JSON 异常）已在
+    todo_payload 单测覆盖——本函数零额外逻辑。
+    """
+    from hooks.common.todo_payload import extract_todos_from_payload
+    return extract_todos_from_payload(payload)
+
+
 # ── Dispatch ──────────────────────────────────────────────────────────────
 
 # 模块级单例（避免每次 dispatch 都创建实例）
