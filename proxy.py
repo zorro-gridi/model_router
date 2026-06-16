@@ -1649,6 +1649,36 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 "models": [model],
             }
 
+        # ═══════════════════════════════════════════════════════════════════════
+        # 复杂度感知 fallback 升级（2026-06-16）
+        # ═══════════════════════════════════════════════════════════════════════
+        # 旧策略：fallback 仅按 stage 从 FALLBACK_MODELS 查表，不感知任务复杂度。
+        #   例如 implement/default stage 固定 fallback = deepseek-v4-flash，
+        #   导致 MiniMax-M3 在 medium/complex 任务上连接失败时降级到弱模型，
+        #   编码/推理质量显著下降。
+        #
+        # 新策略：根据 task complexity 评估 fallback——
+        #   - simple:  保留 FALLBACK_MODELS 原值（低成本模型即可满足简单任务）
+        #   - medium / complex:  升级到 STRONG_MODEL（deepseek-v4-pro），
+        #     避免主模型不可用时降级到弱模型
+        #
+        # model_override 路径跳过此升级（用户已显式指定模型，尊重用户选择）。
+        #
+        # 旧代码保留如下（作为 simple 复杂度 + stage 兜底）：
+        #   fb_base, fb_model, fb_key, fb_proto = FALLBACK_MODELS.get(
+        #       stage, FALLBACK_MODELS["default"]
+        #   )
+        # ═══════════════════════════════════════════════════════════════════════
+        if not model_override and complexity_label != "simple":
+            _strong_fb = MODEL_TO_CONFIG.get(STRONG_MODEL)
+            if _strong_fb and fb_model != STRONG_MODEL:
+                _old_fb = fb_model
+                fb_base, fb_model, fb_key, fb_proto = _strong_fb
+                log.info(
+                    f"[{routing_source}] complexity={complexity_label} → "
+                    f"fallback {_old_fb} → {fb_model}（升级到 STRONG_MODEL）"
+                )
+
         # ── Sticky fallback: 主模型曾失败过，交换主/备避免重复重试 ──
         # 仅在自动路由（非 model_override）下生效——用户显式指定模型时不干预
         # 内部服务请求（X-Stage-Router-Source）也跳过 sticky 切换：
