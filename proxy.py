@@ -1241,6 +1241,76 @@ def _rewrite_response_model(resp_body: bytes, display_model: str) -> bytes:
     return resp_body
 
 
+# ── Thinking block 剥离（非原生 Anthropic 端点）────────────────────────────────
+
+_THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")
+
+
+def _strip_thinking_blocks(body: dict) -> tuple[int, int]:
+    """
+    从请求体的所有 messages[].content[] 里删除 thinking / redacted_thinking block。
+
+    策略（2026-06 修正）：
+      非 Anthropic 端点（DeepSeek, MiniMax）看到历史中的 type: "thinking" block
+      会隐式进入 thinking mode，但顶层 thinking 参数已被代理移除 → 400 错误。
+      "保留 thinking block 原样透传是安全的"已被运行证伪；正确做法是直接删除——
+      DeepSeek 看不到 thinking block 就不会进入 thinking mode。
+
+    content 为字符串时跳过（无 block 可剥）;
+    content 为列表时过滤掉这两个 type 的 dict;
+    过滤后保留空列表（避免删整条 message 破坏 tool_result 顺序）。
+
+    Returns:
+        (thinking_stripped, redacted_stripped) — 计数供日志使用。
+      参数 body 被原地修改。
+    """
+    _stripped = _redacted = 0
+    for msg in body.get("messages", []):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        before = len(content)
+        filtered: list = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") in _THINKING_BLOCK_TYPES:
+                if block.get("type") == "thinking":
+                    _stripped += 1
+                else:
+                    _redacted += 1
+            else:
+                filtered.append(block)
+        if len(filtered) != before:
+            msg["content"] = filtered
+    return _stripped, _redacted
+
+
+def _strip_thinking_from_response(resp_body: bytes) -> bytes:
+    """
+    从上游 Anthropic Messages 响应体顶层 content[] 中删除 thinking block。
+
+    非原生端点（DeepSeek/MiniMax）偶尔在 Anthropic 协议响应中返回 thinking block。
+    若不剥离，CC 会将其存入会话历史——下一轮请求携带 thinking block → 400 死循环。
+    解析失败或 content 不是 list 时原样返回。
+    """
+    try:
+        data = json.loads(resp_body)
+        if not isinstance(data, dict):
+            return resp_body
+        content = data.get("content")
+        if not isinstance(content, list):
+            return resp_body
+        before = len(content)
+        data["content"] = [
+            b for b in content
+            if not (isinstance(b, dict) and b.get("type") in _THINKING_BLOCK_TYPES)
+        ]
+        if len(data["content"]) != before:
+            return json.dumps(data).encode()
+    except (json.JSONDecodeError, TypeError):
+        return resp_body
+    return resp_body
+
+
 # ── 请求转发 ───────────────────────────────────────────────────────────────────
 
 def forward_request(
@@ -1291,20 +1361,26 @@ def forward_request(
 
     # ── 防御式：thinking 字段降级（非原生 Anthropic 端点）──
     #
-    # 策略：
-    #   只删除顶层 thinking 参数（阻止上游进入 extended thinking 模式），
-    #   但保留历史消息中的 thinking block 不做转换。
+    # 策略（2026-06 修正）：
+    #   1. 删除顶层 thinking 参数（阻止上游进入 extended thinking 模式）
+    #   2. 删除消息历史中所有 type: "thinking" / "redacted_thinking" content block
     #
-    # 原因：deepseek 等 provider 在 thinking 模式下会要求"content[].thinking
-    #   must be passed back to the API"——如果把它转成 text block，上游报 400。
-    #   而 Anthropic 原生端点的 signature 校验对非原生端点不生效（deepseek/MiniMax
-    #   的 signature 是 message id 假装的，它们自己的端点不校验自己生成的签名），
-    #   所以保留 thinking block 原样透传是安全的。
+    # 根因：非 Anthropic 端点（DeepSeek, MiniMax）看到历史中的 thinking block
+    #   会隐式进入 thinking mode，但顶层 thinking 参数已被移除 → 400 错误。
+    #   "保留 thinking block 原样透传是安全的"已被运行证伪。
+    #   详见 _strip_thinking_blocks() 和 _strip_thinking_from_response() 注释。
     #
-    # 白名单：原生 Anthropic（api.anthropic.com）不降级，保留完整 thinking 能力。
+    # 注意：原生 Anthropic 端点（api.anthropic.com）的 signature 校验是真实的——
+    #   删除 thinking block 会破坏签名验证导致 400，因此不做任何降级。
     if not _is_native_anthropic(target_base):
         if "thinking" in body_json:
             del body_json["thinking"]
+        _stripped, _redacted = _strip_thinking_blocks(body_json)
+        if _stripped or _redacted:
+            log.info(
+                f"thinking降级: 剥离 thinking={_stripped} redacted={_redacted} "
+                f"目标={target_model} provider={target_base}"
+            )
 
     if protocol == "openai":
         # OpenAI 兼容路径：路径改写 + 请求/响应格式转换
@@ -1366,6 +1442,9 @@ def forward_request(
             resp_headers = dict(resp.headers)
             if protocol == "openai":
                 resp_body = _from_openai_response(resp_body)
+            elif protocol == "anthropic" and not _is_native_anthropic(target_base):
+                # 防御：剥离上游响应中的 thinking block（防止进入 CC 会话历史死循环）
+                resp_body = _strip_thinking_from_response(resp_body)
             return resp.status, resp_headers, resp_body
     except urllib.error.HTTPError as e:
         body_err = e.read()
