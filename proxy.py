@@ -2038,11 +2038,14 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         if prompt_scrubbed:
             log.info(f"[{routing_source}] prompt(scrubbed)={prompt_scrubbed}")
 
-        self.send_response(status)
-        self.send_header("Content-Type", resp_headers.get("content-type", "application/json"))
-        self.send_header("Content-Length", str(len(resp_body)))
-        self.end_headers()
-        self.wfile.write(resp_body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", resp_headers.get("content-type", "application/json"))
+            self.send_header("Content-Length", str(len(resp_body)))
+            self.end_headers()
+            self.wfile.write(resp_body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_GET(self):
         # 健康检查
@@ -2082,11 +2085,14 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 )
 
             encoded = json.dumps(payload).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
         elif self.path == "/metrics":
             # 路由指标聚合（设计文档 §6.8 / §15）
             records = _read_metrics(limit=200)
@@ -2095,11 +2101,14 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 "recent":  records[-20:],  # 最近 20 条
             }
             encoded = json.dumps(payload, ensure_ascii=False).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
         elif self.path == "/trace" or self.path.startswith("/trace?"):
             # 单条/多条最新路由决策的完整 trace（设计文档 §6.8 / §15）
             #
@@ -2168,14 +2177,20 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 "records": records,
             }
             encoded = json.dumps(payload, ensure_ascii=False).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
         else:
-            self.send_response(404)
-            self.end_headers()
+            try:
+                self.send_response(404)
+                self.end_headers()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
 # ── 入口 ───────────────────────────────────────────────────────────────────────
 
