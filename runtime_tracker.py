@@ -6,12 +6,17 @@ V1.3 §8 PostToolUse 接入 / §7 Runtime Complexity Score。
 
 RuntimeTracker 是 RuntimeScore 的 PostToolUse 封装层：
   - track(sid, project_root, raw_event) → 转换 + 累积 + 持久化
+  - init_prompt(sid, project_root, prompt_id) → 用户 prompt 切换时清/存档
   - 从 session_state 文件读取当前 score，累积后写回
   - 所有异常静默吞噬（不阻塞 hook）
 
 与 RuntimeScore（纯计算引擎）的关系：
   RuntimeScore 负责计分（纯函数，零 I/O），RuntimeTracker 负责
   I/O（读/写 session_state）+ 事件格式转换。
+
+V1.3 §4.2 新增：
+  - init_prompt() 供 stage_detector（UserPromptSubmit）调用
+  - track() 自动读取 current_prompt_id、检查 1 分钟窗口
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -26,13 +32,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_score import RuntimeScore
 
 
+# 已知问题（不在此次修改范围）：
+# RuntimeTracker._save() 与 SessionStateStore.write() 各自独立读写
+# model_router_state_<sid>.json，存在 race condition：
+# 同时读取 → 各自修改 → 后写覆盖先写。
+# 长期方案：统一所有 state 写操作走 SessionStateStore。
+
+
 class RuntimeTracker:
-    """PostToolUse hook 的 RuntimeScore 跟踪器（Stage 4）。"""
+    """PostToolUse hook 的 RuntimeScore 跟踪器（Stage 4 / V1.3 §4.2）。"""
 
     # ── Public API ────────────────────────────────────────────────────────
 
     def track(self, sid: str, project_root: str, raw_event: dict) -> int:
         """处理一次 PostToolUse 事件：转换 → 累积 → 持久化。
+
+        V1.3 §4.2：
+          - 从 state 读取 current_prompt_id 注入 accumulate
+          - 窗口过期检查（由 RuntimeScore.is_window_expired 完成）
+          - 窗口过期后返回 0（不再累积分数）
 
         Args:
             sid: Session ID。
@@ -41,17 +59,17 @@ class RuntimeTracker:
                        `tool_name`，可选 `tool_input`。
 
         Returns:
-            int: 本次事件的 delta 分。flag 关闭时返回 0。
+            int: 本次事件的 delta 分；窗口过期 / 异常时返回 0。
         """
         try:
             # 1. 转换原始事件为 RuntimeScore event 格式
             event = self._convert(raw_event)
 
-            # 2. 加载当前 RuntimeScore
-            rs = self._load(sid, project_root)
+            # 2. 加载当前 RuntimeScore + 读取 current_prompt_id
+            rs, prompt_id = self._load_with_state(sid, project_root)
 
-            # 3. 累积
-            delta = rs.accumulate(event)
+            # 3. 累积（传入 prompt_id，窗口过期时返回 0）
+            delta = rs.accumulate(event, prompt_id=prompt_id)
 
             # 4. 持久化
             self._save(sid, project_root, rs)
@@ -60,6 +78,23 @@ class RuntimeTracker:
         except Exception:
             # 静默吞噬所有异常，不阻塞 PostToolUse hook
             return 0
+
+    def init_prompt(self, sid: str, project_root: str, prompt_id: str) -> None:
+        """初始化新 prompt 追踪：归档旧数据到 prompt_history，重置计分器。
+
+        由 stage_detector（UserPromptSubmit hook）在创建 prompt_id 后调用。
+
+        Args:
+            sid: Session ID。
+            project_root: 项目根目录。
+            prompt_id: 新 prompt 的 ID。
+        """
+        try:
+            rs, _ = self._load_with_state(sid, project_root)
+            rs.start_prompt(prompt_id)
+            self._save(sid, project_root, rs)
+        except Exception:
+            pass
 
     # ── Event Conversion ──────────────────────────────────────────────────
 
@@ -182,17 +217,30 @@ class RuntimeTracker:
 
     def _load(self, sid: str, project_root: str) -> RuntimeScore:
         """从 session_state 文件加载 RuntimeScore。文件缺失/损坏 → 返回空实例。"""
+        rs, _ = self._load_with_state(sid, project_root)
+        return rs
+
+    def _load_with_state(
+        self, sid: str, project_root: str
+    ) -> tuple[RuntimeScore, str]:
+        """从 session_state 文件加载 RuntimeScore + current_prompt_id。
+
+        Returns:
+            (RuntimeScore, current_prompt_id)。
+            文件缺失/损坏时返回 (空 RuntimeScore, "")。
+        """
         path = self._state_path(sid, project_root)
         if not path.exists():
-            return RuntimeScore()
+            return RuntimeScore(), ""
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             rs_data = data.get("runtime_score", {})
+            prompt_id = str(data.get("current_prompt_id", ""))
             if rs_data:
-                return RuntimeScore.from_dict(rs_data)
+                return RuntimeScore.from_dict(rs_data), prompt_id
         except (json.JSONDecodeError, OSError, ValueError, TypeError):
             pass
-        return RuntimeScore()
+        return RuntimeScore(), ""
 
     def _save(self, sid: str, project_root: str, rs: RuntimeScore) -> None:
         """将 RuntimeScore 写回 session_state 文件。
@@ -213,6 +261,12 @@ class RuntimeTracker:
 
         # 更新 runtime_score
         existing["runtime_score"] = rs.to_dict()
+
+        # V1.3 §4.2：同步把 current_prompt_id 写到顶层字段，
+        # 这样后续 track() 调 _load_with_state() 拿到的 prompt_id
+        # 才会与 rs.current_prompt_id 对齐。
+        if rs.current_prompt_id:
+            existing["current_prompt_id"] = rs.current_prompt_id
 
         # 原子写入
         import threading

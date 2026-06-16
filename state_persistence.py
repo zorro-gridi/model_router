@@ -134,6 +134,7 @@ class SessionStateStore:
             "routing_reason",   # V1.3 §15.4 路由理由
             "route_model",      # 当前任务路由到的最终模型（proxy 写入）
             "task_complexity",  # 任务复杂度标签（proxy 写入）
+            "current_prompt_id",  # V1.3 §4.2 当前 prompt ID（stage_detector 写入）
         )
         for key in optional_fields:
             if key in kwargs and kwargs[key] is not None:
