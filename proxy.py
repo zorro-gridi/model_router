@@ -1784,6 +1784,26 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 "session_id":          metric_session_id,          # §15 D15-2
                 "project_root":        metric_project_root,        # §15 D15-2
             })
+
+            # ── 把本次最终路由态写回 session_state（route_model + task_complexity）──
+            # 决策已完成（model_override / sticky-fb / fallback 链都收尾），可写入。
+            # 用 SessionStateStore.write() 统一走原子写，并保留其它组件的字段
+            # （runtime_score / todowrite_signal 等）。
+            # sid / project_root 已在 _ap_path 解析后缓存为 metric_* 变量。
+            if metric_session_id and metric_project_root:
+                try:
+                    from state_persistence import SessionStateStore
+                    SessionStateStore().write(
+                        sid=metric_session_id,
+                        project_root=metric_project_root,
+                        route_model=session_model,
+                        task_complexity=complexity_label,
+                    )
+                except Exception as _state_exc:
+                    log.warning(
+                        f"回写 route_model/task_complexity 到 session_state 失败: "
+                        f"{_state_exc}"
+                    )
         except Exception:
             pass
 

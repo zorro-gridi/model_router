@@ -114,6 +114,13 @@ class SessionStateStore:
             "last_update": int(time.time()),
         }
 
+        # 新建文件（首次初始化）时写入默认路由字段为 None，
+        # 后续由 proxy.py 在路由决策最终确定后回填。
+        # 旧文件不强制补字段——保持向后兼容。
+        if not existing:
+            new_data["route_model"] = None
+            new_data["task_complexity"] = None
+
         optional_fields = (
             "stage",
             "model_override",
@@ -125,10 +132,16 @@ class SessionStateStore:
             "workflow_step",
             "context_summary",  # V1.3 §11 Context Summary Injector
             "routing_reason",   # V1.3 §15.4 路由理由
+            "route_model",      # 当前任务路由到的最终模型（proxy 写入）
+            "task_complexity",  # 任务复杂度标签（proxy 写入）
         )
         for key in optional_fields:
             if key in kwargs and kwargs[key] is not None:
                 new_data[key] = kwargs[key]
+            elif key in existing:
+                # 未显式传入时从 existing 继承——避免 write() 调用方漏传
+                # 关键字时误清掉 proxy 之前回填的 route_model/task_complexity。
+                new_data[key] = existing[key]
 
         # 保留 existing 中 write() 不管理的字段（runtime_score、todowrite_signal 等）
         managed_keys = {"version", "session_id", "decision", "last_update"} | set(optional_fields)
