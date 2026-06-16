@@ -56,9 +56,13 @@ from pathlib import Path
 # `from model_alias import ...` 在 Hook 直接执行时也能 import 到。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from model_alias import detect_model_override  # 用户模型覆盖（最高路由优先级）
-# 2026-06-16：~model reset 现在对所有 session 生效，导入全局清除函数。
-# 延迟到函数体调用以避免 proxy 模块顶层副作用（load_plugin_env 等）影响 hook 启动。
+from model_alias import (  # noqa: E402
+    detect_model_override,   # 用户模型覆盖（最高路由优先级）
+    detect_provider_override,  # provider 级 fallback：~provider reset
+)
+# 2026-06-16：~model reset / ~provider reset 现在对所有 session 生效，
+# 导入全局清除函数。延迟到函数体调用以避免 proxy 模块顶层副作用
+# （load_plugin_env 等）影响 hook 启动。
 _clear_fallback_all = None  # type: ignore[var-annotated]
 
 # 阶段复杂度阈值（simple ≤ X，medium ≤ Y，> Y = complex）
@@ -68,11 +72,15 @@ try:
         COMPLEXITY_THRESHOLDS,
         STAGE_KEYWORDS,
         PATTERN_KEYWORDS,
+        MODEL_TO_PROVIDER,        # provider 级 fallback：model→provider 映射
+        KNOWN_PROVIDER_NAMES,     # provider 级 fallback：已知 provider 名集合
     )
 except Exception:
     COMPLEXITY_THRESHOLDS = {"simple": 30, "medium": 70}
     STAGE_KEYWORDS = []
     PATTERN_KEYWORDS = {}
+    MODEL_TO_PROVIDER = {}
+    KNOWN_PROVIDER_NAMES = frozenset()
 
 # ── 分 session 阶段管理 ──
 # 每个 session 独立管理阶段，避免多会话互相覆盖。
@@ -498,18 +506,37 @@ def clear_pattern(session_id: str | None = None,
 def read_fallback(session_id: str | None = None,
                   cwd: str | Path | None = None) -> str | None:
     """
-    读取当前 session 的 sticky fallback 模型名。
+    读取当前 session 的 sticky fallback provider 名。
+
     优先级：
       1. 传入的 session_id+cwd → 派生 fallback_<sid>
       2. active_session 指针 → 读取其指向的 stage_<sid>，再派生 fallback_<sid>
+
+    向后兼容（2026-06-16）：
+      - 新格式：fallback_<sid> 存 provider 名（"minimax"/"deepseek"）→ 直接返回
+      - 旧格式：fallback_<sid> 存 model 名（"deepseek-v4-flash"）→ 通过
+        MODEL_TO_PROVIDER 自动转换为 provider 名
+
     返回 None 表示"无 sticky fallback"。
     """
+
+    def _resolve_provider(raw: str) -> str | None:
+        """将 fallback 文件内容解析为 provider 名（兼容新旧格式）。"""
+        if raw in KNOWN_PROVIDER_NAMES:
+            return raw  # 新格式：已经是 provider 名
+        prov = MODEL_TO_PROVIDER.get(raw)
+        if prov:
+            log("INFO", f"fallback_<sid> 旧格式（model={raw}）→ 自动映射到 provider={prov}")
+            return prov
+        log("WARN", f"fallback_<sid> 内容无法识别: {raw!r}")
+        return None
+
     # 1. hook 场景：有 session_id+cwd
     if session_id and cwd:
         stage_path = _stage_file_path(cwd, session_id)
         content = _read_stage_file(_fallback_file_path(stage_path))
         if content:
-            return content
+            return _resolve_provider(content)
 
     # 2. proxy / CLI 场景：从 active_session 指针拿到 stage_<sid> 路径再派生
     try:
@@ -517,7 +544,7 @@ def read_fallback(session_id: str | None = None,
         if active_path:
             content = _read_stage_file(_fallback_file_path(Path(active_path)))
             if content:
-                return content
+                return _resolve_provider(content)
     except FileNotFoundError:
         pass
 
@@ -625,6 +652,22 @@ def main():
             log("INFO", f"prompt ~model one-shot override: {new_model} (no persist)")
             model_msg = f"本回合 model 覆盖: {new_model}（一次性，不持久化）"
 
+        # ── ~provider reset（provider 级 fallback，2026-06-16）─────────
+        prov_override, prov_is_reset = detect_provider_override(prompt)
+        if prov_is_reset:
+            if _clear_fallback_all is None:
+                from proxy import clear_fallback_all as _cfa
+                _clear_fallback_all = _cfa
+            try:
+                n = _clear_fallback_all()
+                log("INFO", f"prompt ~provider reset: 全局清除 sticky fallback ({n} 个文件)")
+                prov_msg = f"~provider reset：已清除 {n} 个 session 的 sticky fallback"
+            except Exception as _e:
+                log("WARN", f"~provider reset clear_fallback_all 失败: {_e!r}")
+                prov_msg = "~provider reset 失败（fallback 清除异常）"
+        else:
+            prov_msg = None
+
         # ── LLM 轻量分类器（设计文档 §6.2/§6.4/§10 合并实现）──
         # 一次 LLM 调用获取 stage + pattern + complexity 三维分类。
         # 网络/超时/解析失败时静默回退到 V1 关键词启发式，不阻塞 hook。
@@ -691,11 +734,11 @@ def main():
         # ── Sticky Fallback 通知（用户未显式覆盖模型时提示）──
         fb_msg: str | None = None
         if not new_model and not is_reset:
-            fb_model = read_fallback(session_id, cwd)
-            if fb_model:
-                log("INFO", f"sticky fallback active: {fb_model}")
+            fb_provider = read_fallback(session_id, cwd)
+            if fb_provider:
+                log("INFO", f"sticky fallback active: provider={fb_provider}")
                 fb_msg = (
-                    f"主模型曾不可用，已自动切换至备用 {fb_model}"
+                    f"主 provider 曾不可用，已自动切换至备用 provider: {fb_provider}"
                 )
 
         # ── Task Pattern 检测（Shadow Mode，2026-06-14 引入）──
@@ -986,7 +1029,7 @@ def main():
                 log("WARN", f"v1.3 dual-write failed (non-blocking): {_e!r}")
 
         # ── 输出 additionalContext（model/stage/op/fallback/pattern/complexity 各自命中时合并提示）──
-        msgs = [m for m in (model_msg, stage_msg, fb_msg, pattern_msg, complexity_msg) if m]
+        msgs = [m for m in (model_msg, prov_msg, stage_msg, fb_msg, pattern_msg, complexity_msg) if m]
         if msgs:
             output = {
                 "hookSpecificOutput": {

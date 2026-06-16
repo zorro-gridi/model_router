@@ -104,6 +104,10 @@ from stage_config import (
     MODEL_TO_CONFIG,
     STRONG_MODEL,   # 设计文档 §10 路由算法：全局强模型
     RECLASSIFY_INTERVAL,          # per-API-request 动态分类间隔
+    MODEL_TO_PROVIDER,            # provider 级 fallback：model → provider
+    DEFAULT_FALLBACK_PROVIDER,    # provider 级 fallback：失败 provider → 替代 provider
+    PROVIDER_COMPLEXITY_MODELS,   # provider 级 fallback：provider → {complexity → model}
+    KNOWN_PROVIDER_NAMES,         # provider 级 fallback：已知 provider 名集合
 )
 
 # 模型覆盖指令解析（~model / ~m / 自然语言）
@@ -615,6 +619,22 @@ def _extract_prompt_text(body: bytes) -> str:
     return "\n".join(text_parts)
 
 
+# ── ~provider reset 检测（provider 级 fallback，2026-06-16）──────
+
+_PROVIDER_RESET_RE = re.compile(
+    r"(?:^|\s)~(?:provider|prov)\s+(?:reset|clear|default|auto|off)",
+    re.IGNORECASE,
+)
+
+
+def _detect_provider_reset(body: bytes) -> bool:
+    """检测用户 prompt 中是否包含 ~provider reset 指令。"""
+    prompt_text = _extract_prompt_text(body)
+    if not prompt_text:
+        return False
+    return bool(_PROVIDER_RESET_RE.search(prompt_text))
+
+
 def resolve_model_routing(model_name: str) -> tuple[str, str, str, str, str, str, str] | None:
     """
     搜索 STAGE_CONFIG 查找 model_name 对应的路由参数。
@@ -651,29 +671,51 @@ def _fallback_file_path(stage_file: Path) -> Path:
 
 def read_fallback() -> str | None:
     """
-    读取当前 session 的 sticky fallback 模型名。
+    读取当前 session 的 sticky fallback provider 名。
+
     多 session 并发修复（2026-06-14）：通过 _active_stage_path() 解析 session。
+    向后兼容（2026-06-16）：
+      - 新格式：fallback_<sid> 存 provider 名（"minimax"/"deepseek"）→ 直接返回
+      - 旧格式：fallback_<sid> 存 model 名（"deepseek-v4-flash"）→ 通过
+        MODEL_TO_PROVIDER 自动转换为 provider 名
     返回 None 表示"无 sticky fallback"——正常走主模型路由。
     """
     p = _active_stage_path()
     if p:
         content = _read_stage_file(_fallback_file_path(p))
         if content:
-            return content
+            # 新格式：content 是 provider 名
+            if content in KNOWN_PROVIDER_NAMES:
+                return content
+            # 向后兼容：旧格式 content 是 model 名 → 映射到 provider
+            prov = MODEL_TO_PROVIDER.get(content)
+            if prov:
+                log.info(
+                    f"fallback_<sid> 旧格式（model={content}）→ "
+                    f"自动映射到 provider={prov}"
+                )
+                return prov
+            # 无法识别
+            log.warning(f"fallback_<sid> 内容无法识别: {content!r}")
     return None
 
 
-def write_fallback(model: str) -> None:
-    """写入 sticky fallback 模型名到 fallback_<sid>（多 session 并发安全）。"""
+def write_fallback(provider: str) -> None:
+    """写入 sticky fallback provider 名到 fallback_<sid>（多 session 并发安全）。
+
+    provider 是失败的 provider 名（如 "minimax"）。
+    后续请求检测到主模型的 provider == sticky provider 时，
+    将切换到替代 provider 并内部按 complexity 动态选模型。
+    """
     p = _active_stage_path()
     if p:
         try:
             fb_path = _fallback_file_path(p)
             fb_path.parent.mkdir(parents=True, exist_ok=True)
-            fb_path.write_text(model + "\n")
+            fb_path.write_text(provider + "\n")
             log.info(
-                f"sticky fallback 已激活: 主模型不可用，"
-                f"后续请求将默认使用 {model}"
+                f"sticky provider fallback 已激活: {provider} 不可用，"
+                f"后续请求将路由到替代 provider"
             )
         except Exception as e:
             log.error(f"写入 fallback_<sid> 失败: {e}")
@@ -682,11 +724,11 @@ def write_fallback(model: str) -> None:
 def clear_fallback() -> None:
     """清除当前 session 的 sticky fallback 文件。
 
-    用户执行 ~model reset 时调用：主模型（如 MiniMax-M3）网络恢复后，
-    用户手动解除 sticky，后续请求回到正常 stage 路由。
+    用户执行 ~provider reset / ~model reset 时调用：主 provider（如 minimax）
+    网络恢复后，用户手动解除 sticky，后续请求回到正常 stage 路由。
     多 session 并发安全（通过 _active_stage_path() 解析当前 session）。
 
-    注意：~model reset 现在调用的是 clear_fallback_all()（全局清），
+    注意：reset 命令现在调用的是 clear_fallback_all()（全局清），
     本函数保留供 stage_detector / 单 session 清理场景使用。
     """
     p = _active_stage_path()
@@ -1695,6 +1737,14 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             n = clear_fallback_all()
             log.info(f"~model reset 已清除 {n} 个 sticky fallback 文件")
 
+        # ── ~provider reset ──────────────────────────────────────────
+        # provider 级 fallback（2026-06-16）：~provider reset 全局清除所有
+        # session 的 sticky fallback，与 ~model reset 行为一致。
+        if _detect_provider_reset(body):
+            log.info("prompt ~provider reset：全局清除所有 session 的 sticky fallback")
+            n = clear_fallback_all()
+            log.info(f"~provider reset 已清除 {n} 个 sticky fallback 文件")
+
         # ── Per-API-Request 分类（2026-06-16 起已禁用，保留代码以备回滚）────
         # 旧逻辑：计数器在 UserPromptSubmit (Hook) 时重置为 0；本回合若计数器到达
         # 阈值，提取 prompt 上下文 → 调用 llm_classifier → 更新 stage/pattern/
@@ -1825,59 +1875,67 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             }
 
         # ═══════════════════════════════════════════════════════════════════════
-        # 复杂度感知 fallback 升级（2026-06-16）
+        # Provider 级 sticky fallback（2026-06-16）
         # ═══════════════════════════════════════════════════════════════════════
-        # 旧策略：fallback 仅按 stage 从 FALLBACK_MODELS 查表，不感知任务复杂度。
-        #   例如 implement/default stage 固定 fallback = deepseek-v4-flash，
-        #   导致 MiniMax-M3 在 medium/complex 任务上连接失败时降级到弱模型，
-        #   编码/推理质量显著下降。
+        # 旧策略（已移除）：先按 complexity 升级 fallback model → 再做 sticky swap。
+        #   问题是 fallback 锁定在"具体 model"而非"provider"——一旦 sticky 到
+        #   deepseek-v4-flash，整个 session 再复杂的任务也用 flash。
         #
-        # 新策略：根据 task complexity 评估 fallback——
-        #   - simple:  保留 FALLBACK_MODELS 原值（低成本模型即可满足简单任务）
-        #   - medium / complex:  升级到 STRONG_MODEL（deepseek-v4-pro），
-        #     避免主模型不可用时降级到弱模型
+        # 新策略：fallback_<sid> 存"失败的 provider 名"。
+        #   当主模型的 provider == sticky provider 时，切换到替代 provider，
+        #   并在替代 provider 内部按任务 complexity 动态选模型：
+        #     - simple  → 对应 provider 的低成本模型（deepseek: flash）
+        #     - medium/complex → 对应 provider 的强模型（deepseek: pro）
         #
-        # model_override 路径跳过此升级（用户已显式指定模型，尊重用户选择）。
-        #
-        # 旧代码保留如下（作为 simple 复杂度 + stage 兜底）：
-        #   fb_base, fb_model, fb_key, fb_proto = FALLBACK_MODELS.get(
-        #       stage, FALLBACK_MODELS["default"]
-        #   )
+        #   model_override / internal_req 路径跳过此切换。
+        #   STRONG_MODEL / complexity-aware upgrade 旧代码不再需要——
+        #   PROVIDER_COMPLEXITY_MODELS 已内建 complexity→model 映射。
         # ═══════════════════════════════════════════════════════════════════════
-        if not model_override and complexity_label != "simple":
-            _strong_fb = MODEL_TO_CONFIG.get(STRONG_MODEL)
-            if _strong_fb and fb_model != STRONG_MODEL:
-                _old_fb = fb_model
-                fb_base, fb_model, fb_key, fb_proto = _strong_fb
-                log.info(
-                    f"[{routing_source}] complexity={complexity_label} → "
-                    f"fallback {_old_fb} → {fb_model}（升级到 STRONG_MODEL）"
-                )
-
-        # ── Sticky fallback: 主模型曾失败过，交换主/备避免重复重试 ──
-        # 仅在自动路由（非 model_override）下生效——用户显式指定模型时不干预
-        # 内部服务请求（X-Stage-Router-Source）也跳过 sticky 切换：
-        # 用户的业务 5xx 跟"主模型曾失败"无关，不应该被静默改路由。
         internal_req = _is_internal_request(headers)
         # 标志位：本请求是否"实际切换到了备用模型"。
         # 用于 /metrics 的 used_fallback 严格判定（区分 4xx 非可重试错误）。
         fallback_invoked = False
-        sticky_fb = (
+        sticky_provider = (
             read_fallback()
             if (not model_override and not internal_req)
             else None
         )
         # 保存 session 级模型名（CC 能识别的原始模型名），用于响应体 model 字段回写
         session_model = model
-        if sticky_fb:
-            (base_url, model, key_env, protocol,
-             fb_base, fb_model, fb_key, fb_proto) = (
-                fb_base, fb_model, fb_key, fb_proto,
-                base_url, model, key_env, protocol,
-            )
-            routing_source += f" [sticky-fb={sticky_fb}]"
-            # sticky_fb 触发主备交换 → 本请求实际使用了 fallback
-            fallback_invoked = True
+        if sticky_provider:
+            primary_provider = MODEL_TO_PROVIDER.get(model)
+            if primary_provider == sticky_provider:
+                # 主模型的 provider 已不可用 → 切换到替代 provider
+                alt_provider = DEFAULT_FALLBACK_PROVIDER.get(
+                    sticky_provider, "deepseek"
+                )
+                # 在替代 provider 内部按复杂度动态选模型
+                provider_models = PROVIDER_COMPLEXITY_MODELS.get(alt_provider, {})
+                chosen_model = provider_models.get(
+                    complexity_label,
+                    provider_models.get("medium", "deepseek-v4-pro"),
+                )
+                # 从 MODEL_TO_CONFIG 反查路由配置
+                new_cfg = MODEL_TO_CONFIG.get(chosen_model)
+                if new_cfg:
+                    new_base, new_model, new_key, new_proto = new_cfg
+                    # 交换：新主模型 = 替代 provider 的 complexity 模型，
+                    #       新 fallback = 原主模型（retry 兜底）
+                    (base_url, model, key_env, protocol,
+                     fb_base, fb_model, fb_key, fb_proto) = (
+                        new_base, new_model, new_key, new_proto,
+                        base_url, session_model, key_env, protocol,
+                    )
+                    routing_source += (
+                        f" [sticky-provider={sticky_provider}→{alt_provider},"
+                        f" complexity={complexity_label}→{chosen_model}]"
+                    )
+                    fallback_invoked = True
+                    log.info(
+                        f"[{routing_source}] provider fallback 切换: "
+                        f"{sticky_provider} 不可用 → {alt_provider} "
+                        f"({complexity_label} → {chosen_model})"
+                    )
 
         # 追踪本次请求实际路由到的模型（sticky swap / fallback retry 后可能改变），
         # 用于写入 model_router_state_<sid>.json 的 route_model 字段，
@@ -1921,8 +1979,12 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             if not _is_retriable(status):
                 actual_route_model = fb_model
             # 备用模型成功 + 之前无 sticky + 非 model_override → 写入 sticky fallback
-            if not sticky_fb and not _is_retriable(status) and not model_override:
-                write_fallback(fb_model)
+            if not sticky_provider and not _is_retriable(status) and not model_override:
+                # 写入失败的 *provider* 名（不是 model 名），
+                # 后续请求在替代 provider 内仍可按 complexity 动态选模型。
+                failed_provider = MODEL_TO_PROVIDER.get(session_model)
+                if failed_provider:
+                    write_fallback(failed_provider)
         elif _is_retriable(status) and internal_req:
             log.info(
                 f"[{routing_source}] 内部请求主模型 {model} 返回 {status}，"
@@ -1941,12 +2003,12 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # token_estimate/fallback_count，供 /metrics /trace 读取。
         try:
             # used_fallback 严格定义：本请求"实际使用或触发了备用模型"
-            #   - sticky_fb 路径：进入时主备已交换，记为 True
+            #   - sticky_provider 路径：进入时主模型已切换，记为 True
             #   - 主模型失败后切到 fb 模型：记为 True
             #   - 4xx 非可重试错误（400/404/422 等）：主备都没切到，记为 False
             #     之前的 `status >= 400` 会把 400/404/422 全算成"用了 fallback"，
             #     导致 /metrics 统计严重虚高。
-            used_fallback = bool(sticky_fb) or fallback_invoked
+            used_fallback = bool(sticky_provider) or fallback_invoked
             is_success = 200 <= status < 300
 
             # 设计文档 §15 D15-1：强模型标记。
