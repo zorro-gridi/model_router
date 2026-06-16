@@ -62,22 +62,28 @@ from _load_env import load_plugin_env  # noqa: E402
 load_plugin_env(__file__)  # noqa: E402
 
 # ── 日志（设计文档 §15 D15-6：脱敏后再写，避免 password/api_key 落盘）──
-# 与 proxy.py 共享同一文件 ~/.claude/stage-router.log，复用同一 format。
+# 独立日志文件：/tmp/llm_classifier.log（不再与 proxy.py 共享 stage-router.log）
+# 放 /tmp 的原因：每次分类调用都会写日志，stage-router.log 已被 LLM reasoning
+# 撑到 4MB+；独立文件便于单独 tail/grep/truncate，也避免污染 proxy 主日志。
 # 两种调用上下文都安全：
-#   1) 在 proxy 进程内被 import —— root logger 已有同名 FileHandler，跳过
-#   2) 在独立子进程（hook / CLI 调试）被 import —— root logger 裸奔，
-#      给 stage-router 这个 named logger 挂一个 FileHandler 兜底
-LOG_FILE = Path.home() / ".claude" / "stage-router.log"
-_log = logging.getLogger("stage-router")
+#   1) 在 proxy 进程内被 import —— 走 named logger "llm_classifier"，与 proxy 的
+#      "stage-router" logger 完全隔离，handler 也不会重复挂载
+#   2) 在独立子进程（hook / CLI 调试）被 import —— 给 llm_classifier logger
+#      挂一个 FileHandler 兜底
+LOG_FILE = Path("/tmp/llm_classifier.log")
+_log = logging.getLogger("llm_classifier")
+# 按 logger name 去重（不再用文件路径去重，因为 logger 自带命名空间隔离，
+# 在 proxy 进程和子进程分别 import 时各自只挂一次）
 if not any(
     isinstance(h, logging.FileHandler)
-    and Path(getattr(h, "baseFilename", "")).resolve() == LOG_FILE.resolve()
+    and getattr(h, "_llm_classifier_owned", False)
     for h in _log.handlers
 ):
     try:
         _log.setLevel(logging.INFO)
         _fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
         _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        _fh._llm_classifier_owned = True  # 标记为本模块挂的，便于去重
         _log.addHandler(_fh)
         # 不 propagate 到 root，避免在 proxy 进程里和 root handler 重复打印
         _log.propagate = False
@@ -108,7 +114,7 @@ def _scrub_secrets(text: str) -> str:
 
 
 def _log_classify_result(result: dict) -> None:
-    """把一次成功的分类结果写入 stage-router.log。"""
+    """把一次成功的分类结果写入 /tmp/llm_classifier.log。"""
     try:
         _log.info(
             "[llm_classifier] pattern=%s(p=%.2f) complexity=%s(%d,p=%.2f) "
@@ -127,7 +133,7 @@ def _log_classify_result(result: dict) -> None:
 
 
 def _log_classify_failure(stage: str, err: BaseException) -> None:
-    """把一次分类失败（含 reason）写入 stage-router.log。"""
+    """把一次分类失败（含 reason）写入 /tmp/llm_classifier.log。"""
     try:
         _log.warning(
             "[llm_classifier] %s failed: %s: %s",
