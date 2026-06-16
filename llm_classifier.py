@@ -382,13 +382,13 @@ def classify(prompt: str, config_override: Optional[dict] = None) -> dict:
 
     # ── 解析 LLM 返回的 JSON ──
     try:
-        result = _parse_classifier_json(text)
+        raw = _parse_classifier_json(text)
     except RuntimeError as e:
         _log_classify_failure("json_parse", e)
         raise
 
     # ── 校验 & 规范化 ──
-    result = _validate_and_normalize(result, prompt)
+    result = _validate_and_normalize(raw, prompt)
 
     # ── is_valid_prompt 透传 ──
     # LLM 返回 is_valid_prompt=False 表示 prompt 是任务续接指令
