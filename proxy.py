@@ -1728,6 +1728,11 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             # sticky_fb 触发主备交换 → 本请求实际使用了 fallback
             fallback_invoked = True
 
+        # 追踪本次请求实际路由到的模型（sticky swap / fallback retry 后可能改变），
+        # 用于写入 model_router_state_<sid>.json 的 route_model 字段，
+        # 供 statusline 第三行准确显示当前使用的模型。
+        actual_route_model = model  # sticky swap 后的 model
+
         status, resp_headers, resp_body = forward_request(
             method="POST",
             path=self.path,
@@ -1761,6 +1766,9 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 protocol=fb_proto,
                 dry_run=self.dry_run,
             )
+            # fallback retry 成功后，实际路由模型更新为 fb_model
+            if not _is_retriable(status):
+                actual_route_model = fb_model
             # 备用模型成功 + 之前无 sticky + 非 model_override → 写入 sticky fallback
             if not sticky_fb and not _is_retriable(status) and not model_override:
                 write_fallback(fb_model)
@@ -1850,7 +1858,7 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                     SessionStateStore().write(
                         sid=metric_session_id,
                         project_root=metric_project_root,
-                        route_model=session_model,
+                        route_model=actual_route_model,
                         task_complexity=complexity_label,
                         fallback=read_fallback(),
                     )
