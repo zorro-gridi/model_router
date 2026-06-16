@@ -28,6 +28,8 @@ Model-override 路由（2026-06-13 引入，最高优先级）：
   python3 proxy.py                  # 启动代理（默认 :7878）
   python3 proxy.py --port 7878      # 自定义端口
   python3 proxy.py --dry-run        # 只打印路由决策，不转发
+
+端口配置优先级：--port 命令行参数 > STAGE_ROUTER_PORT 环境变量 > 默认 7878
 """
 
 import argparse
@@ -66,7 +68,8 @@ ACTIVE_SESSION_FILE  = HOOK_DIR / "active_session"
 GLOBAL_STAGE_FILE    = HOOK_DIR / "current_stage"   # 全局后备
 STATE_INDEX_FILE     = HOOK_DIR / "state_index.json"  # 设计文档 §13 Project Binding
 LOG_FILE             = Path.home() / ".claude" / "stage-router.log"
-PORT                 = 7878
+# STAGE_ROUTER_PORT 环境变量可覆盖默认端口，优先级：--port > env > 默认值
+PORT                 = int(os.environ.get("STAGE_ROUTER_PORT", "7878"))
 
 # 用户服务的"内部请求"标记 header（防止 5xx 误触发 fallback）
 # 详见 _is_internal_request() 注释。Claude Code 的请求不会带这个 header。
