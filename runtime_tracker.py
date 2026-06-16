@@ -262,6 +262,12 @@ class RuntimeTracker:
         # 更新 runtime_score
         existing["runtime_score"] = rs.to_dict()
 
+        # V1.3 §4.2：同步把 current_prompt_id 写到顶层字段，
+        # 这样后续 track() 调 _load_with_state() 拿到的 prompt_id
+        # 才会与 rs.current_prompt_id 对齐。
+        if rs.current_prompt_id:
+            existing["current_prompt_id"] = rs.current_prompt_id
+
         # 原子写入
         import threading
         suffix = f".{os.getpid()}.{id(threading.current_thread())}.tmp"

@@ -359,12 +359,22 @@ def decide(
     # ── V1.3 §4.2 Session 历史运行时偏置 ──
     # 历史 prompt 持续高分（>70）说明 session 整体在做复杂工作，
     # 新 prompt 出现 simple 极可能是分类失误，保守抬升。
+    # 注意：即使 ambiguous 偏置已经先抬到 medium，session_runtime_score
+    # 偏置也作为"独立信号"写入 reasoning（说明抬升是多重证据支撑的），
+    # 而不再二次抬 label（避免重复）。
     session_runtime_bias_reason = ""
     if session_runtime_score > 70 and label == "simple":
         label = "medium"
         session_runtime_bias_reason = (
             f"session 历史 runtime_score={session_runtime_score}>70，"
             f"complex 偏置 simple → medium"
+        )
+    elif session_runtime_score > 70 and label == "medium":
+        # label 已经被 ambiguous 偏置抬到 medium；session_runtime_score
+        # 是独立的"session 持续复杂"佐证信号，应作为 reasoning 附加。
+        session_runtime_bias_reason = (
+            f"session 历史 runtime_score={session_runtime_score}>70，"
+            f"佐证 medium 复杂度合理"
         )
 
     final_model = _COMPLEXITY_TO_MODEL.get(label, "MiniMax-M3")
