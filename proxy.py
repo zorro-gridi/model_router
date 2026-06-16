@@ -1967,6 +1967,22 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 f"切换到备用 {fb_model} [{fb_base}]"
             )
             fallback_invoked = True
+            # ── 写入 sticky fallback：主 provider 已确认不可用 ──
+            # 在发起 fallback 请求**之前**就写入 sticky，原因：
+            #   1. 并发请求：避免多个并行请求都先尝试失败的主 provider
+            #   2. fallback 也可能超时/5xx——若等 fallback 成功才写 sticky，
+            #      两个 provider 同时出问题时 sticky 永不写入，导致无限循环：
+            #      主→fail→备→fail→不写 sticky→主→fail→...
+            #   3. 用户可通过 ~provider reset 或 ~model reset 随时清除
+            if not sticky_provider and not model_override:
+                failed_provider = MODEL_TO_PROVIDER.get(session_model)
+                if failed_provider:
+                    write_fallback(failed_provider)
+                    log.info(
+                        f"[{routing_source}] 主 provider {failed_provider} "
+                        f"不可用（status={status}），已写入 sticky fallback，"
+                        f"后续请求将直接路由到替代 provider"
+                    )
             status, resp_headers, resp_body = forward_request(
                 method="POST",
                 path=self.path,
@@ -1981,13 +1997,6 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             # fallback retry 成功后，实际路由模型更新为 fb_model
             if not _is_retriable(status):
                 actual_route_model = fb_model
-            # 备用模型成功 + 之前无 sticky + 非 model_override → 写入 sticky fallback
-            if not sticky_provider and not _is_retriable(status) and not model_override:
-                # 写入失败的 *provider* 名（不是 model 名），
-                # 后续请求在替代 provider 内仍可按 complexity 动态选模型。
-                failed_provider = MODEL_TO_PROVIDER.get(session_model)
-                if failed_provider:
-                    write_fallback(failed_provider)
         elif _is_retriable(status) and internal_req:
             log.info(
                 f"[{routing_source}] 内部请求主模型 {model} 返回 {status}，"
