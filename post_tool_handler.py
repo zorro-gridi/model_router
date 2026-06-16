@@ -123,8 +123,13 @@ def _handle_todowrite(sid: str, project_root: str, raw_event: dict) -> None:
       - 首次 TodoWrite 尝试 LLM 深度分析，失败回退关键词启发式
       - 非首次 TodoWrite 使用关键词启发式（轻量）
     """
-    tool_input = raw_event.get("tool_input", {}) or {}
-    todos = tool_input.get("todos")
+    # ── 复用 hooks.common.todo_payload 解析，与 todowrite_sync 保持一致 ──
+    # 区分两种"无 todos"：None（payload 里没有 todos 字段，不该触发任何写入）vs
+    # []（调过 TodoWrite 但清空了，照常走 analyze 落 empty_result）。
+    todos = _extract_todos(raw_event)
+    if todos is None:
+        # 缺字段 / 非 dict / tool_input 缺 todos → 不写 signal
+        return
 
     # ── 判断 is_first_todo_write ──
     is_first = not _has_existing_todowrite_signal(sid, project_root)
@@ -139,6 +144,27 @@ def _handle_todowrite(sid: str, project_root: str, raw_event: dict) -> None:
 
     # ── 写入 session_state ──
     _write_todowrite_signal(sid, project_root, signal)
+
+
+def _extract_todos(raw_event: dict):
+    """委托给 hooks.common.todo_payload.extract_todos_from_payload。
+
+    包一层的理由：
+      1. handler 不直接依赖 hooks 包路径（避免 sys.path 不一致）
+      2. 与 todowrite_sync 共用同一份解析逻辑，未来字段变动只改一处
+      3. ImportError 兜底：万一 hooks 包不可用（极少见）→ 退到手写解析
+    """
+    try:
+        # 兼容 inline import 与独立脚本两种调用方式
+        from hooks.common.todo_payload import extract_todos_from_payload
+    except ImportError:
+        # hooks 包不可用 → 退到手写解析（保持原行为）
+        tool_input = raw_event.get("tool_input", {}) or {}
+        if not isinstance(tool_input, dict):
+            return None
+        todos = tool_input.get("todos")
+        return todos if isinstance(todos, list) else None
+    return extract_todos_from_payload(raw_event)
 
 
 def _has_existing_todowrite_signal(sid: str, project_root: str) -> bool:

@@ -403,5 +403,129 @@ class TestSessionStateFields(unittest.TestCase):
         self.assertGreaterEqual(len(data["runtime_score"].get("events", [])), 2)
 
 
+class TestSharedPayloadExtractor(unittest.TestCase):
+    """验证 post_tool_handler 复用 hooks.common.todo_payload 解析。
+
+    B 最小版核心要求：
+      1. todos=[] 显式空数组：应走 analyze 落 empty_result（不算 "无 todo"）
+      2. 缺 tool_input 字段：不写 signal（payload 非法）
+      3. 缺 tool_input.todos 字段：不写 signal
+      4. extract_todos_from_payload 实际被调用（共享路径生效）
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_root = Path(self.tmp.name)
+        self.claude_dir = self.project_root / ".claude"
+        self.claude_dir.mkdir()
+        self.sid = "test-sid-pth-share-001"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_todos_empty_list_writes_empty_signal(self):
+        """todos=[] 显式空数组：应写 todowrite_signal（empty_result），但 runtime_score 仍累积。"""
+        from post_tool_handler import dispatch
+
+        dispatch(self.sid, str(self.project_root), {
+            "tool_name": "TodoWrite",
+            "tool_input": {"todos": []},
+        })
+
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
+        data = json.loads(state_file.read_text())
+        self.assertIn("todowrite_signal", data,
+                      "todos=[] 是合法信号，应写 empty_result 到 state")
+        self.assertEqual(data["todowrite_signal"]["total"], 0)
+        self.assertEqual(data["todowrite_signal"]["pending"], 0)
+        self.assertEqual(data["todowrite_signal"]["completed"], 0)
+        # runtime_score 不受 todos 内容影响
+        self.assertIn("runtime_score", data)
+
+    def test_missing_tool_input_skips_signal(self):
+        """raw_event 完全缺 tool_input：不抛异常，不写 todowrite_signal。"""
+        from post_tool_handler import dispatch
+
+        dispatch(self.sid, str(self.project_root), {
+            "tool_name": "TodoWrite",
+            # 注意：没有 tool_input
+        })
+
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
+        # runtime_tracker 仍写 runtime_score
+        data = json.loads(state_file.read_text())
+        self.assertIn("runtime_score", data)
+        # 但 _handle_todowrite 因 todos=None 短路，不应写 todowrite_signal
+        self.assertNotIn("todowrite_signal", data,
+                         "缺 tool_input 时应短路，不写 todowrite_signal")
+
+    def test_missing_todos_field_skips_signal(self):
+        """tool_input 存在但 todos 字段缺失：不抛异常，不写 todowrite_signal。"""
+        from post_tool_handler import dispatch
+
+        dispatch(self.sid, str(self.project_root), {
+            "tool_name": "TodoWrite",
+            "tool_input": {"other_field": "value"},  # 没 todos
+        })
+
+        state_file = self.claude_dir / f"model_router_state_{self.sid}.json"
+        data = json.loads(state_file.read_text())
+        self.assertNotIn("todowrite_signal", data,
+                         "缺 todos 时应短路，不写 todowrite_signal")
+
+    def test_extract_todos_uses_shared_extractor(self):
+        """验证 _extract_todos 真的调用共享 extract_todos_from_payload。
+
+        用真实 import 后 monkey-patch 模块属性，避免 mock.patch 字符串路径
+        在 sys.path 没注册 hooks 包时失败。
+        """
+        import sys
+        # 测试可能从任何 cwd 跑，确保 hooks 包根在 sys.path
+        # parents[0]=this_file [1]=tests [2]=model_router [3]=hooks [4]=worktree
+        # 加 worktree 根到 sys.path，使 `import hooks` 找到包
+        _repo_root = Path(__file__).resolve().parents[3]
+        if str(_repo_root) not in sys.path:
+            sys.path.insert(0, str(_repo_root))
+        from post_tool_handler import _extract_todos
+        from hooks.common import todo_payload
+        import unittest.mock as mock
+
+        with mock.patch.object(todo_payload, "extract_todos_from_payload",
+                               return_value=[{"content": "mocked", "status": "pending"}]) as mocked:
+            raw_event = {
+                "tool_name": "TodoWrite",
+                "tool_input": {"todos": [{"content": "real", "status": "pending"}]},
+            }
+            result = _extract_todos(raw_event)
+
+        self.assertEqual(result, [{"content": "mocked", "status": "pending"}],
+                         "应该返回共享提取器的结果（mocked 值）")
+        self.assertEqual(mocked.call_count, 1, "共享 extract_todos_from_payload 应被调用 1 次")
+
+    def test_extract_todos_handles_malformed_payload(self):
+        """_extract_todos 应与共享 extract_todos_from_payload 行为一致（不重复逻辑）。"""
+        import sys
+        _repo_root = Path(__file__).resolve().parents[3]
+        if str(_repo_root) not in sys.path:
+            sys.path.insert(0, str(_repo_root))
+        from post_tool_handler import _extract_todos
+        from hooks.common.todo_payload import extract_todos_from_payload
+
+        # 共享提取器自身的边界 case（已在 extract_todos_from_payload 单测覆盖），
+        # 这里仅验证 _extract_todos 是直接透传，行为一致。
+        sample_payloads = [
+            {},                                          # 缺 tool_input
+            {"tool_input": "string"},                    # tool_input 非 dict
+            {"tool_input": {}},                          # 缺 todos
+            {"tool_input": {"todos": "string"}},         # todos 非 list
+            {"tool_input": {"todos": 42}},               # todos 标量
+            {"tool_input": {"todos": []}},               # 显式空 list
+            {"tool_input": {"todos": [{"c": "x", "status": "pending"}]}},  # 合法
+        ]
+        for p in sample_payloads:
+            self.assertEqual(_extract_todos(p), extract_todos_from_payload(p),
+                             f"payload {p!r}: _extract_todos 应与共享提取器结果一致")
+
+
 if __name__ == "__main__":
     unittest.main()
