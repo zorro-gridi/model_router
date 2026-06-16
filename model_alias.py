@@ -152,6 +152,14 @@ def parse_model_override(prompt: str) -> tuple[Optional[str], bool, Optional[str
     m = MODEL_OVERRIDE_PREFIX_RE.search(stripped)
     if m:
         raw = m.group(1).strip()
+        # 剥离尾随标点符号，避免文档/指令文本中的 placeholder
+        # （如 `~model <model_alias>: 表示...`）的冒号被当作 alias 的一部分
+        raw = raw.rstrip(':.,;)')
+        if not raw:
+            return (None, False, None)
+        # 跳过角括号占位符（如 <model_alias>），这是文档/指令文本而非实际 alias
+        if raw.startswith('<') or raw.startswith('['):
+            return (None, False, None)
         # 检查 reset/default/auto/clear/off 关键词
         if raw.lower() in MODEL_RESET_WORDS:
             return (None, True, None)  # is_reset
@@ -202,6 +210,10 @@ def detect_provider_override(prompt: str) -> tuple[Optional[str], bool]:
         return (None, False)
 
     raw = m.group(1).strip()
+    # 剥离尾随标点符号，避免文档/指令文本中的 placeholder
+    raw = raw.rstrip(':.,;)')
+    if not raw:
+        return (None, False)
     if raw.lower() in PROVIDER_RESET_WORDS:
         return (None, True)  # is_reset
 
