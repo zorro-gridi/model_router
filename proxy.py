@@ -619,6 +619,22 @@ def _extract_prompt_text(body: bytes) -> str:
     return "\n".join(text_parts)
 
 
+# ── ~provider reset 检测（provider 级 fallback，2026-06-16）──────
+
+_PROVIDER_RESET_RE = re.compile(
+    r"(?:^|\s)~(?:provider|prov)\s+(?:reset|clear|default|auto|off)",
+    re.IGNORECASE,
+)
+
+
+def _detect_provider_reset(body: bytes) -> bool:
+    """检测用户 prompt 中是否包含 ~provider reset 指令。"""
+    prompt_text = _extract_prompt_text(body)
+    if not prompt_text:
+        return False
+    return bool(_PROVIDER_RESET_RE.search(prompt_text))
+
+
 def resolve_model_routing(model_name: str) -> tuple[str, str, str, str, str, str, str] | None:
     """
     搜索 STAGE_CONFIG 查找 model_name 对应的路由参数。
@@ -1720,6 +1736,14 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             log.info("prompt ~model reset：全局清除所有 session 的 sticky fallback")
             n = clear_fallback_all()
             log.info(f"~model reset 已清除 {n} 个 sticky fallback 文件")
+
+        # ── ~provider reset ──────────────────────────────────────────
+        # provider 级 fallback（2026-06-16）：~provider reset 全局清除所有
+        # session 的 sticky fallback，与 ~model reset 行为一致。
+        if _detect_provider_reset(body):
+            log.info("prompt ~provider reset：全局清除所有 session 的 sticky fallback")
+            n = clear_fallback_all()
+            log.info(f"~provider reset 已清除 {n} 个 sticky fallback 文件")
 
         # ── Per-API-Request 分类（2026-06-16 起已禁用，保留代码以备回滚）────
         # 旧逻辑：计数器在 UserPromptSubmit (Hook) 时重置为 0；本回合若计数器到达

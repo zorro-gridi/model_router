@@ -171,3 +171,42 @@ def parse_model_override(prompt: str) -> tuple[Optional[str], bool, Optional[str
             return (canon, False, None)
 
     return (None, False, None)
+
+
+# ── Provider 指令解析（provider 级 fallback，2026-06-16）─────────
+
+PROVIDER_OVERRIDE_PREFIX_RE = re.compile(
+    r"(?:^|\s)~(?:provider|prov)\s+(\S+)",
+    re.IGNORECASE,
+)
+
+PROVIDER_RESET_WORDS = frozenset({"reset", "clear", "default", "auto", "off"})
+
+
+def detect_provider_override(prompt: str) -> tuple[Optional[str], bool]:
+    """从用户 prompt 中检测 provider 覆盖指令。
+
+    返回 (provider_name, is_reset)。
+    - is_reset=True:  用户要求清除 provider 级 sticky fallback
+    - 其它:           provider_name 为 provider 名或 None（无指令 / 未识别）
+
+    目前仅支持 ~provider reset（清除 sticky fallback），
+    不支持 ~provider <name> 主动设置 provider（未来可扩展）。
+    """
+    if not prompt:
+        return (None, False)
+
+    stripped = prompt.strip()
+    m = PROVIDER_OVERRIDE_PREFIX_RE.search(stripped)
+    if not m:
+        return (None, False)
+
+    raw = m.group(1).strip()
+    if raw.lower() in PROVIDER_RESET_WORDS:
+        return (None, True)  # is_reset
+
+    # 未来扩展：~provider <name> 主动设置 provider
+    # canon = resolve_provider(raw)
+    # if canon:
+    #     return (canon, False)
+    return (None, False)

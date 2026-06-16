@@ -56,6 +56,7 @@ sys.path.insert(0, str(HOOK_DIR))
 # 从统一配置文件导入（hooks/model_router/stage_config.py）
 from stage_config import STAGE_DISPLAY, PATTERN_INFO, PATTERN_CONFIG  # noqa: E402
 from stage_config import COMPLEXITY_LEVELS  # 用于显示复杂度档位
+from stage_config import MODEL_TO_PROVIDER, KNOWN_PROVIDER_NAMES  # provider fallback 显示
 from model_alias import resolve_model  # 用于显示模型简称
 
 # V1.3 §5.1 Task Pattern 中文 label 映射（与 llm_classifier.py 系统 prompt 对齐）
@@ -209,6 +210,47 @@ def read_model_override(event: dict | None = None) -> str | None:
     return None
 
 
+def _fallback_file_path(stage_file: Path) -> Path:
+    """从 stage_<sid> 路径派生 fallback_<sid> 路径（同目录、仅前缀替换）。"""
+    return stage_file.with_name(stage_file.name.replace("stage_", "fallback_", 1))
+
+
+def read_fallback(event: dict | None = None) -> str | None:
+    """
+    读取当前 session 的 sticky fallback provider 名。
+
+    向后兼容（2026-06-16）：旧格式 model 名自动映射为 provider 名。
+    返回 None 表示"无 sticky fallback"。
+    """
+    def _resolve(raw: str) -> str | None:
+        if raw in KNOWN_PROVIDER_NAMES:
+            return raw
+        prov = MODEL_TO_PROVIDER.get(raw)
+        if prov:
+            return prov
+        return None
+
+    if event:
+        session_id: str | None = (event.get("session_id") or "").strip() or None
+        cwd: str | None = event.get("cwd")
+        if session_id and cwd:
+            stage_path = _stage_file_path(cwd, session_id)
+            content = _read_stage_file(_fallback_file_path(stage_path))
+            if content:
+                return _resolve(content)
+
+    try:
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            content = _read_stage_file(_fallback_file_path(Path(active_path)))
+            if content:
+                return _resolve(content)
+    except FileNotFoundError:
+        pass
+
+    return None
+
+
 def _pattern_file_path(stage_file: Path) -> Path:
     """从 stage_<sid> 派生 pattern_<sid> 路径（Shadow Mode 标注文件）。"""
     return stage_file.with_name(stage_file.name.replace("stage_", "pattern_", 1))
@@ -318,6 +360,11 @@ def main():
 
     # ── Build content lines ─────────────────────────────────────────
     lines: list[str] = []
+
+    # Provider sticky fallback (2026-06-16)
+    fallback_prov = read_fallback(event)
+    if fallback_prov:
+        lines.append(f"  {RED}{BLD}⚠️  fallback: {fallback_prov}{RST}")
 
     # Model override (highest routing priority)
     if model_override:
