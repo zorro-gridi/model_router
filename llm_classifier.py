@@ -62,24 +62,32 @@ from _load_env import load_plugin_env  # noqa: E402
 load_plugin_env(__file__)  # noqa: E402
 
 # ── 日志（设计文档 §15 D15-6：脱敏后再写，避免 password/api_key 落盘）──
-# 独立日志文件：/tmp/llm_classifier.log（不再与 proxy.py 共享 stage-router.log）
-# 放 /tmp 的原因：每次分类调用都会写日志，stage-router.log 已被 LLM reasoning
-# 撑到 4MB+；独立文件便于单独 tail/grep/truncate，也避免污染 proxy 主日志。
+# 日志路径从 __file__ 的目录结构镜像到 /tmp/ 下：
+#   __file__ = /Users/zorro/.claude/hooks/model_router/llm_classifier.py
+#   LOG_FILE = /tmp/hooks/model_router/llm_classifier.log
+# 这样多项目/多模块同名文件不会互相覆盖，从日志路径就能反推出源文件位置。
 # 两种调用上下文都安全：
 #   1) 在 proxy 进程内被 import —— 走 named logger "llm_classifier"，与 proxy 的
 #      "stage-router" logger 完全隔离，handler 也不会重复挂载
 #   2) 在独立子进程（hook / CLI 调试）被 import —— 给 llm_classifier logger
 #      挂一个 FileHandler 兜底
-LOG_FILE = Path("/tmp/llm_classifier.log")
+_MODULE_PATH = Path(__file__).resolve()
+try:
+    _IDX = _MODULE_PATH.parts.index("hooks")
+    _LOG_REL = Path(*_MODULE_PATH.parts[_IDX:]).with_suffix(".log")
+except ValueError:
+    _LOG_REL = Path("llm_classifier.log")
+LOG_FILE = Path("/tmp") / _LOG_REL
 _log = logging.getLogger("llm_classifier")
-# 按 logger name 去重（不再用文件路径去重，因为 logger 自带命名空间隔离，
-# 在 proxy 进程和子进程分别 import 时各自只挂一次）
+# 按 logger name 去重（不同 logger 命名空间天然隔离，
+# 同 logger 在同一进程多次 import 或 reload 也只挂一次）
 if not any(
     isinstance(h, logging.FileHandler)
     and getattr(h, "_llm_classifier_owned", False)
     for h in _log.handlers
 ):
     try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         _log.setLevel(logging.INFO)
         _fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
         _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
@@ -114,7 +122,7 @@ def _scrub_secrets(text: str) -> str:
 
 
 def _log_classify_result(result: dict) -> None:
-    """把一次成功的分类结果写入 /tmp/llm_classifier.log。"""
+    """把一次成功的分类结果写入 /tmp/… 镜像路径（LOG_FILE）。"""
     try:
         _log.info(
             "[llm_classifier] pattern=%s(p=%.2f) complexity=%s(%d,p=%.2f) "
@@ -133,7 +141,7 @@ def _log_classify_result(result: dict) -> None:
 
 
 def _log_classify_failure(stage: str, err: BaseException) -> None:
-    """把一次分类失败（含 reason）写入 /tmp/llm_classifier.log。"""
+    """把一次分类失败（含 reason）写入 /tmp/… 镜像路径（LOG_FILE）。"""
     try:
         _log.warning(
             "[llm_classifier] %s failed: %s: %s",
