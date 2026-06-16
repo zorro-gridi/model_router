@@ -123,6 +123,36 @@ _HIGH_DEPENDENCY_PATTERNS = [
 ]
 
 
+# ── LLM 配置解析辅助 ──────────────────────────────────────────────────
+# 把"从 stage_config.LLM_CLASSIFIER_CONFIG 取配置 + import 兜底"抽成独立函数：
+#   1. 让 _llm_analyze 不再每次重复 sys.path 黑魔法
+#   2. 让 import 失败时显式返回异常类型，调用方用 warnings.warn 暴露而不是静默 cfg={}
+#   3. 未来若 stage_config 改名或迁移，单独改这一处即可
+#
+# 注意：保留 sys.path 黑魔法是因为 caller (post_tool_handler.py) 的 inline import
+# 不能保证 cwd 是 hooks/model_router/，从 test 目录或 worktree 根跑都会失败。
+def _resolve_llm_config() -> tuple[Dict[str, Any], Optional[str]]:
+    """加载 LLM_CLASSIFIER_CONFIG，失败时返回 ({}, error_msg)。
+
+    Returns:
+        (cfg_dict, error_msg_or_None)。cfg_dict 始终为 dict（成功时为 stage_config
+        的拷贝，失败时为空 dict，调用方继续用内置默认）；error_msg 在 import 失败
+        时为短字符串，便于上层诊断。
+    """
+    import sys
+    from pathlib import Path
+
+    try:
+        # 同目录 sys.path 注入（参考 llm_classifier.py 同一处理）
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from stage_config import LLM_CLASSIFIER_CONFIG  # noqa: E402
+        return dict(LLM_CLASSIFIER_CONFIG), None
+    except (ImportError, AttributeError) as e:
+        return {}, f"{type(e).__name__}: {e}"
+    except Exception as e:  # noqa: BLE001 — 兜底任何意外
+        return {}, f"{type(e).__name__}: {e}"
+
+
 class TodoWriteAnalyzer:
     """TodoWrite 工具输出分析器（V1.3 §9）。
 
@@ -163,6 +193,10 @@ class TodoWriteAnalyzer:
 
         先尝试 LLM 分类，失败时回退到关键词启发式分析。
         仅在首次 TodoWrite 时建议调用（is_first=True）。
+
+        失败回退时会在 result 中附加 ``_llm_fallback_reason`` 字段（短字符串），
+        便于上游观测回退原因（避免"import 失败 / 缺 env / LLM 网络错 / JSON 解析错"
+        全被静默吞掉后无法区分）。该字段以下划线开头，表示非标准 schema。
         """
         try:
             todos_text = self._todos_to_text(todos)
@@ -178,9 +212,11 @@ class TodoWriteAnalyzer:
                     or result.get("pending", 0) > 0
                 )
             return result
-        except Exception:
-            # LLM 失败 → 回退关键词
-            return self.analyze(todos, is_first=is_first)
+        except Exception as e:
+            # LLM 失败 → 回退关键词，并把异常原因透传给上层做诊断
+            fallback = self.analyze(todos, is_first=is_first)
+            fallback["_llm_fallback_reason"] = f"{type(e).__name__}: {e}"
+            return fallback
 
     # ── Internal: Keyword Analysis ────────────────────────────────────────
 
@@ -395,15 +431,19 @@ Return ONLY valid JSON (no markdown fences, no extra text).
         import httpx
         import os
         import sys
+        import warnings
         from pathlib import Path
 
-        # ── 加载配置 ──
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        try:
-            from stage_config import LLM_CLASSIFIER_CONFIG
-            cfg = dict(LLM_CLASSIFIER_CONFIG)
-        except (ImportError, AttributeError):
-            cfg = {}
+        # ── 加载配置（_resolve_llm_config 做了 import 兜底 + 显式告警）──
+        cfg, import_err = _resolve_llm_config()
+        if import_err is not None:
+            # ImportError / AttributeError 都用 UserWarning 暴露，比静默 cfg={} 强
+            # warnings 不会阻断流程，analyze_with_llm 仍会兜底回退到关键词启发式。
+            warnings.warn(
+                f"[todowrite_analyzer] stage_config 不可用（{import_err}），"
+                f"LLM 配置将使用内置默认值",
+                stacklevel=2,
+            )
 
         # 默认配置（与 llm_classifier 保持一致）
         model = cfg.get("model", "deepseek-v4-flash")
