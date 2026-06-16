@@ -175,6 +175,26 @@ You are a task classifier for a code assistant model routing system.
 Analyze the user's request and classify it along THREE dimensions.
 Return ONLY valid JSON (no markdown fences, no extra text).
 
+Before your classification, you must analysis the user's prompt is whether a valid regular request.
+
+For example, the following request is just continuing the previous task, so you have no need to classify them.
+
+- "go ahead"
+- "continue"
+- "ran the rest of tasks"
+- "give up the rest of tasks"
+- "stop"
+- "yes、yeap、right"
+- "update、modify"
+- ...
+
+All above request keyword guide to a continuing task or stopping task, so when you meet the request, you just return:
+{
+    "is_valid_prompt": False,
+}
+
+Otherwise, please follow the classification rules below to do your job.
+
 ## Dimension 1 — stage (current work phase, legacy/display only):
 - "explore": reading code, tracing call chains, understanding current state, investigating logs
 - "brainstorm": exploring ideas, creative thinking, possibilities, "what if"
@@ -220,10 +240,12 @@ Return ONLY valid JSON (no markdown fences, no extra text).
   "complexity_score": 45,
   "complexity_label": "medium",
   "complexity_confidence": 0.88,
-  "reasoning": "brief one-line explanation in Chinese"
+  "reasoning": "brief one-line explanation in Chinese",
+  "is_valid_prompt": True
 }
 
-NOTE: pattern must be exactly one of the 12 values listed above."""
+NOTE: pattern must be exactly one of the 12 values listed above.
+"""
 
 
 def _build_http_client(proxy: Optional[str] = None, timeout: int = 15) -> httpx.Client:
