@@ -734,6 +734,61 @@ for c in STAGE_CONFIG.values():
     MODEL_TO_CONFIG[c["fb_model"]] = (c["fb_base_url"], c["fb_model"], c["fb_api_key_env"], c["fb_protocol"])
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Provider 级 fallback 定义（2026-06-16）
+#
+# 旧 sticky fallback 存储"具体的模型名"（如 deepseek-v4-flash），
+# 导致降级提供方选定后无法按任务复杂度动态选模型。本质语义应是
+# "provider 不可用"而非"model 不可用"——切换到替代 provider 后仍可
+# 在该 provider 内部按 complexity 路由（如 deepseek: simple→flash,
+# medium/complex→pro）。
+#
+# 数据结构：
+#   MODEL_TO_PROVIDER         — model → provider（从 base_url 域名推导）
+#   DEFAULT_FALLBACK_PROVIDER — 失败 provider → 替代 provider
+#   PROVIDER_COMPLEXITY_MODELS — provider → {complexity → model}
+#   KNOWN_PROVIDER_NAMES      — 已知 provider 名集合（校验/向后兼容用）
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _build_model_to_provider() -> dict[str, str]:
+    """从 STAGE_CONFIG 的 base_url 推导 model→provider 映射。"""
+    result: dict[str, str] = {}
+    for c in STAGE_CONFIG.values():
+        for field_prefix in ("", "fb_"):
+            model = c.get(f"{field_prefix}model")
+            url = c.get(f"{field_prefix}base_url", "")
+            if not model or not url:
+                continue
+            if "minimaxi" in url or "minimax" in url:
+                result[model] = "minimax"
+            elif "deepseek" in url:
+                result[model] = "deepseek"
+    return result
+
+
+MODEL_TO_PROVIDER: dict[str, str] = _build_model_to_provider()
+
+DEFAULT_FALLBACK_PROVIDER: dict[str, str] = {
+    "minimax":  "deepseek",
+    "deepseek": "minimax",
+}
+
+PROVIDER_COMPLEXITY_MODELS: dict[str, dict[str, str]] = {
+    "minimax": {
+        "simple":  "MiniMax-M3",
+        "medium":  "MiniMax-M3",
+        "complex": "MiniMax-M3",
+    },
+    "deepseek": {
+        "simple":  "deepseek-v4-flash",
+        "medium":  "deepseek-v4-pro",
+        "complex": "deepseek-v4-pro",
+    },
+}
+
+KNOWN_PROVIDER_NAMES: frozenset[str] = frozenset({"minimax", "deepseek"})
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 关键词派生视图（§14 配置单源化 — D14-2/3/4 修复 2026-06-14）
 #
 # 原始 keywords 列表已合并进 STAGE_CONFIG（每 stage 的 `keywords` 字段）和
