@@ -588,22 +588,23 @@ def main():
             sys.exit(0)
 
         # ── Model-override 检测（最高优先级，在 stage/op 之前）──
+        # 2026-06-16 行为变更：~model 改为「本回合一次性」覆盖，不再写 model_<sid> 持久文件。
+        # 用户在 prompt 里写 `~model ds-v4-pro` 时，proxy 端会从请求 body 里识别并
+        # 立即用该模型处理当前请求；下一次提交（不再带 ~model）则回到自动路由。
+        # 这样 ~model 与 ~stage / ~<op> 的语义对齐（都是「本次会话指令」），避免
+        # 用户在 prompt 里随手带 `~model` 后忘了清，导致整个 session 都被钉死。
+        # 显式 sticky 需求 → 在 settings.json 里配环境变量或每次 prompt 都带 ~model。
         new_model, is_reset = detect_model_override(prompt)
-        old_model = read_model_override(session_id, cwd)
 
         model_msg: str | None = None
-        if is_reset and old_model:
-            clear_model_override(session_id, cwd)
-            clear_fallback(session_id, cwd)  # 同时清除 sticky fallback
-            log("INFO", f"model override cleared (was: {old_model})")
-            model_msg = f"模型覆盖已清除（原: {old_model}），恢复自动路由"
-        elif new_model and new_model != old_model:
-            write_model_override(new_model, session_id, cwd)
-            clear_fallback(session_id, cwd)  # 显式指定模型时清除 sticky fallback
-            log("INFO", f"model override: {old_model} → {new_model}")
-            model_msg = f"模型覆盖: {(old_model or 'none')} → {new_model}"
-        elif new_model == old_model and new_model:
-            log("INFO", f"model override unchanged: {new_model}")
+        if is_reset:
+            # reset 现在是 no-op（无持久文件可清）；保留文案保持用户心智模型稳定
+            log("INFO", "prompt ~model reset: one-shot override, no persistent file to clear")
+            model_msg = "本回合无 model 覆盖需要清除（~model 是一次性指令）"
+        elif new_model:
+            # 仅打印 + 提示用户，不再写 model_<sid>
+            log("INFO", f"prompt ~model one-shot override: {new_model} (no persist)")
+            model_msg = f"本回合 model 覆盖: {new_model}（一次性，不持久化）"
 
         # ── LLM 轻量分类器（设计文档 §6.2/§6.4/§10 合并实现）──
         # 一次 LLM 调用获取 stage + pattern + complexity 三维分类。
@@ -886,7 +887,7 @@ def main():
                     sid=session_id,
                     project_root=_root,
                     stage=(new_stage if new_stage else old_stage),
-                    model_override=read_model_override(session_id, cwd),
+                    model_override=new_model,  # 本回合一次性 override（无持久文件）
                     pattern=read_pattern(session_id, cwd),
                     complexity=read_complexity(session_id, cwd),
                     batch=read_batch(session_id, cwd),

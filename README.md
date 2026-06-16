@@ -537,18 +537,23 @@ stage pattern reset          # 清除 pattern 标注
 stage pattern list           # 列出全部可用 pattern
 ```
 
-### 方式 4：模型别名指令（最高优先级）
+### 方式 4：模型别名指令（最高优先级，一次性）
 
-在 prompt 中任意位置指定模型，覆盖所有自动路由：
+在 prompt 中任意位置指定模型，**仅对当前请求生效**，下一次提交（不再带 `~model`）则回到自动路由：
 
 ```
 用 ds-v4-pro
 ~model ds-flash
 use mm3
-~m reset           # 清除覆盖，回到自动路由
+~m reset           # 本次 reset（一次性覆盖下，no-op 形式存在）
 ```
 
 支持的别名：`ds-v4-pro`, `ds-pro`, `ds-v4-flash`, `ds-flash`, `mm3`, `mm`, `sonnet`, `opus` 等。
+
+> **2026-06-16 行为变更**：`~model` 不再写入 `model_<sid>` 持久文件，避免用户在 prompt 里随手
+> 写了 `~model` 后忘了清、导致整个 session 都被钉死在某个模型上。语义与 `~stage` / `~<op>` 对齐
+> （都是「本次会话指令」）。需要长期使用某模型：在 `settings.json` 里配环境变量，或每次
+> prompt 都带 `~model`。
 
 ## Sticky Fallback
 

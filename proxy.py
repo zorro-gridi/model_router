@@ -1503,37 +1503,22 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             )
 
         # ── 路由决策：prompt_model_override > model_override(file) > op > stage > default ──
-        # 1) prompt 内嵌 ~model 优先（消除一回合延迟）；同时把结果写回
-        #    model_<sid> 文件，让 stage_detector 下一回合也能保持一致。
+        # 1) prompt 内嵌 ~model 优先（消除一回合延迟）。
+        # 2026-06-16 行为变更：~model 改为「本请求一次性」覆盖，**不再写回** model_<sid> 文件。
+        # 旧逻辑：写盘让 stage_detector 下一回合保持一致 → 整个 session 都被钉死。
+        # 新逻辑：只在本请求使用 prompt_model_override，下一请求（无 ~model）回到自动路由。
         # 显式初始化 model_override=None，避免下面 elif/1001 行 if 分支里
         # UnboundLocalError（命中分支才会赋值）。
         model_override = None
         if prompt_model_override:
-            # 找到当前 session 的 model 文件路径（如果有就覆盖）
-            _active_p = _active_stage_path()
-            if _active_p:
-                try:
-                    mf = _model_file_path(_active_p)
-                    mf.parent.mkdir(parents=True, exist_ok=True)
-                    mf.write_text(prompt_model_override)
-                except OSError as e:
-                    log.warning(f"prompt ~model 写回 model_<sid> 失败: {e}")
             log.info(
                 f"prompt ~model 命中: {prompt_model_override!r} "
-                f"（已写回 model_<sid>，当前请求立即生效）"
+                f"（一次性覆盖，仅当前请求生效，不写 model_<sid>）"
             )
             model_override = prompt_model_override
         elif prompt_is_reset:
-            # ~model reset：删除 model_<sid> 文件（如果有）
-            _active_p = _active_stage_path()
-            if _active_p:
-                try:
-                    mf = _model_file_path(_active_p)
-                    if mf.exists():
-                        mf.unlink()
-                    log.info("prompt ~model reset：清除 model 覆盖")
-                except OSError as e:
-                    log.warning(f"prompt ~model reset 删除 model_<sid> 失败: {e}")
+            # reset 现在是 no-op（无持久文件可清）；保留日志让用户知道指令被识别
+            log.info("prompt ~model reset：~model 是一次性指令，无持久文件需要清除")
 
         # ── Per-API-Request 分类（2026-06-16 起已禁用，保留代码以备回滚）────
         # 旧逻辑：计数器在 UserPromptSubmit (Hook) 时重置为 0；本回合若计数器到达
