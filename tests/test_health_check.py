@@ -198,12 +198,10 @@ class TryWriteFallbackTest(unittest.TestCase):
         self.assertEqual(false_count, n_threads - 1, f"其余应为 False，实际 {false_count}")
 
     def test_writes_json_with_ttl(self):
+        """expire_ts - failed_at 应等于 STICKY_TTL_SECONDS。"""
+        import proxy
         with patch("proxy._active_stage_path", return_value=self.stage_path), \
-             patch.dict(os.environ, {"STAGE_ROUTER_STICKY_TTL_SECONDS": "7200"}):
-            # reload proxy 模块以让 env 生效（注意：只对模块级常量生效）
-            import importlib
-            import proxy
-            importlib.reload(proxy)
+             patch.object(proxy, "STICKY_TTL_SECONDS", 7200):
             self.assertTrue(proxy.try_write_fallback("deepseek"))
         data = json.loads(self.fb_path.read_text(encoding="utf-8"))
         self.assertEqual(data["provider"], "deepseek")
