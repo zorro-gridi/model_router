@@ -679,6 +679,26 @@ def write_fallback(model: str) -> None:
             log.error(f"写入 fallback_<sid> 失败: {e}")
 
 
+def clear_fallback() -> None:
+    """清除当前 session 的 sticky fallback 文件。
+
+    用户执行 ~model reset 时调用：主模型（如 MiniMax-M3）网络恢复后，
+    用户手动解除 sticky，后续请求回到正常 stage 路由。
+    多 session 并发安全（通过 _active_stage_path() 解析当前 session）。
+    """
+    p = _active_stage_path()
+    if p:
+        try:
+            fb_path = _fallback_file_path(p)
+            if fb_path.exists():
+                fb_path.unlink()
+                log.info("sticky fallback 已清除: ~model reset，后续请求回到正常路由")
+            else:
+                log.debug("sticky fallback 文件不存在，无需清除")
+        except Exception as e:
+            log.error(f"清除 fallback_<sid> 失败: {e}")
+
+
 # ── Pattern / Complexity / Batch / State-Index 读取（设计文档 §6.2-6.4 / §13）──
 
 def _pattern_file_path(stage_file: Path) -> Path:
@@ -1517,8 +1537,12 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             )
             model_override = prompt_model_override
         elif prompt_is_reset:
-            # reset 现在是 no-op（无持久文件可清）；保留日志让用户知道指令被识别
-            log.info("prompt ~model reset：~model 是一次性指令，无持久文件需要清除")
+            # ~model reset 清除 sticky fallback，让后续请求回到正常 stage 路由。
+            # ~model 虽然已改为一次性的 model_override（不写 model_<sid> 持久文件），
+            # 但 sticky fallback 文件（fallback_<sid>）是持久存在的独立机制——
+            # 主模型（如 MiniMax-M3）网络恢复后，用户通过 ~model reset 手动解除 sticky。
+            log.info("prompt ~model reset：清除 sticky fallback，后续请求回到正常路由")
+            clear_fallback()
 
         # ── Per-API-Request 分类（2026-06-16 起已禁用，保留代码以备回滚）────
         # 旧逻辑：计数器在 UserPromptSubmit (Hook) 时重置为 0；本回合若计数器到达
