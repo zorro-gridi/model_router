@@ -812,6 +812,7 @@ def main():
         # 都无条件调 decide() 覆写 locked decision。现在先读已有 state，
         # locked=True 且无 ~model 显式覆盖 → 保留原 decision 不重算。
         decision_dict: dict | None = None
+        prompt_id: str | None = None  # V1.3 §4.2 per-prompt ID
         if session_id and cwd and prompt:
             try:
                 from decision_engine import decide as _v13_decide
@@ -855,9 +856,44 @@ def main():
                         }
 
                     prompt_id = f"{session_id[-8:]}-p{int(_t.time())}"
+
+                    # ── V1.3 §4.2 Per-Prompt Runtime 初始化 ──
+                    # 归档上一个 prompt 的 runtime_score 到 prompt_history，
+                    # 重置计分器为新 prompt 准备。
+                    try:
+                        from runtime_tracker import RuntimeTracker
+                        _rt = RuntimeTracker()
+                        _rt.init_prompt(session_id, _root, prompt_id)
+                        log("INFO",
+                            f"v1.3 runtime init: prompt_id={prompt_id}")
+                    except Exception as _rte:
+                        log("WARN", f"runtime_tracker.init_prompt failed: {_rte!r}")
+
+                    # ── 从 prompt_history 聚合 session 级历史分数 ──
+                    _session_runtime_score = 0
+                    try:
+                        _state_after_init = _V13Store().read_new(session_id, _root)
+                        if _state_after_init:
+                            _rs_data = _state_after_init.get("runtime_score", {})
+                            if isinstance(_rs_data, dict):
+                                _ph = _rs_data.get("prompt_history", {})
+                                if isinstance(_ph, dict) and _ph:
+                                    _scores = [
+                                        v.get("score", 0)
+                                        for v in _ph.values()
+                                        if isinstance(v, dict)
+                                    ]
+                                    _session_runtime_score = max(_scores) if _scores else 0
+                                    log("INFO",
+                                        f"v1.3 session_runtime_score={_session_runtime_score} "
+                                        f"(from {len(_ph)} previous prompts)")
+                    except Exception as _sre:
+                        log("WARN", f"session_runtime_score compute failed: {_sre!r}")
+
                     rec = _v13_decide(
                         prompt, session_id, prompt_id,
                         classifier=_v13_classifier,
+                        session_runtime_score=_session_runtime_score,
                     )
                     decision_dict = dict(rec.to_dict())
                     # ~model 显式覆盖：覆写 final_model（V1.3 §6.4 优先级最高）
@@ -893,6 +929,7 @@ def main():
                     batch=read_batch(session_id, cwd),
                     fallback=read_fallback(session_id, cwd),
                     decision=decision_dict,
+                    current_prompt_id=prompt_id,
                 )
                 log("INFO", f"v1.3 dual-write snapshot → {_root}/.claude/model_router_state_{session_id}.json")
             except Exception as _e:

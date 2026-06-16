@@ -319,6 +319,7 @@ def decide(
     prompt_id: str,
     *,
     classifier: Optional[Callable[[str], dict]] = None,
+    session_runtime_score: int = 0,
 ) -> DecisionRecord:
     """
     V1.3 决策核心：prompt → DecisionRecord。
@@ -329,6 +330,10 @@ def decide(
         prompt_id: 当前 prompt 的局部 id（V1.3 §15.5 不跨 session 继承）。
         classifier: 可选注入的分类函数 `Callable[[str], dict]`；
                     默认走 `llm_classifier.classify`。
+        session_runtime_score: 本 session 历史所有 prompt 的 max runtime_score
+                    （V1.3 §4.2 偏置）。当此值 > 70 且 LLM 分类为 simple 时，
+                    保守抬升到 medium：session 之前已经在做复杂工作，
+                    新 prompt 不太可能突然变简单。
 
     Returns:
         DecisionRecord（locked=False — 首次决策只是暂定；
@@ -350,14 +355,39 @@ def decide(
     # 本阶段只关心最终 label，不直接使用 score
     label, _score = _apply_conservative_bias(raw_label, raw_score, prompt)
     del _score
+
+    # ── V1.3 §4.2 Session 历史运行时偏置 ──
+    # 历史 prompt 持续高分（>70）说明 session 整体在做复杂工作，
+    # 新 prompt 出现 simple 极可能是分类失误，保守抬升。
+    session_runtime_bias_reason = ""
+    if session_runtime_score > 70 and label == "simple":
+        label = "medium"
+        session_runtime_bias_reason = (
+            f"session 历史 runtime_score={session_runtime_score}>70，"
+            f"complex 偏置 simple → medium"
+        )
+
     final_model = _COMPLEXITY_TO_MODEL.get(label, "MiniMax-M3")
 
     # V1.3 §15.4 路由理由：人类可读
     biased = label != raw_label
-    if biased:
+    bias_parts: list[str] = []
+    if biased and session_runtime_bias_reason:
+        # 两种偏置都发生：合并理由
+        bias_parts.append(session_runtime_bias_reason)
+        bias_parts.append(f"prompt 模糊，保守偏置抬升 {raw_label} → {label}")
+        prompt_reasoning = "；".join(bias_parts)
+        if reasoning:
+            prompt_reasoning = f"{reasoning}；{prompt_reasoning}"
+    elif biased:
         prompt_reasoning = f"prompt 模糊，保守偏置抬升 {raw_label} → {label}"
         if reasoning:
             prompt_reasoning = f"{reasoning}；{prompt_reasoning}"
+    elif session_runtime_bias_reason:
+        prompt_reasoning = (
+            f"{reasoning}；{session_runtime_bias_reason}"
+            if reasoning else session_runtime_bias_reason
+        )
     else:
         prompt_reasoning = reasoning or f"prompt 显式 {label}"
 
