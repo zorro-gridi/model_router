@@ -72,14 +72,16 @@ try:
         COMPLEXITY_THRESHOLDS,
         STAGE_KEYWORDS,
         PATTERN_KEYWORDS,
-        MODEL_TO_PROVIDER,        # provider 级 fallback：model→provider 映射
-        KNOWN_PROVIDER_NAMES,     # provider 级 fallback：已知 provider 名集合
+        MODEL_TO_PROVIDER,            # provider 级 fallback：model→provider 映射
+        DEFAULT_FALLBACK_PROVIDER,  # provider 级 fallback：provider→备选 provider
+        KNOWN_PROVIDER_NAMES,       # provider 级 fallback：已知 provider 名集合
     )
 except Exception:
     COMPLEXITY_THRESHOLDS = {"simple": 30, "medium": 70}
     STAGE_KEYWORDS = []
     PATTERN_KEYWORDS = {}
     MODEL_TO_PROVIDER = {}
+    DEFAULT_FALLBACK_PROVIDER = {}
     KNOWN_PROVIDER_NAMES = frozenset()
 
 # ── 分 session 阶段管理 ──
@@ -736,9 +738,13 @@ def main():
         if not new_model and not is_reset:
             fb_provider = read_fallback(session_id, cwd)
             if fb_provider:
-                log("INFO", f"sticky fallback active: provider={fb_provider}")
+                # fb_provider 是 FAILED 的 provider（如 "minimax"），
+                # 实际备用 provider 是 DEFAULT_FALLBACK_PROVIDER 的映射值
+                actual_fb = DEFAULT_FALLBACK_PROVIDER.get(fb_provider, "deepseek")
+                log("INFO",
+                    f"sticky fallback active: {fb_provider}→{actual_fb}")
                 fb_msg = (
-                    f"主 provider 曾不可用，已自动切换至备用 provider: {fb_provider}"
+                    f"⚠️ {fb_provider} 不可用，已自动切换至 {actual_fb}"
                 )
 
         # ── Task Pattern 检测（Shadow Mode，2026-06-14 引入）──
