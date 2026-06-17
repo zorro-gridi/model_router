@@ -2183,6 +2183,28 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # 标志位：本请求是否"实际切换到了备用模型"。
         # 用于 /metrics 的 used_fallback 严格判定（区分 4xx 非可重试错误）。
         fallback_invoked = False
+
+        # ── Token Plan 预检（2026-06-17 引入）──────────────────────────────────
+        # 在 read_fallback() 之前触发：minimax 账户的 5h / 周配额 > 98% 时主动写
+        # sticky fallback（"minimax" → "deepseek"）。下面 read_fallback() 拿到刚写
+        # 入的 sticky，本请求立即命中 sticky_provider 分支完成 swap —— 不再等下一回合。
+        #
+        # 不影响错误码 fallback 链路：_is_retriable 触发的 sticky 仍走原逻辑。
+        # 跳过条件（与 sticky_provider 对齐）：
+        #   - model_override: 用户已显式指定模型，token 余量与用户意图无关
+        #   - internal_req:   内部服务请求不应被代理级 fallback 污染
+        if not model_override and not internal_req:
+            try:
+                from token_plan import precheck_and_fallback
+                precheck_result = precheck_and_fallback(reason="proxy-do_post")
+                if precheck_result.get("triggered"):
+                    # 把触发原因记到 routing_source 便于排错
+                    reasons = precheck_result.get("judgment", {}).get("reasons", [])
+                    routing_source += f" [token-plan-triggered={','.join(reasons)}]"
+            except Exception as _tp_exc:
+                # 预检失败不阻塞正常代理（fail-safe：探测异常 → 按主 provider 路由）
+                log.warning(f"token_plan 预检异常（已忽略）: {_tp_exc}")
+
         sticky_provider = (
             read_fallback()
             if (not model_override and not internal_req)
