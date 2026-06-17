@@ -68,19 +68,13 @@ _clear_fallback_all = None  # type: ignore[var-annotated]
 # 阶段复杂度阈值（simple ≤ X，medium ≤ Y，> Y = complex）
 # 见 stage_config.COMPLEXITY_THRESHOLDS
 try:
-    from stage_config import (  # noqa: E402  配置单源化派生（§14 D14-2/3）
-        COMPLEXITY_THRESHOLDS,
-        STAGE_KEYWORDS,
-        PATTERN_KEYWORDS,
+    from stage_config import (  # noqa: E402  配置单源化派生
         MODEL_TO_PROVIDER,            # provider 级 fallback：model→provider 映射
         DEFAULT_FALLBACK_PROVIDER,  # provider 级 fallback：provider→备选 provider
         KNOWN_PROVIDER_NAMES,       # provider 级 fallback：已知 provider 名集合
         PROVIDER_COMPLEXITY_MODELS, # §16 complexity→model 映射（complexity 覆盖 stage）
     )
 except Exception:
-    COMPLEXITY_THRESHOLDS = {"simple": 30, "medium": 70}
-    STAGE_KEYWORDS = []
-    PATTERN_KEYWORDS = {}
     MODEL_TO_PROVIDER = {}
     DEFAULT_FALLBACK_PROVIDER = {}
     KNOWN_PROVIDER_NAMES = frozenset()
@@ -127,21 +121,16 @@ EXPLICIT_PREFIX_RE = re.compile(
 
 def detect_stage(prompt: str) -> str | None:
     """
+    检测显式 ~stage 指令。
+
     返回检测到的阶段名，或 None（表示不更改当前阶段）。
-    优先级：显式命令 > 关键词匹配 > 不变
+    仅处理显式用户命令，不再使用关键词匹配（§17 架构简化 2026-06-17）：
+    stage 的主力分类来源已迁移到 LLM classifier。
     """
-    # 显式命令
     m = EXPLICIT_PREFIX_RE.search(prompt.strip())
     if m:
         return m.group(1).lower()
-
-    # 关键词匹配（遍历顺序即优先级）
-    prompt_lower = prompt.lower()
-    for stage, keywords in STAGE_KEYWORDS:
-        if any(kw in prompt_lower for kw in keywords):
-            return stage
-
-    return None  # 不更改阶段
+    return None
 
 
 
@@ -154,59 +143,15 @@ def detect_stage(prompt: str) -> str | None:
 #                 **不影响路由决策**。积累标注数据后，进入阶段 B 再启用
 #                 Adaptive Routing。
 #
-# 与 stage/op 的关键区别：
-#   - 多个 pattern 可以并存（用 confidence 排序），不像 stage/op 是单值覆盖
-#   - 走 JSON 格式而非纯文本：{"prediction": "...", "confidence": 0.73}
-#   - 永远不阻塞 stage/op 路由（Shadow Mode）
+# §17 架构简化（2026-06-17）：关键词匹配已移除，pattern 仅来源于
+# LLM classifier 或用户显式 ~pattern 指令。不再保留关键词 fallback。
 # ────────────────────────────────────────────────────────────────────
 
-# §14 配置单源化（D14-2/3 修复 2026-06-14）：PATTERN_KEYWORDS 已从本文件
-# 迁出至 stage_config.py → PATTERN_CONFIG.keywords。本文件顶部 try-import
-# 已把 PATTERN_KEYWORDS 作为派生视图导入，行为与原硬编码完全一致。
-#
 # 显式命令前缀（最高优先级）
 PATTERN_PREFIX_RE = re.compile(
     r"(?:^|\s)~pattern\s+(feature|bugfix|refactor|test|research|migration|architecture|docs|audit)\b",
     re.IGNORECASE,
 )
-
-
-def detect_task_pattern(prompt: str) -> tuple[str | None, float]:
-    """
-    Shadow-Mode 模式检测。
-
-    返回 (pattern_name, confidence)：
-      - pattern_name=None  → 未识别到任何 pattern
-      - confidence ∈ [0, 1]：累计权重归一化后的置信度
-
-    多个 pattern 可并存时，返回权重最高的一个作为主 pattern。
-    整体行为：**不修改任何路由**——只读取 prompt、产出标注、由调用方决定
-    是否写入日志/文件/上报 ROC。
-    """
-    if not prompt:
-        return (None, 0.0)
-
-    # 1. 显式 ~pattern 指令
-    m = PATTERN_PREFIX_RE.search(prompt.strip())
-    if m:
-        return (m.group(1).lower(), 1.0)
-
-    # 2. 关键词加权计票
-    prompt_lower = prompt.lower()
-    scores: dict[str, int] = {}
-    for pattern, kw_weights in PATTERN_KEYWORDS.items():
-        score = sum(w for kw, w in kw_weights if kw in prompt_lower)
-        if score > 0:
-            scores[pattern] = score
-
-    if not scores:
-        return (None, 0.0)
-
-    # 取权重最高的 pattern
-    best = max(scores.items(), key=lambda kv: kv[1])
-    # 归一化：score / (score + 4) → 大致把 score 4 当作 confidence 0.8
-    confidence = best[1] / (best[1] + 4)
-    return (best[0], round(confidence, 2))
 
 
 # ── 项目根目录查找（参照 compact/utils.py 的 _find_project_root）──
@@ -1144,94 +1089,11 @@ from stage_config import (  # noqa: E402  配置单源化派生
 )
 
 
-def _score_to_label(score: int) -> str:
-    """0~100 分数 → simple/medium/complex 标签。"""
-    if score <= COMPLEXITY_THRESHOLDS["simple"]:
-        return "simple"
-    if score <= COMPLEXITY_THRESHOLDS["medium"]:
-        return "medium"
-    return "complex"
-
-
-def detect_complexity(prompt: str, pattern: str | None = None,
-                      stage: str | None = None) -> dict:
-    """
-    计算当前 prompt 的复杂度评分。
-
-    返回：{"score": int, "label": "simple"|"medium"|"complex",
-           "confidence": float, "signals": list[str]}
-
-    实现思路（V1 启发式，V2 可替换为 LLM 分类器）：
-      1. 基础分：若已识别 pattern，从 PATTERN_BASE_SCORE 起步；否则 medium=50
-      2. Stage 倍率：基于当前阶段（设计文档 §9 原则："复杂度必须基于当前阶段判断"）
-      3. 关键词加权：扫描 COMPLEXITY_KEYWORDS，累加权重
-      4. 长度加成：>200 字加 5，>500 字加 10（长 prompt 通常任务更复杂）
-      5. 文件提及：出现"X 个文件"/"多个"等加 5
-      6. 夹紧到 [0, 100]
-      7. confidence：依据触发的信号数，0 个信号 → 0.3，≥3 个 → 0.85
-
-    参数：
-      prompt  — 用户输入文本
-      pattern — 已识别的任务模式（feature / bugfix / ...）
-      stage   — 当前工作阶段（explore / design / audit / ...，设计文档 §9 原则）
-    """
-    signals: list[str] = []
-    if not prompt:
-        return {"score": 50, "label": "medium", "confidence": 0.3, "signals": []}
-
-    # 1. 基础分
-    if pattern and pattern in PATTERN_BASE_SCORE:
-        score = PATTERN_BASE_SCORE[pattern]
-        signals.append(f"pattern={pattern}({score})")
-    else:
-        score = 50  # medium 起步
-        signals.append("base=medium(50)")
-
-    # 2. Stage 倍率（§9 D9-1 修复）
-    if stage and stage in STAGE_COMPLEXITY_MULTIPLIER:
-        mult = STAGE_COMPLEXITY_MULTIPLIER[stage]
-        score = int(score * mult)
-        signals.append(f"stage={stage}(×{mult})")
-
-    # 3. 关键词
-    prompt_lower = prompt.lower()
-    for kw, w in COMPLEXITY_KEYWORDS:
-        if kw in prompt_lower:
-            score += w
-            signals.append(f"{kw}({w:+d})")
-
-    # 4. 长度加成
-    char_count = len(prompt)
-    if char_count > 500:
-        score += 10
-        signals.append(f"len>500(+10)")
-    elif char_count > 200:
-        score += 5
-        signals.append(f"len>200(+5)")
-
-    # 5. "多个 / X 个" 加成
-    if any(p in prompt for p in ("多个", "若干", "几处", "一系列")):
-        score += 5
-        signals.append("multi-entity(+5)")
-
-    # 6. 夹紧
-    score = max(0, min(100, score))
-
-    # 7. confidence
-    n_signals = len(signals)
-    confidence = min(0.85, 0.3 + n_signals * 0.12)
-    confidence = round(confidence, 2)
-
-    return {
-        "score":      score,
-        "label":      _score_to_label(score),
-        "confidence": confidence,
-        "signals":    signals,
-    }
-
-
 # ────────────────────────────────────────────────────────────────────
 # Complexity / Batch 文件（per-session）
+#
+# §17 架构简化（2026-06-17）：detect_complexity() 关键词评分已移除。
+# Complexity 的唯一来源现在是 LLM classifier，辅以用户 ~careful/~quick 显式调档。
 # ────────────────────────────────────────────────────────────────────
 
 def _complexity_file_path(stage_file: Path) -> Path:
