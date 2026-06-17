@@ -61,13 +61,16 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
+from dotenv import load_dotenv
+load_dotenv('hooks/model_router/.env')
+
 log = logging.getLogger("token-plan")
 
 # ── 配置 ───────────────────────────────────────────────────────────────────────
 
 # API endpoint（用户提供的查询接口）
 TOKEN_PLAN_API_URL = os.environ.get(
-    "STAGE_ROUTER_TOKEN_PLAN_URL",
+    "MINIMAX_TOKEN_PLAN_URL",
     "https://www.minimaxi.com/v1/token_plan/remains",
 )
 
@@ -433,3 +436,8 @@ __all__ = [
     "PROVIDER_NAME",
     "PLAN_NAME",
 ]
+
+
+
+if __name__ == '__main__':
+    get_token_plan_status()
