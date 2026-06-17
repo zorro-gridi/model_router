@@ -289,7 +289,14 @@ def main() -> None:
         cwd = event.get("cwd", "")
 
         if sid and cwd:
-            dispatch(sid, cwd, event)
+            # ★ Fix: 用 _find_project_root 解析项目根，而非把 cwd 直接当 project_root
+            # stage_detector._find_project_root 走 4 级查找：
+            #   ① stage_<sid>/.claude/ 锚点 ② .claude/ 目录 ③ .git/ 顶层 ④ ~/.claude
+            # 确保 state 文件写 <project_root>/.claude/，与 stage_detector 写入路径一致
+            from stage_detector import _find_project_root as _resolve_root
+            _start = Path(cwd) if not isinstance(cwd, Path) else Path(cwd)
+            project_root = str(_resolve_root(_start, sid))
+            dispatch(sid, project_root, event)
     except Exception:
         # 最外层兜底
         pass

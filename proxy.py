@@ -998,13 +998,35 @@ def _active_stage_path() -> Path | None:
         return cached
 
     # 主路径：state_index.json → 最新活跃 session
+    # V1.5: 优先用 _by_session 正向索引（避免反向索引多 project_root 时选错 sid），
+    # 退化到反向索引扫最大 last_active。
     all_entries = _read_state_index_all()
     if all_entries:
+        # 1. 优先 _by_session 正向索引（按 sid 维度，跨项目不互踩）
+        by_session = all_entries.get("_by_session")
+        if isinstance(by_session, dict) and by_session:
+            best_ts = 0
+            best_project_root = ""
+            best_sid = ""
+            for sid_key, entry in by_session.items():
+                if not isinstance(entry, dict):
+                    continue
+                ts = entry.get("last_active", 0)
+                proj = entry.get("project_root", "")
+                if ts > best_ts and proj:
+                    best_ts = ts
+                    best_project_root = proj
+                    best_sid = sid_key
+            if best_sid:
+                stage_path = Path(best_project_root) / ".claude" / f"stage_{best_sid}"
+                if stage_path.exists():
+                    return stage_path
+        # 2. 退化：反向索引扫 last_active（兼容旧 state_index 无 _by_session 字段）
         best_ts = 0
         best_project_root = ""
         best_sid = ""
         for path_key, entry in all_entries.items():
-            if not isinstance(entry, dict):
+            if path_key == "_by_session" or not isinstance(entry, dict):
                 continue
             ts = entry.get("last_active", 0)
             sid = entry.get("session_id", "")

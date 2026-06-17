@@ -162,8 +162,8 @@ def _find_project_root(start: Path, session_id: str | None = None) -> Path:
       2. Walk up looking for a ``.claude/`` config directory (skipping the
          global ``~/.claude`` unless we started inside it).
       3. Walk up looking for a ``.git/`` toplevel as fallback.
-      4. Fall back to ``~/.claude`` so stage files always land under a known
-         location instead of polluting the current working directory.
+      4. Fall back to ``start/.claude/`` (CWD-local) — only use HOME_CLAUDE
+         when the user is working inside the Claude config repo itself.
 
     Walks at most 20 levels.
     """
@@ -200,7 +200,14 @@ def _find_project_root(start: Path, session_id: str | None = None) -> Path:
 
     if git_root is not None:
         return git_root
-    return HOME_CLAUDE if HOME_CLAUDE.is_dir() else start
+    # Step 4: 无 .claude/ 也无 .git/ → 写 CWD 本地目录，不污染 HOME_CLAUDE。
+    # 旧实现在此无条件返回 HOME_CLAUDE，导致所有非项目目录 session 的状态文件
+    # 全落盘到 ~/.claude/.claude/，积攒了 500+ 孤立文件。
+    # 现在：仅当 cwd 自身在 ~/.claude 内部（用户在编辑 Claude Code 配置仓库自身）
+    # 时才退到 HOME_CLAUDE，否则直接以 start 为项目根。
+    if str(start).startswith(str(HOME_CLAUDE) + os.sep) or start == HOME_CLAUDE:
+        return HOME_CLAUDE
+    return start
 
 
 def _write_skip_signal(sid: str, project_root: str) -> None:
@@ -314,17 +321,35 @@ def _save_state_index(idx: dict) -> None:
 def _update_state_index(project_root: str, session_id: str, stage_path: Path) -> None:
     """更新 state_index.json 中 project_root 记录的 session_id 和 last_active。
     同一 project_root 多 session 时以 last_active 最新者为准（与 active_session 语义一致）。
+
+    V1.5 by_session 索引：
+      state_index.json 新增顶层键 _by_session: {session_id: {project_root, stage, last_active}}
+      旧顶层 {project_root: {...}} 保留为反向索引（backward-compat for proxy.py 旧读端）。
+      跨项目时直接 by_session[sid] 查 O(1) 拿到 project_root，不再依赖全局指针。
     """
     idx = _load_state_index()
     try:
         stage_name = stage_path.read_text().strip() or "default"
     except FileNotFoundError:
         stage_name = "default"
-    idx[project_root] = {
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    entry = {
         "session_id":  session_id,
         "stage":       stage_name,
-        "last_active": int(datetime.now(timezone.utc).timestamp()),
+        "last_active": now_ts,
     }
+    # 反向索引（按 project_root）— 兼容旧读端
+    idx[project_root] = dict(entry)
+    # 正向索引（按 session_id）— 跨项目 / statusline O(1) 查
+    by_session = idx.get("_by_session")
+    if not isinstance(by_session, dict):
+        by_session = {}
+    by_session[session_id] = {
+        "project_root": project_root,
+        "stage":        stage_name,
+        "last_active":  now_ts,
+    }
+    idx["_by_session"] = by_session
     _save_state_index(idx)
 
 
