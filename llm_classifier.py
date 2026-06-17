@@ -48,6 +48,13 @@ from typing import Optional
 
 # 将同目录加入 sys.path，确保直接执行或 Hook 调用都能 import stage_config
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# `hooks.compact.utils` 提供的 state_path() 与其它 hook 看到的状态文件
+# 路径完全一致——让 llm_classifier 也能解析到同一个
+# <project_root>/.claude/session_state_<sid>.json，从而读取
+# 当前 session 的 task_goal 给 LLM 做上下文。需要在 sys.path 里同时
+# 加上 ~/.claude 和 ~/.claude/hooks（与 hooks/session/update_goal.py
+# 的导入约定保持一致）。
+sys.path.insert(0, os.path.expanduser("~/.claude"))
 
 import anthropic  # noqa: E402
 import httpx      # noqa: E402
@@ -60,6 +67,13 @@ import httpx      # noqa: E402
 sys.path.insert(0, os.path.expanduser("~/.claude/hooks"))
 from _load_env import load_plugin_env  # noqa: E402
 load_plugin_env(__file__)  # noqa: E402
+
+# ── session state 读取（与 update_goal.py 共享）──
+# 分类器需要拿到"上一轮 task_goal"作为上下文，帮助 LLM 在任务续接场景下
+# 做出与上一轮一致的 pattern / stage / complexity 决策（避免把"继续
+# 之前的实现"误判成 explore）。state_path() 解析出来的路径与
+# update_goal.py 写状态时用的路径完全一致。
+from hooks.compact.utils import state_path  # noqa: E402
 
 # ── 日志（设计文档 §15 D15-6：脱敏后再写，避免 password/api_key 落盘）──
 # 日志路径从 __file__ 的目录结构镜像到 /tmp/ 下：
@@ -335,6 +349,54 @@ def _load_config(override: Optional[dict] = None) -> dict:
     return cfg
 
 
+def _load_current_goal_for_data(data: dict) -> str:
+    """根据 data dict 解析并读取当前 session 的 task_goal，找不到返回 ''。
+
+    镜像 hooks/session/update_goal.py 里 _load_current_goal 的 best-effort
+    语义（文件不存在 / 解析失败 / 字段缺失均视为空），但这里接受任意
+    ``data`` 形参（不一定有完整的 hook payload 结构），因此 ``session_id``
+    / ``cwd`` 字段缺失时只返回 ``''``——分类器在没有 session 上下文时
+    （例如 CLI 调试、proxy 启动期分类）就拿不到 goal，由 LLM 拿到
+    "（暂无）" 的占位符，不阻塞分类主流程。
+    """
+    try:
+        path = state_path(data or {})
+    except Exception as e:
+        _log_classify_failure("state_path", e)
+        return ''
+    try:
+        if not path.exists():
+            return ''
+        raw = path.read_text(encoding="utf-8")
+    except OSError as e:
+        _log_classify_failure("state_read", e)
+        return ''
+    if not raw.strip():
+        return ''
+    try:
+        state = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as e:
+        _log_classify_failure("state_parse", e)
+        return ''
+    goal = (state.get("task_goal") or "").strip()
+    return goal
+
+
+def _build_hook_data() -> dict:
+    """从 env / cwd 合成一个最小 ``data`` 形参，给 ``state_path`` 用。
+
+    classify() 在 hook 子进程里被调用时，上游（如 stage_detector）会
+    显式传 ``data``；从 proxy.py 或 CLI 入口调用时没有 ``data``，这
+    里走 fallback：``CLAUDE_SESSION_ID`` env → 空字符串；cwd → 当前
+    工作目录。任何字段缺失都让 ``state_path`` 自然回退到
+    ``~/.claude/.claude/``（设计文档 §13 允许的兜底），不会抛。
+    """
+    return {
+        "session_id": os.environ.get("CLAUDE_SESSION_ID", ""),
+        "cwd": os.environ.get("CLAUDE_CWD") or os.getcwd(),
+    }
+
+
 def classify(prompt: str, config_override: Optional[dict] = None) -> dict:
     """
     单次 LLM 调用的轻量分类器。
@@ -386,6 +448,15 @@ def classify(prompt: str, config_override: Optional[dict] = None) -> dict:
             + f"\n\n... [已截断 {truncated_chars} 字符] ...\n\n"
             + prompt[-tail_chars:]
         )
+
+    prompt = f'''## Previous Task Goal:
+    <{_load_current_goal_for_data(_build_hook_data()) or '（暂无）'}>
+
+    ## User's input:
+    {prompt}
+
+    Pleaes give your classification result by user's input
+    '''
 
     # ── 构造 Anthropic SDK 客户端 ──
     # SDK 底层 httpx 会自动走 HTTPS_PROXY / ALL_PROXY 环境变量。
