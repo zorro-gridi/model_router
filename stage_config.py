@@ -120,10 +120,18 @@ STAGE_CONFIG: dict[str, dict] = {
         "emoji":       "⚖️",
         "label":       "决策分析",
         "desc":        "深度推理，权衡分析",
-        # V1.2 §11 例外（D11-1）：主模型 = deepseek-v4-pro（"高阶推理"语义），
-        # 偏离"MiniMax-M3 作为默认基线"原则是经业务验证的优化（决策场景值得付推理成本），
-        # 备=MiniMax-M3（pro 不可用时降级到基线）。
-        "model":       "deepseek-v4-pro",
+        # §16 核心原则（+ D11-1 修正 2026-06-17）：
+        #   主模型 = deepseek-v4-flash（低成本基线），而非 deepseek-v4-pro。
+        #
+        #   原 D11-1 将 decide 固定为 pro，认为"决策场景值得付推理成本"。
+        #   但这与 §16 复杂度主导原则冲突——simple/medium 决策任务不
+        #   应强制走 pro。改为 flash 作为基线后：
+        #     - complexity=simple  → flash（§16 覆盖，无额外成本）
+        #     - complexity=medium  → flash（同上）
+        #     - complexity=complex → deepseek-v4-pro（proxy.py §16 覆盖自动升级）
+        #
+        #   备=MiniMax-M3（flash 不可用时降级到基线）。
+        "model":       "deepseek-v4-flash",
         "base_url":    "https://api.deepseek.com/anthropic",
         "api_key_env": "DEEPSEEK_API_KEY",
         "protocol":    "anthropic",

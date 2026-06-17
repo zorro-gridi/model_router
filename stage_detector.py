@@ -84,6 +84,7 @@ except Exception:
     MODEL_TO_PROVIDER = {}
     DEFAULT_FALLBACK_PROVIDER = {}
     KNOWN_PROVIDER_NAMES = frozenset()
+    PROVIDER_COMPLEXITY_MODELS: dict = {}  # §16 complexity→model 映射（import 失败兜底）
 
 # ── 分 session 阶段管理 ──
 # 每个 session 独立管理阶段，避免多会话互相覆盖。
