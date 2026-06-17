@@ -65,8 +65,7 @@ from model_alias import (  # noqa: E402
 # （load_plugin_env 等）影响 hook 启动。
 _clear_fallback_all = None  # type: ignore[var-annotated]
 
-# 阶段复杂度阈值（simple ≤ X，medium ≤ Y，> Y = complex）
-# 见 stage_config.COMPLEXITY_THRESHOLDS
+# §17 架构简化（2026-06-17）：COMPLEXITY_THRESHOLDS 不再导入，complexity 由 LLM 分类。
 try:
     from stage_config import (  # noqa: E402  配置单源化派生
         MODEL_TO_PROVIDER,            # provider 级 fallback：model→provider 映射
@@ -106,11 +105,8 @@ def log(level: str, msg: str) -> None:
         pass
 
 
-# §14 配置单源化（D14-2/3 修复 2026-06-14）：STAGE_KEYWORDS / PATTERN_KEYWORDS
-# 已从本文件迁出至 stage_config.py。本文件顶部 try-import 已把 STAGE_KEYWORDS
-# / PATTERN_KEYWORDS 作为派生视图导入（顺序与权重与原硬编码完全一致）。
-# detect_stage() 仍按 `for stage, keywords in STAGE_KEYWORDS` 顺序遍历，
-# 行为零变化。
+# §17 架构简化（2026-06-17）：STAGE_KEYWORDS / PATTERN_KEYWORDS 不再导入。
+# detect_stage() 仅处理显式 ~stage 指令，LLM classifier 是唯一分类源。
 #
 # 显式命令前缀（优先级最高）
 EXPLICIT_PREFIX_RE = re.compile(
@@ -692,7 +688,8 @@ def main():
                 return None
 
         # ── Stage 检测 ──
-        # 优先级：显式 ~stage > LLM 分类器 > V1 关键词
+        # 优先级：显式 ~stage > LLM 分类器
+        # §17 架构简化（2026-06-17）：LLM 是唯一分类源，不再保留关键词回退
         new_stage = detect_stage(prompt)
         if new_stage is None and llm_result:
             # 无显式 ~stage 指令时，用 LLM 分类结果
@@ -737,7 +734,8 @@ def main():
         # ── Task Pattern 检测（Shadow Mode，2026-06-14 引入）──
         #   - 仅记录到 pattern_<sid> + 日志，**不影响路由**
         #   - 阶段 B 启用 Adaptive Routing 后才进入 proxy 决策
-        # 优先级：显式 ~pattern > LLM 分类器 > V1 关键词
+        # 优先级：显式 ~pattern > LLM 分类器
+        # §17 架构简化（2026-06-17）：移除关键词回退，LLM 是唯一分类源
         pattern_msg: str | None = None
         if session_id and cwd:
             # 检查显式 ~pattern 指令
@@ -749,7 +747,7 @@ def main():
                 new_conf = llm_result.get("pattern_confidence", 0.5)
                 log("INFO", f"pattern from LLM: {new_pattern} (conf={new_conf})")
             else:
-                new_pattern, new_conf = detect_task_pattern(prompt)
+                new_pattern, new_conf = None, None
             old_pattern_data = read_pattern(session_id, cwd)
             old_pattern = old_pattern_data.get("prediction") if old_pattern_data else None
             if new_pattern:
@@ -790,9 +788,11 @@ def main():
                 delta = 1 if action == "careful" else -1
                 cur = read_complexity(session_id, cwd)
                 if cur is None:
-                    # 没有现成评估 → 先做一次 auto 检测再调档
-                    auto = detect_complexity(prompt, new_pattern)
-                    cur_label = auto["label"]
+                    # 没有现成评估 → 用 LLM 结果（§17 架构简化 2026-06-17）
+                    if llm_result and llm_result.get("complexity_label"):
+                        cur_label = llm_result["complexity_label"]
+                    else:
+                        cur_label = "medium"
                 else:
                     cur_label = cur.get("label", "medium")
                 new_label = shift_complexity(cur_label, delta)
@@ -846,22 +846,24 @@ def main():
                     log("WARN", f"~batch: unknown template {template}")
 
             else:
-                # auto 检测：优先 LLM，失败回退 V1 关键词
+                # auto 检测：LLM 分类器是唯一来源（§17 架构简化 2026-06-17）
                 if llm_result:
                     auto_score = llm_result["complexity_score"]
                     auto_label = llm_result["complexity_label"]
                     auto_conf = llm_result["complexity_confidence"]
                     log("INFO", "complexity from LLM")
-                elif new_pattern:
-                    auto = detect_complexity(prompt, new_pattern)
-                    auto_score = auto["score"]
-                    auto_label = auto["label"]
-                    auto_conf = auto["confidence"]
                 else:
-                    auto = detect_complexity(prompt, None)
-                    auto_score = auto["score"]
-                    auto_label = auto["label"]
-                    auto_conf = auto["confidence"]
+                    # LLM 不可用时，维持当前 complexity 不变
+                    cur = read_complexity(session_id, cwd)
+                    if cur:
+                        auto_score = cur.get("score", 50)
+                        auto_label = cur.get("label", "medium")
+                        auto_conf = cur.get("confidence", 0.3)
+                    else:
+                        auto_score = 50
+                        auto_label = "medium"
+                        auto_conf = 0.3
+                    log("INFO", "complexity: LLM unavailable, keep existing")
                 write_complexity(
                     auto_score, auto_label,
                     confidence=auto_conf, source="auto",
@@ -903,24 +905,19 @@ def main():
                         f"model={decision_dict.get('final_model')})")
                 else:
                     # 复用本 hook 内已经拿到的 llm_result（避免二次 LLM 调用）；
-                    # 没拿到 → 走 V1 关键词回退，让 decide() 的 classifier 接口完整。
+                    # §17 架构简化（2026-06-17）：移除关键词回退，LLM 是唯一分类源。
+                    # LLM 不可用时返回保守默认值。
                     def _v13_classifier(_p: str) -> dict:
                         if llm_result:
                             return dict(llm_result)
-                        # V1 关键词回退：pattern + complexity 拼成 llm 风格 dict
-                        pat = new_pattern
-                        conf = new_conf
-                        if not pat:
-                            pat, conf = detect_task_pattern(_p)
-                        cx = detect_complexity(_p, pat)
                         return {
                             "stage": new_stage or "",
-                            "pattern": pat or "feature",
-                            "pattern_confidence": conf or 0.5,
-                            "complexity_label": cx.get("label", "medium"),
-                            "complexity_score": int(cx.get("score", 50)),
-                            "complexity_confidence": float(cx.get("confidence", 0.5)),
-                            "reasoning": "v1 keyword fallback (no API key)",
+                            "pattern": new_pattern or "feature",
+                            "pattern_confidence": new_conf or 0.5,
+                            "complexity_label": "medium",
+                            "complexity_score": 50,
+                            "complexity_confidence": 0.3,
+                            "reasoning": "llm unavailable (no classification)",
                         }
 
                     prompt_id = f"{session_id[-8:]}-p{int(_t.time())}"
@@ -1074,26 +1071,17 @@ def main():
 # 当前为 V1（关键词 + 长度 + pattern 加权），用于 ~careful/~quick 调档
 # 与 proxy Workflow Planner 选模型序列。
 #
-# §14 配置单源化（D9-3 修复 2026-06-14）：COMPLEXITY_KEYWORDS / PATTERN_BASE_SCORE
-# 已迁移到 stage_config.py，本文件改为派生读取。
-# §9 设计原则（D9-1 修复 2026-06-14）：detect_complexity 现在接收 stage 参数，
-# 引入 STAGE_COMPLEXITY_MULTIPLIER 让"探索/设计/审计"等阶段影响复杂度评分。
-# ────────────────────────────────────────────────────────────────────
-
-from stage_config import (  # noqa: E402  配置单源化派生
-    COMPLEXITY_KEYWORDS,
-    COMPLEXITY_THRESHOLDS,
-    PATTERN_BASE_SCORE,
-    STAGE_COMPLEXITY_MULTIPLIER,
-    shift_complexity,
-)
-
+# §17 架构简化（2026-06-17）：detect_complexity() / detect_task_pattern() /
+# _score_to_label() 关键词评分已全部移除。COMPLEXITY_KEYWORDS /
+# PATTERN_BASE_SCORE / STAGE_COMPLEXITY_MULTIPLIER / COMPLEXITY_THRESHOLDS
+# 不再从 stage_config 导入。
+# Complexity 的唯一来源现在是 LLM classifier，辅以用户 ~careful/~quick 显式调档。
+#
+# shift_complexity 保留：~careful/~quick 调档逻辑仍需要它。
+from stage_config import shift_complexity  # noqa: E402
 
 # ────────────────────────────────────────────────────────────────────
 # Complexity / Batch 文件（per-session）
-#
-# §17 架构简化（2026-06-17）：detect_complexity() 关键词评分已移除。
-# Complexity 的唯一来源现在是 LLM classifier，辅以用户 ~careful/~quick 显式调档。
 # ────────────────────────────────────────────────────────────────────
 
 def _complexity_file_path(stage_file: Path) -> Path:

@@ -519,65 +519,9 @@ COMPLEXITY_THRESHOLDS: dict[str, int] = {
     "complex": 100,
 }
 
-# 关键词权重表（命中后累加；负权重为"明显简单"的反向信号）。
-# §14 配置单源化（D9-3 修复 2026-06-14）：原本硬编码在 stage_detector.py，
-# 现统一在 stage_config.py，stage_detector / proxy 通过派生读取。
-COMPLEXITY_KEYWORDS: list[tuple[str, int]] = [
-    # 高复杂度信号
-    ("跨模块", 25), ("跨系统", 25), ("跨服务", 20), ("分布式", 20),
-    ("迁移", 20), ("migration", 20), ("migrate", 20),
-    ("架构", 25), ("architecture", 25), ("顶层设计", 30), ("系统设计", 25),
-    ("性能审查", 20), ("安全审计", 20), ("安全审查", 20),
-    ("重构", 15), ("refactor", 15), ("restructure", 15),
-    ("审计", 15), ("audit", 15), ("code review", 15),
-    ("分析测试失败", 20), ("失败原因", 15), ("排查", 10), ("根因", 15),
-    ("方案对比", 15), ("比较方案", 15), ("调研", 10), ("research", 10),
-    # 低复杂度信号（负权重）
-    ("重命名", -15), ("rename", -15),
-    ("改一行", -20), ("一行代码", -20), ("一行修复", -20),
-    ("改个名字", -15), ("修个 typo", -20), ("typo", -20),
-    ("确认一下", -10), ("快速确认", -10),
-    ("简单", -5), ("就", -1),  # "就改一下" 类短句
-]
-
-# Pattern 基础分（PATTERN_BASE_SCORE）
-# V1.3 §5.1 Task Pattern 12 种全覆盖；V1 旧名 bugfix 保留为兼容别名（同 debug 分数）。
-# 分值沿用既有标定（feature=50, refactor=55, test=40, research=50, migration=75,
-# architecture=80, docs=20, audit=70），新增条目按 V1.3 设计语义给值：
-#   - implement = 50（与 feature 持平：开发实施类任务与新功能需求复杂度相当）
-#   - debug     = 45（沿用 V1 bugfix 标定）
-#   - explore   = 30（探索与调研通常是低复杂度的读 + 理解类任务）
-PATTERN_BASE_SCORE: dict[str, int] = {
-    "explore":      30,
-    "architecture": 80,
-    "feature":      50,
-    "implement":    50,
-    "debug":        45,
-    "refactor":     55,
-    "test":         40,
-    "research":     50,
-    "migration":    75,
-    "docs":         20,
-    "audit":        70,
-    # V1 旧名兼容别名
-    "bugfix":       45,
-}
-
-# Stage 倍率（设计文档 §9 原则："复杂度必须基于当前阶段判断"）
-# §9 D9-1 修复 2026-06-14：原 detect_complexity 不接 stage，导致同一 prompt
-# 在 explore / implement / audit 三个 stage 下评分相同。
-# 倍率语义：探索阶段通常简单（×0.7），设计/审计阶段通常复杂（×1.2~1.3）。
-STAGE_COMPLEXITY_MULTIPLIER: dict[str, float] = {
-    "explore":    0.7,   # 读代码/追调用链 → 通常简单
-    "brainstorm": 0.8,   # 发散想法 → 偏简单
-    "implement":  1.0,   # 编码 → 中性
-    "decide":     1.1,   # 决策推理 → 偏复杂
-    "plan":       1.1,   # 任务拆解 → 偏复杂
-    "design":     1.2,   # 架构设计 → 通常复杂
-    "audit":      1.3,   # 审计/审查 → 通常复杂
-    "test":       1.0,   # 测试任务 → 中性（复杂度看具体子任务）
-    "default":    1.0,   # 兜底
-}
+# §17 架构简化（2026-06-17）：COMPLEXITY_KEYWORDS / PATTERN_BASE_SCORE /
+# STAGE_COMPLEXITY_MULTIPLIER 已移除。Complexity 唯一来源是 LLM classifier，
+# 辅以用户 ~careful/~quick 显式调档。
 
 # ═══════════════════════════════════════════════════════════════════════════
 # LLM 分类器配置（设计文档 §6.2 / §6.4 / §10 合并实现）
@@ -797,50 +741,10 @@ PROVIDER_COMPLEXITY_MODELS: dict[str, dict[str, str]] = {
 KNOWN_PROVIDER_NAMES: frozenset[str] = frozenset({"minimax", "deepseek"})
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 关键词派生视图（§14 配置单源化 — D14-2/3/4 修复 2026-06-14）
-#
-# 原始 keywords 列表已合并进 STAGE_CONFIG（每 stage 的 `keywords` 字段）和
-# PATTERN_CONFIG（每 pattern 的 `keywords` 字段）。stage_detector / 任何分类器
-# 都从这里派生读取，避免硬编码副本。
-#
-# 派生约定：
-#   STAGE_KEYWORDS   — list[(stage, list[str])]，顺序 = 优先级，detect_stage 用
-#   PATTERN_KEYWORDS — dict[pattern, list[(kw, weight)]]，加权计票用
-#   COMPLEXITY_KEYWORDS — list[(kw, weight)]，见上方 D9-3 定义
+# §17 架构简化（2026-06-17）：STAGE_KEYWORDS / PATTERN_KEYWORDS 派生视图已移除。
+# LLM classifier 是 stage / pattern / complexity 的唯一分类源。
+# STAGE_CONFIG.keywords 和 PATTERN_CONFIG.keywords 字段保留为文档说明/LLM prompt 参考。
 # ═══════════════════════════════════════════════════════════════════════════
-
-# stage_detector.detect_stage() 用的优先级列表。
-# 顺序与 STAGE_CONFIG 字典定义顺序大致保持一致（Python 3.7+ dict 保序）；
-# 唯一例外：test 必须排在 implement 之前，否则 "帮我写一个单元测试"
-# 会被 implement 阶段的关键字 '写' / 'add' / 'fix' 等先吞掉（V17-4 修复 2026-06-14）。
-# 文档要求的关键字优先级 = explore → brainstorm → decide → design → plan
-# → test → implement → audit → default。
-STAGE_KEYWORDS: list[tuple[str, list[str]]] = []
-# 同样出于 V17-4 修复：test 阶段关键词 "测试" 会比 decide 阶段 "分析" 更先命中
-# "分析测试失败原因"，所以 test 也要排在 decide 之前。
-_PRIORITY_FIRST = {"test"}
-for stage, c in STAGE_CONFIG.items():
-    if not c.get("keywords"):
-        continue
-    if stage in _PRIORITY_FIRST:
-        # 提到所有非 _PRIORITY_FIRST 阶段之前
-        insert_idx = 0
-        for i, (s, _) in enumerate(STAGE_KEYWORDS):
-            if s not in _PRIORITY_FIRST:
-                insert_idx = i
-                break
-        else:
-            insert_idx = len(STAGE_KEYWORDS)
-        STAGE_KEYWORDS.insert(insert_idx, (stage, list(c["keywords"])))
-    else:
-        STAGE_KEYWORDS.append((stage, list(c["keywords"])))
-
-# stage_detector.detect_task_pattern() 用的加权计票表。
-# 直接把 PATTERN_CONFIG.keywords 拿出来（每个 pattern 一组 (关键词, 权重) 元组）。
-PATTERN_KEYWORDS: dict[str, list[tuple[str, int]]] = {
-    pattern: [(kw, int(w)) for kw, w in c.get("keywords", [])]
-    for pattern, c in PATTERN_CONFIG.items()
-}
 
 # ── 公开 API 声明 ────────────────────────────────────────────────────────────
 
@@ -849,9 +753,6 @@ __all__ = [
     "PATTERN_CONFIG",
     "PATTERN_LABEL_V13",
     "get_pattern_label_v13",
-    "COMPLEXITY_KEYWORDS",
-    "STAGE_KEYWORDS",
-    "PATTERN_KEYWORDS",
     "_PLACEHOLDER_WEIGHTS",
     "load_yaml_weights",
     "get_weights",
