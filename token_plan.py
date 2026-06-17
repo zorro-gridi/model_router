@@ -17,7 +17,9 @@ MiniMax Token Plan 余量查询 + Provider Fallback 触发
     避免压缩大 prompt 时被 429 阻塞 → 任务长时间卡住。
 
 判断字段（来自 /v1/token_plan/remains 响应）：
-  model_remains[*] 各套餐（"general" / "video" / ...）：
+  model_remains: list[dict]，每条是一个套餐；按 model_name 区分（"general"/"video"/...）
+  每条字段：
+    - model_name: 套餐名
     - current_interval_status: 1=正常, 2=已耗尽, 3=未使用
     - current_interval_remaining_percent: 0~100
     - current_weekly_status: 1/2/3 同上
@@ -183,6 +185,19 @@ def _extract_plan_data(payload: dict, plan_name: str = PLAN_NAME) -> dict:
     """
     从 API 响应里提取指定套餐（默认 "general"）的余量数据。
 
+    真实 API 响应（2026-06-17 实测）：
+        {
+          "model_remains": [
+            {"model_name": "general", "current_interval_remaining_percent": 2, ...},
+            {"model_name": "video",   "current_interval_remaining_percent": 100, ...},
+            ...
+          ],
+          "base_resp": {...}
+        }
+
+    `model_remains` 是 list（不是 dict），每条记录的 `model_name` 字段
+    标识套餐名。需要在 list 里线性扫描匹配 `plan_name` 的那条。
+
     Returns:
         dict 含 current_interval_remaining_percent / current_weekly_remaining_percent
               / current_interval_status / current_weekly_status 等字段。
@@ -191,12 +206,12 @@ def _extract_plan_data(payload: dict, plan_name: str = PLAN_NAME) -> dict:
         KeyError: 响应结构不符合预期（缺 model_remains 或指定套餐名）。
     """
     model_remains = payload.get("model_remains")
-    if not isinstance(model_remains, dict):
-        raise KeyError("response.model_remains 缺失或不是 dict")
-    plan = model_remains.get(plan_name)
-    if not isinstance(plan, dict):
-        raise KeyError(f"response.model_remains.{plan_name} 缺失或不是 dict")
-    return plan
+    if not isinstance(model_remains, list):
+        raise KeyError("response.model_remains 缺失或不是 list")
+    for plan in model_remains:
+        if isinstance(plan, dict) and plan.get("model_name") == plan_name:
+            return plan
+    raise KeyError(f"response.model_remains 中未找到 model_name={plan_name!r} 的套餐")
 
 
 def _should_trigger_fallback(plan: dict, threshold: float = THRESHOLD_PERCENT) -> tuple[bool, dict]:
