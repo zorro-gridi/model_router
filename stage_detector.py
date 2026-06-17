@@ -260,6 +260,31 @@ def _find_project_root(start: Path, session_id: str | None = None) -> Path:
     return HOME_CLAUDE if HOME_CLAUDE.is_dir() else start
 
 
+def _write_skip_signal(sid: str, project_root: str) -> None:
+    """当 is_valid_prompt=False 时，写 skip_post_tool_analysis 标记到 state 文件。
+
+    PostToolUse hook 的 dispatch() 在入口检查此标记，若为 true 则跳过
+    所有运行时分析（RuntimeTracker / TodoWriteAnalyzer / maybe_redecide）。
+    下一个有效 prompt 的 RuntimeTracker.init_prompt() 会清除此标记。
+    """
+    try:
+        import json as _json
+        claude_dir = Path(project_root) / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        path = claude_dir / f"model_router_state_{sid}.json"
+        data: dict = {}
+        if path.exists():
+            try:
+                data = _json.loads(path.read_text(encoding="utf-8"))
+            except (_json.JSONDecodeError, OSError):
+                pass
+        data["skip_post_tool_analysis"] = True
+        path.write_text(_json.dumps(data, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+    except Exception:
+        pass  # 静默吞错，不阻塞 UserPromptSubmit hook
+
+
 def _stage_file_path(cwd: str | Path, session_id: str) -> Path:
     """
     返回指定 session 的阶段文件路径：
@@ -701,6 +726,21 @@ def main():
                     f"跳过路由状态更新，保持 session 现有路由不变 "
                     f"(reason={llm_result.get('reasoning', '')!r})"
                 )
+                # ── V1.4 is_valid_prompt 穿透 ──
+                # 1. 写 skip_post_tool_analysis 标记到 state 文件，
+                #    通知 PostToolUse 链路本 prompt 不参与运行时分析。
+                # 2. 归档 RuntimeTracker 当前窗口，防止后续工具调用
+                #    分数污染上一个 prompt 的 runtime_score。
+                _root = str(_find_project_root(
+                    Path(cwd) if not isinstance(cwd, Path) else cwd, session_id))
+                _write_skip_signal(session_id, _root)
+                try:
+                    from runtime_tracker import RuntimeTracker
+                    RuntimeTracker().init_prompt(
+                        session_id, _root,
+                        f"{session_id[-8:]}-continuation")
+                except Exception:
+                    pass
                 # 提前返回，不写任何 state 文件
                 return None
 

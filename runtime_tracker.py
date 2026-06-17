@@ -84,6 +84,9 @@ class RuntimeTracker:
 
         由 stage_detector（UserPromptSubmit hook）在创建 prompt_id 后调用。
 
+        V1.4：同时清除 skip_post_tool_analysis 标记（由 is_valid_prompt=False
+        写入），恢复 PostToolUse 运行时分析。
+
         Args:
             sid: Session ID。
             project_root: 项目根目录。
@@ -93,6 +96,10 @@ class RuntimeTracker:
             rs, _ = self._load_with_state(sid, project_root)
             rs.start_prompt(prompt_id)
             self._save(sid, project_root, rs)
+            # ── V1.4 清除 is_valid_prompt 的 skip 标记 ──
+            # _save() 之后 state 文件已更新，追加清除 skip_post_tool_analysis
+            # 使下一个有效 prompt 的 PostToolUse 分析恢复正常。
+            self._clear_skip_flag(sid, project_root)
         except Exception:
             pass
 
@@ -281,3 +288,22 @@ class RuntimeTracker:
             except TypeError:
                 if tmp_path.exists():
                     tmp_path.unlink()
+
+    def _clear_skip_flag(self, sid: str, project_root: str) -> None:
+        """清除 state 文件中的 skip_post_tool_analysis 标记。
+
+        由 init_prompt() 在下一个有效 prompt 到达时调用，
+        恢复 PostToolUse 运行时分析。
+        注意：此操作有意独立于 _save()，避免影响 track() 路径。
+        """
+        path = self._state_path(sid, project_root)
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if data.pop("skip_post_tool_analysis", None) is not None:
+                path.write_text(
+                    json.dumps(data, ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+        except Exception:
+            pass

@@ -82,6 +82,15 @@ def dispatch(sid: str, project_root: str, raw_event: dict) -> None:
         raw_event: PostToolUse hook 原始事件 dict。
     """
     try:
+        # ── V1.4 is_valid_prompt 穿透 ──
+        # 前置链路（stage_detector）判定本 prompt 为续接指令
+        # （is_valid_prompt=False）且已在 state 文件中写入了
+        # skip_post_tool_analysis 标记 → 跳过本回合所有后置分析，
+        # 避免对无新信息的 prompt 做无意义的 RuntimeTracker /
+        # TodoWriteAnalyzer / maybe_redecide。
+        if _should_skip_post_tool(sid, project_root):
+            return
+
         if not isinstance(raw_event, dict):
             return
 
@@ -140,6 +149,26 @@ def _read_latest_signals(sid: str, project_root: str) -> tuple[int, dict | None]
         todo = None
 
     return runtime_score, todo
+
+
+def _should_skip_post_tool(sid: str, project_root: str) -> bool:
+    """检查 state 文件中的 skip_post_tool_analysis 标记。
+
+    当前置链路（stage_detector）判定当前 prompt 为续接指令
+    （is_valid_prompt=False），会写入此标记。PostToolUse 的
+    dispatch() 入口检查此标记，若为 true 则跳过所有运行时分析。
+
+    Returns:
+        True 表示应跳过 PostToolUse 分析，False 表示正常处理。
+    """
+    try:
+        path = Path(project_root) / ".claude" / f"model_router_state_{sid}.json"
+        if not path.exists():
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data.get("skip_post_tool_analysis", False)
+    except Exception:
+        return False
 
 
 def _handle_task_tool(sid: str, project_root: str, raw_event: dict) -> None:
