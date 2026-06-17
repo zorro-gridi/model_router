@@ -7,7 +7,7 @@ MiniMax Token Plan 余量查询 + Provider Fallback 触发
   MiniMax（provider 名 "minimax"）的 token 套餐分两套配额：
     1. 5 小时滚动窗口：current_interval_remaining_percent
     2. 周窗口：       current_weekly_remaining_percent
-  当任一窗口余量 > 98% 时，意味着账户已几乎打满该窗口配额，
+  当任一窗口剩余百分比 < 2%（即用量 > 98%）时，意味着账户已几乎打满该窗口配额，
   继续往 minimax 路由只会 429 阻塞整个 session。
 
 目标：
@@ -27,8 +27,9 @@ MiniMax Token Plan 余量查询 + Provider Fallback 触发
     - remains_time: 剩余可用时间（毫秒）
 
 阈值策略：
-  - 默认阈值 98%，可通过 STAGE_ROUTER_TOKEN_PLAN_THRESHOLD_PERCENT 调整
-  - 任一窗口余量 > 阈值 → 触发 sticky fallback
+  - 默认阈值 98%（用量），可通过 STAGE_ROUTER_TOKEN_PLAN_THRESHOLD_PERCENT 调整
+  - 任一窗口剩余百分比 < (100 - 阈值) → 触发 sticky fallback
+    例：阈值 98 → 剩余 < 2% 触发；阈值 90 → 剩余 < 10% 触发
   - 已耗尽（status=2）也直接触发（与 status=2 + percent=0 行为一致）
 
 调用方接口：
@@ -61,8 +62,14 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
-from dotenv import load_dotenv
-load_dotenv('hooks/model_router/.env')
+# 使用与 proxy.py 相同的 env 加载机制（绝对路径解析），
+# 避免 PreCompact hook 子进程因 CWD 不在 ~/.claude 而找不到 .env。
+# 注意：必须在文件顶部的其他 import 之前执行，确保后续代码读到正确的 env。
+import sys as _tp_sys
+_tp_sys.path.insert(0, os.path.expanduser("~/.claude/hooks"))
+from _load_env import load_plugin_env as _load_plugin_env  # noqa: E402
+_load_plugin_env(__file__)  # noqa: E402
+del _tp_sys, _load_plugin_env
 
 log = logging.getLogger("token-plan")
 
@@ -222,8 +229,8 @@ def _should_trigger_fallback(plan: dict, threshold: float = THRESHOLD_PERCENT) -
     根据套餐余量数据判断是否触发 sticky fallback。
 
     触发条件（任一满足即触发）：
-      1. 5h 窗口 current_interval_remaining_percent > threshold
-      2. 周窗口 current_weekly_remaining_percent > threshold
+      1. 5h 窗口 current_interval_remaining_percent ≤ (100 - threshold)
+      2. 周窗口 current_weekly_remaining_percent ≤ (100 - threshold)
       3. 任一窗口 status=2（已耗尽）—— 等价于 percent=0 但语义更明确
 
     Args:
@@ -243,15 +250,19 @@ def _should_trigger_fallback(plan: dict, threshold: float = THRESHOLD_PERCENT) -
     triggered = False
     reasons: list[str] = []
 
-    # 条件 1: 5h 窗口余量超阈值
-    if isinstance(interval_pct, (int, float)) and interval_pct > threshold:
+    # 条件 1: 5h 窗口剩余不足（剩余百分比低于安全水位）
+    # 字段 current_interval_remaining_percent 是**剩余**百分比（0=耗尽, 100=满额）。
+    # threshold 的语义是"用量阈值"（如 98 → 用量 >98% 即剩余 <2%），
+    # 因此比较方向是 remaining < (100 - threshold)。
+    safe_remaining = 100.0 - threshold
+    if isinstance(interval_pct, (int, float)) and interval_pct <= safe_remaining:
         triggered = True
-        reasons.append(f"5h_window_remaining={interval_pct}%>{threshold}%")
+        reasons.append(f"5h_window_remaining={interval_pct}%≤{safe_remaining}%")
 
-    # 条件 2: 周窗口余量超阈值
-    if isinstance(weekly_pct, (int, float)) and weekly_pct > threshold:
+    # 条件 2: 周窗口剩余不足
+    if isinstance(weekly_pct, (int, float)) and weekly_pct <= safe_remaining:
         triggered = True
-        reasons.append(f"weekly_remaining={weekly_pct}%>{threshold}%")
+        reasons.append(f"weekly_remaining={weekly_pct}%≤{safe_remaining}%")
 
     # 条件 3: 任一窗口状态=已耗尽（兜底——status=2 显式语义更稳）
     if interval_status == 2:
