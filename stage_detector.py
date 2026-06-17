@@ -75,6 +75,7 @@ try:
         MODEL_TO_PROVIDER,            # provider 级 fallback：model→provider 映射
         DEFAULT_FALLBACK_PROVIDER,  # provider 级 fallback：provider→备选 provider
         KNOWN_PROVIDER_NAMES,       # provider 级 fallback：已知 provider 名集合
+        PROVIDER_COMPLEXITY_MODELS, # §16 complexity→model 映射（complexity 覆盖 stage）
     )
 except Exception:
     COMPLEXITY_THRESHOLDS = {"simple": 30, "medium": 70}
@@ -1045,15 +1046,41 @@ def main():
                 # 初始化 route_model（最终实际路由模型），优先级：
                 #   1. model_override（显式 ~model 覆盖）
                 #   2. decision.final_model（LLM 分类器决策）
-                #   3. stage 默认主模型（STAGE_CONFIG）
-                #   4. 硬编码兜底
+                #   3. complexity-aware 模型选择（§16 核心原则）
+                #   4. stage 默认主模型（STAGE_CONFIG）
+                #   5. 硬编码兜底
+                #
+                # §16 核心原则：Complexity > Stage（析取关系）
+                #   Task Complexity 是模型选择的主导方：
+                #     - complexity=simple  → 无论 stage 判为什么，用 provider 低成本模型
+                #     - complexity=medium  → 用 provider 的 medium-tier 模型
+                #     - complexity=complex → 用 provider 的强模型（pro）
+                #   Stage 默认 model 只在 complexity 未知或无法解析时作为兜底。
+                #
                 # proxy.py 在每次请求后会用 sticky swap / fallback retry 后的
                 # 最终模型回填此字段，保持 route_model 始终为最新路由状态。
                 resolved_stage = new_stage if new_stage else old_stage
+                stage_default_model = STAGE_CONFIG.get(resolved_stage, {}).get("model")
+
+                # §16: complexity 覆盖 stage 默认模型
+                _task_complexity = (
+                    (decision_dict.get("task_complexity") if decision_dict else None)
+                    or (read_complexity(session_id, cwd) or {}).get("label")
+                    or "medium"
+                )
+                _complexity_model = None
+                if _task_complexity in ("simple", "medium"):
+                    _provider = MODEL_TO_PROVIDER.get(stage_default_model, "")
+                    _complexity_model = PROVIDER_COMPLEXITY_MODELS.get(
+                        _provider, {}).get(_task_complexity)
+                    if _complexity_model == stage_default_model:
+                        _complexity_model = None  # 无需覆盖，stage 默认模型已正确
+
                 init_route_model = (
                     new_model
                     or (decision_dict.get("final_model") if decision_dict else None)
-                    or STAGE_CONFIG.get(resolved_stage, {}).get("model")
+                    or _complexity_model          # §16: complexity 优先于 stage
+                    or stage_default_model
                     or "MiniMax-M3"
                 )
 

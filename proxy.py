@@ -1958,6 +1958,38 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 )
                 routing_source = f"stage={stage}"
 
+            # ═══════════════════════════════════════════════════════════════
+            # §16 核心原则：Complexity 覆盖 Stage（析取关系）
+            #
+            # Task Complexity 与 Task Stage 是析取关系——
+            # Complexity 是主导方，覆盖 Stage 的模型决策：
+            #   - complexity=simple  → 无论 stage 判为什么，用 provider 的
+            #                          低成本模型（flash / M3），不再走 pro
+            #   - complexity=medium  → 用 provider 的 medium-tier 模型
+            #   - complexity=complex → 用 provider 的强模型（pro）
+            #
+            # 背景：STAGE_MODELS 只按 stage 选模型，不感知 complexity。
+            #   如果 stage=decide，默认 model=pro，即使 complexity=simple
+            #   也会被错误路由到 pro——浪费推理成本。
+            #   此覆盖在 stage→model 解析后插入，确保 complexity 语义穿透。
+            #
+            # 优先级：~model 显式覆盖 > batch.primary_model >
+            #          complexity 覆盖 > stage 默认模型
+            # ═══════════════════════════════════════════════════════════════
+            stage_model = model  # STAGE_MODELS 解析出的原始模型
+            provider = MODEL_TO_PROVIDER.get(stage_model)
+            if provider and complexity_label:
+                complexity_model = PROVIDER_COMPLEXITY_MODELS.get(
+                    provider, {}).get(complexity_label)
+                if complexity_model and complexity_model != stage_model:
+                    cfg = MODEL_TO_CONFIG.get(complexity_model)
+                    if cfg:
+                        base_url, model, key_env, protocol = cfg
+                        routing_source += (
+                            f" [complexity={complexity_label}→{model}"
+                            f" (overrides stage={stage}→{stage_model})]"
+                        )
+
             # v1.3: workflow_orchestrator 已删除，workflow dict 仅保留给日志行使用
             workflow = {
                 "type":   "single",
