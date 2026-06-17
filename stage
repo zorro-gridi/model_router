@@ -6,8 +6,12 @@ stage — 阶段管理 CLI
   stage              # 查看当前阶段
   stage brainstorm   # 手动设置阶段
   stage reset        # 重置为 default
-  stage proxy        # 启动代理服务器（默认 :7878）
-  stage proxy --port 7879  # 自定义端口启动代理
+  stage proxy        # 启动代理服务器（默认 :7878，默认带 watch）
+  stage proxy --port 7879          # 自定义端口启动代理
+  stage proxy --no-watch           # 前台启动，崩溃不自动重启
+  stage proxy --watch --port 7879  # 自定义端口 + watch 守护
+  stage stop [--port <port>]       # 停止 watcher（默认 7878）
+  stage restart [--port <port>]    # 重启 watcher
   stage status       # 查询代理健康状态
   stage log          # 实时查看路由日志
 
@@ -26,6 +30,14 @@ stage — 阶段管理 CLI
   分 session pattern： <project_root>/.claude/pattern_<session_id>（JSON）
   active_session 指针：~/.claude/hooks/model_router/active_session → 完整路径
   全局后备：          ~/.claude/hooks/model_router/current_stage（仅 stage，pattern 无全局后备）
+
+Watch 守护（端口监控）：
+  PID 文件:   /tmp/stage_router_<port>.pid
+  日志文件:   /tmp/stage_router_<port>.log
+  行为：      proxy 崩溃（非 0 退出）→ 3s 后自动重启
+  用户停止:  stage stop → SIGTERM → 3s 后 SIGKILL（兜底）→ 不再重启
+  重启上限:  连续 20 次崩溃后放弃（防止无限循环）
+  退避策略:  min(3 × 第N次, 60)s
 """
 
 import http.client
@@ -46,6 +58,13 @@ LOG_FILE            = HOME_CLAUDE / "stage-router.log"
 # 不能用 Path(__file__).parent（取到的是 ~/.local/bin/，proxy.py 不在那）。
 PROXY_SCRIPT        = HOOK_DIR / "proxy.py"
 PROXY_PORT          = 7878
+
+# ── Watch 守护（端口监控） ──
+# 实际实现：hooks/model_router/stage_watch.sh（nohup 后台）
+# PID / 日志路径由该脚本管理，按端口隔离。
+WATCH_SCRIPT        = HOOK_DIR / "stage_watch.sh"
+WATCH_PID_FILE      = lambda port: Path(f"/tmp/stage_router_{port}.pid")
+WATCH_LOG_FILE      = lambda port: Path(f"/tmp/stage_router_{port}.log")
 
 # ── .env 自动加载（共享双层 loader）──
 # Claude Code hook 子进程不会继承 shell export 的 env，必须从 .env 读 key
@@ -546,7 +565,165 @@ def start_proxy(port: int | None = None):
     subprocess.run([sys.executable, str(PROXY_SCRIPT), "--port", str(port)])
 
 
+# ── Watch 守护（端口监控 + 崩溃自动重启） ──
+# 实际逻辑在 stage_watch.sh 里，本文件只做封装与生命周期管理。
+import errno as _errno
+import signal as _signal
+import time as _time
+
+
+def _pid_alive(pid: int) -> bool:
+    """检查 PID 是否存活（不发送信号，仅查 proc 表）。"""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError as e:
+        if e.errno == _errno.ESRCH:
+            return False
+        if e.errno == _errno.EPERM:
+            return True
+        return False
+
+
+def _port_in_use(port: int) -> bool:
+    """检测端口是否已被占用（尝试 connect 一次）。"""
+    import socket as _socket
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+        s.settimeout(0.3)
+        try:
+            s.connect(("127.0.0.1", port))
+            return True
+        except (ConnectionRefusedError, _socket.timeout, OSError):
+            return False
+
+
+def start_proxy_watch(port: int | None = None) -> None:
+    """后台启动 watcher（委托 stage_watch.sh 跑，shell 内部 nohup 脱离父进程）。
+
+    错误处理：
+      - 端口已被占用 → 报错并 sys.exit(1)
+      - watcher PID 已存在且存活 → 不重复启动
+      - 僵尸 PID 文件 → 自动清理后启动
+    """
+    port = port or PROXY_PORT
+    pid_path = WATCH_PID_FILE(port)
+    log_path = WATCH_LOG_FILE(port)
+
+    if _port_in_use(port):
+        print(f"❌ 端口 {port} 已被占用（先 stage stop 或换端口）")
+        sys.exit(1)
+
+    if pid_path.exists():
+        try:
+            old_pid = int(pid_path.read_text().strip())
+        except (ValueError, FileNotFoundError):
+            old_pid = 0
+        if _pid_alive(old_pid):
+            print(f"❌ Watcher 已在运行（PID={old_pid}，端口 {port}）")
+            print(f"   重启用: stage restart --port {port}")
+            sys.exit(1)
+        pid_path.unlink(missing_ok=True)
+
+    if not WATCH_SCRIPT.exists():
+        print(f"❌ Watch 脚本不存在: {WATCH_SCRIPT}")
+        sys.exit(1)
+
+    # 启动 watcher：start_new_session=True 等价于 setsid，shell 内部已经 nohup + &
+    # 但因为 stage_watch.sh 自身用 `python3 ... &` 跑 proxy，watcher 自己其实是
+    # 同步执行的——所以这里用 Popen 但**不等它退出**（detach）
+    log_fp = open(log_path, "a")
+    log_fp.close()  # 触摸文件（创建空日志，便于 tail -f）
+    try:
+        subprocess.Popen(
+            [str(WATCH_SCRIPT), str(port), "run"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,  # 关键：脱离父进程 session/terminal
+        )
+    except OSError as e:
+        print(f"❌ 启动 watcher 失败: {e}")
+        sys.exit(1)
+
+    # 等 PID 文件出现（最多 5s）
+    for _ in range(50):
+        if pid_path.exists():
+            break
+        _time.sleep(0.1)
+    if pid_path.exists():
+        try:
+            wp = int(pid_path.read_text().strip())
+            print(f"✅ Watcher 已启动（PID={wp}，端口 {port}）")
+            print(f"   日志: {log_path}")
+            print(f"   停止: stage stop --port {port}")
+        except (ValueError, FileNotFoundError):
+            print(f"✅ Watcher 已启动（端口 {port}）")
+    else:
+        print(f"⚠️  Watcher 启动中，等待 PID 文件...")
+
+
+def stop_proxy(port: int | None = None, force: bool = False) -> None:
+    """停止 watcher（委托 stage_watch.sh stop 子命令）。"""
+    port = port or PROXY_PORT
+    pid_path = WATCH_PID_FILE(port)
+    if not pid_path.exists():
+        print(f"ℹ️  没有 watcher 在运行（端口 {port}）")
+        return
+    if not WATCH_SCRIPT.exists():
+        print(f"❌ Watch 脚本不存在: {WATCH_SCRIPT}")
+        sys.exit(1)
+    # 直接调 stage_watch.sh stop，让它做 SIGTERM/SIGKILL 兜底
+    args = [str(WATCH_SCRIPT), str(port), "stop"]
+    if force:
+        # 强制模式：直接 SIGKILL watcher
+        try:
+            pid = int(pid_path.read_text().strip())
+        except (ValueError, FileNotFoundError):
+            print(f"❌ PID 文件损坏: {pid_path}")
+            pid_path.unlink(missing_ok=True)
+            return
+        if _pid_alive(pid):
+            print(f"强制 SIGKILL Watcher（PID={pid}）...")
+            try:
+                os.kill(pid, _signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        pid_path.unlink(missing_ok=True)
+        print(f"✅ Watcher 已强制停止（端口 {port}）")
+        return
+    subprocess.run(args)
+
+
+def restart_proxy(port: int | None = None) -> None:
+    port = port or PROXY_PORT
+    print(f"重启 Watcher（端口 {port}）...")
+    if WATCH_PID_FILE(port).exists():
+        stop_proxy(port)
+        _time.sleep(0.5)
+    start_proxy_watch(port)
+
+
 def proxy_status():
+    # 先查 watcher
+    pid_path = WATCH_PID_FILE(PROXY_PORT)
+    watcher_running = False
+    watcher_pid = None
+    if pid_path.exists():
+        try:
+            watcher_pid = int(pid_path.read_text().strip())
+            watcher_running = _pid_alive(watcher_pid)
+        except (ValueError, FileNotFoundError):
+            pass
+
+    if watcher_running:
+        print(f"✅ Stage Router Watcher 运行中（PID={watcher_pid}，端口 {PROXY_PORT}）")
+        log_path = WATCH_LOG_FILE(PROXY_PORT)
+        print(f"   日志: {log_path}")
+        print(f"   停止: stage stop")
+
+    # 再查实际 proxy 是否在响应
     try:
         conn = http.client.HTTPConnection("127.0.0.1", PROXY_PORT, timeout=2)
         conn.request("GET", "/health")
@@ -555,11 +732,15 @@ def proxy_status():
         stage = data.get("stage", "unknown")
         model = data.get("model", "unknown")
         color = COLORS.get(stage, COLORS["reset"])
-        print(f"✅ Stage Router 运行中")
+        print(f"✅ Proxy 端口 {PROXY_PORT} 正常响应")
         print(f"   阶段: {color}{stage}\033[0m → {model}")
     except Exception:
-        print(f"❌ Stage Router 未运行（端口 {PROXY_PORT}）")
-        print(f"   启动命令: stage proxy")
+        if not watcher_running:
+            print(f"❌ Stage Router 未运行（端口 {PROXY_PORT}）")
+            print(f"   启动命令: stage proxy")
+        else:
+            print(f"⚠️  Watcher 在跑但 Proxy 还没起来（崩溃重启中？）")
+            print(f"   查看日志: tail -f {WATCH_LOG_FILE(PROXY_PORT)}")
 
 
 def tail_log():
@@ -581,6 +762,66 @@ def main():
         show_current()
     elif args[0] == "proxy":
         port = None
+        watch = True   # 默认带 watch（崩溃自动重启）
+        i = 1
+        while i < len(args):
+            if args[i] == "--port":
+                if i + 1 < len(args):
+                    try:
+                        port = int(args[i + 1])
+                    except ValueError:
+                        print(f"❌ 无效端口号: {args[i + 1]}")
+                        sys.exit(1)
+                    i += 2
+                else:
+                    print("❌ --port 需要一个端口号参数")
+                    sys.exit(1)
+            elif args[i] == "--watch":
+                watch = True
+                i += 1
+            elif args[i] == "--no-watch":
+                watch = False
+                i += 1
+            elif args[i] in ("-h", "--help"):
+                print_help()
+                sys.exit(0)
+            else:
+                print(f"❌ 未知选项: {args[i]}")
+                print("   用法: stage proxy [--port <端口号>] [--watch|--no-watch]")
+                sys.exit(1)
+        if watch:
+            start_proxy_watch(port)
+        else:
+            start_proxy(port)
+    elif args[0] == "stop":
+        port = None
+        force = False
+        i = 1
+        while i < len(args):
+            if args[i] == "--port":
+                if i + 1 < len(args):
+                    try:
+                        port = int(args[i + 1])
+                    except ValueError:
+                        print(f"❌ 无效端口号: {args[i + 1]}")
+                        sys.exit(1)
+                    i += 2
+                else:
+                    print("❌ --port 需要一个端口号参数")
+                    sys.exit(1)
+            elif args[i] in ("--force", "-f"):
+                force = True
+                i += 1
+            elif args[i] in ("-h", "--help"):
+                print_help()
+                sys.exit(0)
+            else:
+                print(f"❌ 未知选项: {args[i]}")
+                print("   用法: stage stop [--port <端口号>] [--force]")
+                sys.exit(1)
+        stop_proxy(port, force=force)
+    elif args[0] == "restart":
+        port = None
         i = 1
         while i < len(args):
             if args[i] == "--port":
@@ -599,9 +840,9 @@ def main():
                 sys.exit(0)
             else:
                 print(f"❌ 未知选项: {args[i]}")
-                print("   用法: stage proxy [--port <端口号>]")
+                print("   用法: stage restart [--port <端口号>]")
                 sys.exit(1)
-        start_proxy(port)
+        restart_proxy(port)
     elif args[0] == "status":
         proxy_status()
     elif args[0] == "log":
