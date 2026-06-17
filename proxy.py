@@ -153,6 +153,23 @@ def _is_native_anthropic(target_base: str) -> bool:
     """判断目标 base URL 是否为原生 Anthropic 端点（白名单匹配）。"""
     return any(domain in target_base for domain in NATIVE_ANTHROPIC_DOMAINS)
 
+# ── Per-Session 路由绑定（2026-06-17）─────────────────────────────────────────
+# 多 session 并发时，通过模型名后缀 _s<sid> 将 API 请求绑定到特定 session 的
+# stage 配置，消除 state_index.json 的竞态（设计文档 §13 Per-Session Routing）。
+#
+# 机制：
+#   - 首次请求（model 无后缀）→ 仍用 _active_stage_path() MPRA → 响应注入 _s<sid>
+#   - 后续请求（model 带后缀）→ 解析 sid → 直查 stage_<sid> → 跳过 MPRA
+#   - thread-local 缓存：同一 HTTP 处理线程内 _active_stage_path() 返回缓存值
+
+_routing_state = threading.local()
+# _routing_state.stage_path  — 本请求绑定的 stage_<sid> 绝对路径
+# _routing_state.sid         — 本请求绑定的 session_id（UUID），用于响应注入
+
+_SID_SUFFIX_RE = re.compile(
+    r'_s([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$'
+)
+
 # ── 日志 ───────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -430,6 +447,39 @@ def _extract_session_id_from_stage_path(stage_path: Path) -> str | None:
     if not name.startswith("stage_"):
         return None
     return name[len("stage_"):] or None
+
+
+def _parse_model_sid(model_str: str) -> tuple[str, str | None]:
+    """从模型名中提取 (clean_model, sid)。
+
+    例: "MiniMax-M3_s0818b13d-4f55-4abe-9d68-769b24d4d342"
+        → ("MiniMax-M3", "0818b13d-4f55-4abe-9d68-769b24d4d342")
+
+    无后缀时返回 (model_str, None)。
+    """
+    if not model_str:
+        return model_str, None
+    m = _SID_SUFFIX_RE.search(model_str)
+    if m:
+        return model_str[:m.start()], m.group(1)
+    return model_str, None
+
+
+def _resolve_stage_path_for_sid(sid: str) -> Path | None:
+    """在 state_index.json 中按 session_id 查找，返回 stage_<sid> 路径。
+
+    与 _active_stage_path() 不同：此函数按 sid 精确匹配，不受 last_active 时间戳
+    竞态影响。用于 model 后缀绑定的 session 路由。
+    """
+    if not sid:
+        return None
+    all_entries = _read_state_index_all()
+    for path_key, entry in all_entries.items():
+        if isinstance(entry, dict) and entry.get("session_id") == sid:
+            stage_path = Path(path_key) / ".claude" / f"stage_{sid}"
+            if stage_path.exists():
+                return stage_path
+    return None
 
 
 def _find_state_by_timestamp(project_root: str, current_sid: str) -> tuple[str, dict] | None:
@@ -922,7 +972,16 @@ def _active_stage_path() -> Path | None:
       （多 session 并发时每个请求独立解析，不再依赖全局 active_session 指针互踩）
     - 回退：ACTIVE_SESSION_FILE 指针（state_index 为空/损坏时的兼容路径）
     - stage 文件不存在则返回 None
+
+    2026-06-17 Per-Session 路由绑定：
+    - 优先使用 thread-local 缓存（do_POST 开头从 model 后缀解析并设置）。
+      有此缓存时跳过 state_index.json 扫描，彻底消除多 session 竞态。
     """
+    # ★ Per-Session 路由绑定：优先 thread-local 缓存
+    cached = getattr(_routing_state, 'stage_path', None)
+    if cached is not None:
+        return cached
+
     # 主路径：state_index.json → 最新活跃 session
     all_entries = _read_state_index_all()
     if all_entries:
@@ -1437,6 +1496,25 @@ def _rewrite_response_model(resp_body: bytes, display_model: str) -> bytes:
             original = data["model"]
             data["model"] = display_model
             return json.dumps(data).encode()
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return resp_body
+
+
+def _inject_sid_to_response(resp_body: bytes, sid: str) -> bytes:
+    """在响应体的 model 字段值后追加 _s<sid> 后缀。
+
+    与 _rewrite_response_model() 配合：先执行 model 名回写（_rewrite），再执行 sid
+    注入（本函数）。仅当 model 字段尚未带 sid 后缀时才注入（幂等）。
+    """
+    if not resp_body or not sid:
+        return resp_body
+    try:
+        data = json.loads(resp_body)
+        if isinstance(data, dict) and "model" in data:
+            if not _SID_SUFFIX_RE.search(data["model"]):
+                data["model"] = f"{data['model']}_s{sid}"
+                return json.dumps(data).encode()
     except (json.JSONDecodeError, TypeError):
         pass
     return resp_body
@@ -2242,6 +2320,14 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # 避免 CC 重启后尝试恢复该别名时报 "not a model this version recognizes"。
         if not _is_retriable(status):
             resp_body = _rewrite_response_model(resp_body, session_model)
+            # ★ Per-Session 路由：注入 sid 后缀到响应 model 字段
+            _sid = getattr(_routing_state, 'sid', None)
+            if not _sid:
+                _ap = _active_stage_path()
+                if _ap:
+                    _sid = _extract_session_id_from_stage_path(_ap)
+            if _sid:
+                resp_body = _inject_sid_to_response(resp_body, _sid)
 
         # ── 结构化指标落盘（设计文档 §15）──
         # 每条请求都写一条 JSONL 记录，含 pattern/complexity/score/confidence/
