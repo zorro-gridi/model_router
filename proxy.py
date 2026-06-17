@@ -1759,6 +1759,86 @@ def _is_retriable(status: int) -> bool:
     return status in (401, 402, 403, 429) or (500 <= status < 600) or status == 0
 
 
+# ── 主模型重试参数（2026-06-17 引入）───────────────────────────────────────────
+#
+# 设计要点：
+#   - 接口错误/超时统一归为"主模型不可用"，先用 3 次重试吸收瞬时抖动；
+#   - 3 次都失败 → 才认为"provider 真的挂了"，启动 fallback provider 流程；
+#   - 退避固定 1s × N：用户明确要求"不考虑 timeout，时间太长"，固定等待最稳；
+#   - 400/404/422 这类 client error 不重试（重试 body 不会变好，client bug 不归
+#     provider 背锅），由调用方决定是否 fallback（当前实现是直接透传，不走 fb）；
+#   - 不重试 fallback 模型：fallback 是兜底，1 次失败就透传 CC，避免对替代
+#     provider 的 N 倍流量放大。
+PRIMARY_MODEL_RETRY_ATTEMPTS = 3
+PRIMARY_MODEL_RETRY_BACKOFF_SECONDS = 1.0
+
+
+def _call_with_retry(
+    *,
+    method: str,
+    path: str,
+    headers: dict,
+    body: bytes,
+    target_base: str,
+    target_model: str,
+    api_key_env: str,
+    protocol: str,
+    dry_run: bool,
+    sleep_fn=time.sleep,
+) -> tuple[int, dict, bytes, int]:
+    """对主模型做固定 1s 退避的有限重试。
+
+    行为契约：
+      1. 调 forward_request 一次；
+      2. 若返回 _is_retriable(status)=True → sleep 1s 重试；
+      3. 最多重试 PRIMARY_MODEL_RETRY_ATTEMPTS 次（首次 + 2 次重试 = 共 3 次）；
+      4. 任何一次成功（status 非 retriable）→ 立即返回；
+      5. 3 次都 retriable → 返回最后一次 status，调用方据此走 fallback 流程。
+
+    Args:
+        sleep_fn: 测试用注入点（默认 time.sleep）。单元测试用 monkeypatch 跳过实际等待。
+
+    Returns:
+        (status, resp_headers, resp_body, attempts_used)
+        - attempts_used: 实际调用次数（1~3）
+    """
+    last_status = 0
+    last_headers: dict = {}
+    last_body: bytes = b""
+    for attempt in range(1, PRIMARY_MODEL_RETRY_ATTEMPTS + 1):
+        status, h, b = forward_request(
+            method=method,
+            path=path,
+            headers=headers,
+            body=body,
+            target_base=target_base,
+            target_model=target_model,
+            api_key_env=api_key_env,
+            protocol=protocol,
+            dry_run=dry_run,
+        )
+        last_status, last_headers, last_body = status, h, b
+        if not _is_retriable(status):
+            if attempt > 1:
+                log.info(
+                    f"主模型 {target_model} 第 {attempt}/{PRIMARY_MODEL_RETRY_ATTEMPTS} "
+                    f"次重试成功（status={status}）"
+                )
+            return status, h, b, attempt
+        if attempt < PRIMARY_MODEL_RETRY_ATTEMPTS:
+            log.warning(
+                f"主模型 {target_model} 返回 {status}（attempt {attempt}/"
+                f"{PRIMARY_MODEL_RETRY_ATTEMPTS}），{PRIMARY_MODEL_RETRY_BACKOFF_SECONDS}s "
+                f"后重试"
+            )
+            sleep_fn(PRIMARY_MODEL_RETRY_BACKOFF_SECONDS)
+    log.error(
+        f"主模型 {target_model} 经 {PRIMARY_MODEL_RETRY_ATTEMPTS} 次重试仍失败，"
+        f"last status={last_status}，启动 fallback provider 流程"
+    )
+    return last_status, last_headers, last_body, PRIMARY_MODEL_RETRY_ATTEMPTS
+
+
 def _is_internal_request(headers: dict) -> bool:
     """判断当前请求是否来自用户自己的服务（而非 Claude Code）。
 
@@ -2072,7 +2152,7 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # 供 statusline 第三行准确显示当前使用的模型。
         actual_route_model = model  # sticky swap 后的 model
 
-        status, resp_headers, resp_body = forward_request(
+        status, resp_headers, resp_body, primary_attempts = _call_with_retry(
             method="POST",
             path=self.path,
             headers=headers,
@@ -2084,7 +2164,7 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             dry_run=self.dry_run,
         )
 
-        # 主模型失败且可重试 → 切换备用模型
+        # 主模型重试 3 次仍失败 → 切换备用模型
         # 但内部服务请求（X-Stage-Router-Source）跳过此分支：
         # 用户的业务 5xx 是上游问题，不应触发模型 SDK 二次调用、
         # 也不应写入 sticky fallback（避免污染 CC 后续会话）。
@@ -2191,10 +2271,13 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 metric_session_id = _extract_session_id_from_stage_path(_ap_path)
                 metric_project_root = str(_find_project_root_for_stage_path(_ap_path))
 
-            # retry_count：本请求由 fallback 触发（即主模型曾失败），计 1 次重试。
-            # 该字段在 §18 D18-3-1 真正接入 retry/retry-budget 后会变成更细的
-            # "重试次数"。这里先用 "used_fallback 触发" 作为最小可用定义。
-            retry_count = 1 if used_fallback else 0
+            # retry_count：本次主模型实际调用次数 - 1（即重试次数）。
+            #   - primary_attempts=1：首次成功，retry_count=0
+            #   - primary_attempts=3：第 3 次重试成功（或仍失败），retry_count=2
+            # 2026-06-17 引入：之前 used_fallback 二值化，丢失了"主模型重试几次
+            # 才成功"的细粒度信息，/metrics D18-3-1 复盘时无法区分"瞬时抖动
+            # 一次重试"和"持续 5xx 耗尽重试预算"两种场景。
+            retry_count = max(0, primary_attempts - 1)
 
             # token_estimate：粗估，从 body 长度按 4 字符/token 算（业内常见近似）。
             token_estimate = max(1, len(body) // 4) if body else 0
