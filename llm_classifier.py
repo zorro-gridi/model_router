@@ -71,9 +71,11 @@ load_plugin_env(__file__)  # noqa: E402
 # ── session state 读取（与 update_goal.py 共享）──
 # 分类器需要拿到"上一轮 task_goal"作为上下文，帮助 LLM 在任务续接场景下
 # 做出与上一轮一致的 pattern / stage / complexity 决策（避免把"继续
-# 之前的实现"误判成 explore）。state_path() 解析出来的路径与
-# update_goal.py 写状态时用的路径完全一致。
-from hooks.compact.utils import state_path  # noqa: E402
+# 之前的实现"误判成 explore）。locked_state_read_goal() 走的是与
+# update_goal.py 同一把 .lock 文件的 LOCK_SH 共享读——保证
+# "update_goal 写完 → llm_classifier 再读" 的 happens-before
+# 关系，永远不会读到 write 中途或 write 前的快照。
+from hooks.compact.utils import locked_state_read_goal  # noqa: E402
 
 # ── 日志（设计文档 §15 D15-6：脱敏后再写，避免 password/api_key 落盘）──
 # 日志路径从 __file__ 的目录结构镜像到 /tmp/ 下：
@@ -352,34 +354,14 @@ def _load_config(override: Optional[dict] = None) -> dict:
 def _load_current_goal_for_data(data: dict) -> str:
     """根据 data dict 解析并读取当前 session 的 task_goal，找不到返回 ''。
 
-    镜像 hooks/session/update_goal.py 里 _load_current_goal 的 best-effort
-    语义（文件不存在 / 解析失败 / 字段缺失均视为空），但这里接受任意
-    ``data`` 形参（不一定有完整的 hook payload 结构），因此 ``session_id``
-    / ``cwd`` 字段缺失时只返回 ``''``——分类器在没有 session 上下文时
-    （例如 CLI 调试、proxy 启动期分类）就拿不到 goal，由 LLM 拿到
-    "（暂无）" 的占位符，不阻塞分类主流程。
+    薄包装到 :func:`hooks.compact.utils.locked_state_read_goal`，底层
+    在与 ``update_goal`` 同一把 .lock 文件上拿 ``LOCK_SH`` 共享读，
+    实现"写后读"的 happens-before 关系：若当前有 update_goal
+    （或任何持有 ``LOCK_EX`` 的写者）正在写，本调用会同步阻塞，
+    直到写者释放。``data`` 字段缺失 / 解析失败时回退到空串，
+    LLM 拿到 "（暂无）" 占位符，分类主流程不被阻塞。
     """
-    try:
-        path = state_path(data or {})
-    except Exception as e:
-        _log_classify_failure("state_path", e)
-        return ''
-    try:
-        if not path.exists():
-            return ''
-        raw = path.read_text(encoding="utf-8")
-    except OSError as e:
-        _log_classify_failure("state_read", e)
-        return ''
-    if not raw.strip():
-        return ''
-    try:
-        state = json.loads(raw)
-    except (json.JSONDecodeError, ValueError) as e:
-        _log_classify_failure("state_parse", e)
-        return ''
-    goal = (state.get("task_goal") or "").strip()
-    return goal
+    return locked_state_read_goal(data or {})
 
 
 def _build_hook_data() -> dict:
