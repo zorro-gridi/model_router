@@ -432,7 +432,7 @@ def classify(prompt: str, config_override: Optional[dict] = None) -> dict:
         )
 
     prompt = f'''## Previous Task Goal:
-    <{_load_current_goal_for_data(_build_hook_data()) or '（暂无）'}>
+    {_load_current_goal_for_data(_build_hook_data()) or '（暂无）'}
 
     ## User's input:
     {prompt}
