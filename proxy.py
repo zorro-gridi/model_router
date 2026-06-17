@@ -38,11 +38,13 @@ import json
 import logging
 import os
 import re
+import socket
 import sys
 import threading
 import time
 import urllib.request
 import urllib.error
+from typing import Optional
 from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Optional
@@ -83,6 +85,19 @@ STICKY_TTL_SECONDS = int(os.environ.get("STAGE_ROUTER_STICKY_TTL_SECONDS", "1080
 # auto-recovery 清 sticky 时的 grace period：探测发现恢复时若 sticky failed_at
 # 在最近 N 秒内写入，跳过清除，避免清掉探测期间用户新写的 sticky（罕见但可能）。
 AUTO_RECOVERY_GRACE_SECONDS = int(os.environ.get("STAGE_ROUTER_AUTO_RECOVERY_GRACE_SECONDS", "30"))
+
+# ── Proxy 端超时（2026-06-17 引入）──────────────────────────────────────────
+#
+# 设计要点：
+#   - CC 客户端 API_TIMEOUT_MS=30000ms（30s）——proxy urlopen 必须比它更短，
+#     这样 urlopen 先抛 TimeoutError → 我们归 504 → sticky fallback 立即接管，
+#     避免 CC 客户端断后 proxy 还卡在 urlopen 里最多 5 分钟（默认 300s）。
+#   - 主路径 / fallback 路径都用 25s：fallback 也是远端 LLM，5 分钟兜底没意义。
+#   - 健康探测（health_checker.py）显式传 timeout=5，会覆盖此默认值。
+#   - SKIP_504_RETRY=0 时回滚到 1s×3 重试 504/529（保留旧行为用于回滚）。
+STAGE_ROUTER_PROXY_TIMEOUT = float(os.environ.get("STAGE_ROUTER_PROXY_TIMEOUT", "25"))
+STAGE_ROUTER_FALLBACK_TIMEOUT = float(os.environ.get("STAGE_ROUTER_FALLBACK_TIMEOUT", "25"))
+STAGE_ROUTER_SKIP_504_RETRY = os.environ.get("STAGE_ROUTER_SKIP_504_RETRY", "1") != "0"
 
 # 阶段 → (provider_base_url, model, api_key_env, protocol)
 #
@@ -1602,8 +1617,8 @@ def forward_request(
     api_key_env: str,
     protocol: str = "anthropic",
     dry_run: bool = False,
-    timeout: float = 300,
-) -> tuple[int, dict, bytes]:
+    timeout: Optional[float] = None,
+) -> tuple[int, dict, bytes, dict]:
     """
     将 CC 发来的 Anthropic Messages 请求转发到目标 provider。
 
@@ -1622,17 +1637,39 @@ def forward_request(
     不要再用 URL 启发式（如 "deepseek" in target_base）判断——
     DeepSeek 的 Anthropic SDK 端点（https://api.deepseek.com/anthropic）
     就是 Anthropic 协议，必须走 anthropic 分支。
+
+    Returns:
+        (status, resp_headers, resp_body, latency)
+        - latency: dict {"ttfb_ms": int|None, "total_ms": int}，调用方用于
+          日志和 metric 落盘。dry_run / API key 缺失路径 ttfb_ms=None。
+
+    timeout（2026-06-17 改造）：
+      形参改为 Optional[float]，None 时落到 STAGE_ROUTER_PROXY_TIMEOUT
+      （默认 25s）。这样调用方不传时也能跟着 env 走（与 health_checker
+      显式传 5s 覆盖默认值的模式一致）。
     """
+    # 2026-06-17：timeout 默认值改为跟 env 走，调用方不传时落到 25s
+    # （短于 CC 客户端 API_TIMEOUT_MS=30s，让 urlopen 先于客户端断）。
+    if timeout is None:
+        timeout = STAGE_ROUTER_PROXY_TIMEOUT
+
+    # 埋点初始化（dry_run / API key 缺失路径也走这里）
+    _t0 = time.time()
+    _latency: dict = {"ttfb_ms": None, "total_ms": 0}
+
     # dry_run 模式提前返回（不检查 API key，不发起 HTTP 请求）
     if dry_run:
         log.info(f"[DRY-RUN] 将转发到: {target_model}")
         mock = {"content": [{"type": "text", "text": f"[dry-run] routed to {target_model}"}]}
-        return 200, {"content-type": "application/json"}, json.dumps(mock).encode()
+        _latency["total_ms"] = int((time.time() - _t0) * 1000)
+        return 200, {"content-type": "application/json"}, json.dumps(mock).encode(), _latency
 
     api_key = os.environ.get(api_key_env, "")
     if not api_key:
         log.error(f"环境变量 {api_key_env} 未设置")
-        return 500, {}, b'{"error":"API key not set"}'
+        _latency["total_ms"] = int((time.time() - _t0) * 1000)
+        return 500, {}, b'{"error":"API key not set"}', _latency
+
 
     # 解析并改写请求体中的 model 字段
     try:
@@ -1721,7 +1758,11 @@ def forward_request(
 
     req = urllib.request.Request(url, data=new_body, headers=fwd_headers, method=method)
     try:
+        # 2026-06-17：埋点首字节耗时。urlopen 返回即视为响应对象可用
+        # （chunked 编码下 status line 已收到，等同首字节）。
+        _urlopen_t0 = time.time()
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            _latency["ttfb_ms"] = int((time.time() - _urlopen_t0) * 1000)
             resp_body = resp.read()
             resp_headers = dict(resp.headers)
             if protocol == "openai":
@@ -1729,14 +1770,49 @@ def forward_request(
             elif protocol == "anthropic" and not _is_native_anthropic(target_base):
                 # 防御：剥离上游响应中的 thinking block（防止进入 CC 会话历史死循环）
                 resp_body = _strip_thinking_from_response(resp_body)
-            return resp.status, resp_headers, resp_body
+            _latency["total_ms"] = int((time.time() - _t0) * 1000)
+            return resp.status, resp_headers, resp_body, _latency
     except urllib.error.HTTPError as e:
         body_err = e.read()
         log.error(f"上游错误 {e.code}: {body_err[:200]}")
-        return e.code, {}, body_err
+        _latency["total_ms"] = int((time.time() - _t0) * 1000)
+        return e.code, {}, body_err, _latency
+    except (socket.timeout, TimeoutError) as e:
+        # 2026-06-17：urlopen 主动 timeout → 显式归 504。
+        # _is_retriable() 已覆盖 5xx 范围，sticky fallback (proxy.py:2249)
+        # 会自动接管。不再让 proxy 静默卡 5 分钟等 CC 客户端先断。
+        log.warning(
+            f"上游 timeout（>{timeout:.0f}s）→ 归 504: target={target_model} "
+            f"provider={target_base} exc={type(e).__name__}: {e}"
+        )
+        _latency["total_ms"] = int((time.time() - _t0) * 1000)
+        return 504, {}, json.dumps(
+            {"error": "upstream timeout", "type": "timeout_error"}
+        ).encode(), _latency
+    except (ConnectionResetError, ConnectionRefusedError) as e:
+        log.warning(
+            f"上游连接异常: target={target_model} provider={target_base} "
+            f"exc={type(e).__name__}: {e}"
+        )
+        _latency["total_ms"] = int((time.time() - _t0) * 1000)
+        return 502, {}, json.dumps(
+            {"error": "upstream connection error", "type": type(e).__name__}
+        ).encode(), _latency
+    except OSError as e:
+        log.warning(
+            f"上游网络异常: target={target_model} provider={target_base} "
+            f"exc={type(e).__name__}: {e}"
+        )
+        _latency["total_ms"] = int((time.time() - _t0) * 1000)
+        return 502, {}, json.dumps(
+            {"error": "upstream network error", "type": type(e).__name__}
+        ).encode(), _latency
     except Exception as e:
-        log.error(f"转发失败: {e}")
-        return 502, {}, json.dumps({"error": str(e)}).encode()
+        log.exception(f"转发失败: {e}")
+        _latency["total_ms"] = int((time.time() - _t0) * 1000)
+        return 502, {}, json.dumps(
+            {"error": str(e), "type": type(e).__name__}
+        ).encode(), _latency
 
 
 def _to_openai_format(body: dict) -> dict:
@@ -1877,14 +1953,16 @@ def _call_with_retry(
         sleep_fn: 测试用注入点（默认 time.sleep）。单元测试用 monkeypatch 跳过实际等待。
 
     Returns:
-        (status, resp_headers, resp_body, attempts_used)
+        (status, resp_headers, resp_body, latency, attempts_used)
+        - latency: dict {"ttfb_ms": int|None, "total_ms": int}（最后一次调用的）
         - attempts_used: 实际调用次数（1~3）
     """
     last_status = 0
     last_headers: dict = {}
     last_body: bytes = b""
+    last_latency: dict = {"ttfb_ms": None, "total_ms": 0}
     for attempt in range(1, PRIMARY_MODEL_RETRY_ATTEMPTS + 1):
-        status, h, b = forward_request(
+        status, h, b, latency = forward_request(
             method=method,
             path=path,
             headers=headers,
@@ -1895,14 +1973,25 @@ def _call_with_retry(
             protocol=protocol,
             dry_run=dry_run,
         )
-        last_status, last_headers, last_body = status, h, b
+        last_status, last_headers, last_body, last_latency = status, h, b, latency
         if not _is_retriable(status):
             if attempt > 1:
                 log.info(
                     f"主模型 {target_model} 第 {attempt}/{PRIMARY_MODEL_RETRY_ATTEMPTS} "
                     f"次重试成功（status={status}）"
                 )
-            return status, h, b, attempt
+            return status, h, b, latency, attempt
+        # 2026-06-17：504/529 是上游明确"过载/超时"（不是网络抖动）。
+        # 重试 3 次 = 浪费 ~90s+ 且大概率同样失败，直接返回 retriable
+        # 让外层走 sticky fallback（proxy.py:2249）接管。
+        # STAGE_ROUTER_SKIP_504_RETRY=0 时回滚到原 1s×3 重试（保留旧行为）。
+        if status in (504, 529) and STAGE_ROUTER_SKIP_504_RETRY:
+            log.warning(
+                f"主模型 {target_model} 返回 {status}（attempt {attempt}/"
+                f"{PRIMARY_MODEL_RETRY_ATTEMPTS}），上游明确过载/超时，"
+                f"跳过重试直接走 sticky fallback"
+            )
+            return status, h, b, latency, attempt
         if attempt < PRIMARY_MODEL_RETRY_ATTEMPTS:
             log.warning(
                 f"主模型 {target_model} 返回 {status}（attempt {attempt}/"
@@ -1914,7 +2003,7 @@ def _call_with_retry(
         f"主模型 {target_model} 经 {PRIMARY_MODEL_RETRY_ATTEMPTS} 次重试仍失败，"
         f"last status={last_status}，启动 fallback provider 流程"
     )
-    return last_status, last_headers, last_body, PRIMARY_MODEL_RETRY_ATTEMPTS
+    return last_status, last_headers, last_body, last_latency, PRIMARY_MODEL_RETRY_ATTEMPTS
 
 
 def _is_internal_request(headers: dict) -> bool:
@@ -2252,7 +2341,11 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # 供 statusline 第三行准确显示当前使用的模型。
         actual_route_model = model  # sticky swap 后的 model
 
-        status, resp_headers, resp_body, primary_attempts = _call_with_retry(
+        # 2026-06-17：埋点最终生效的请求耗时。默认 = 主模型最后一次耗时；
+        # fallback 成功时会被覆盖为 fb_latency（fallback 分支 :2429）。
+        effective_latency: dict = {"ttfb_ms": None, "total_ms": 0}
+
+        status, resp_headers, resp_body, primary_latency, primary_attempts = _call_with_retry(
             method="POST",
             path=self.path,
             headers=headers,
@@ -2316,7 +2409,7 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
-            status, resp_headers, resp_body = forward_request(
+            status, resp_headers, resp_body, fb_latency = forward_request(
                 method="POST",
                 path=self.path,
                 headers=headers,
@@ -2326,10 +2419,14 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 api_key_env=fb_key,
                 protocol=fb_proto,
                 dry_run=self.dry_run,
+                timeout=STAGE_ROUTER_FALLBACK_TIMEOUT,  # 2026-06-17 fallback 也走 25s
             )
             # fallback retry 成功后，实际路由模型更新为 fb_model
             if not _is_retriable(status):
                 actual_route_model = fb_model
+                # 2026-06-17：fallback 成功时，metric 用 fallback 的耗时
+                # （主模型那次失败/超时的 latency 不应记入"成功的请求"）
+                effective_latency = fb_latency
         elif _is_retriable(status) and internal_req:
             log.info(
                 f"[{routing_source}] 内部请求主模型 {model} 返回 {status}，"
@@ -2390,6 +2487,10 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             # token_estimate：粗估，从 body 长度按 4 字符/token 算（业内常见近似）。
             token_estimate = max(1, len(body) // 4) if body else 0
 
+            # 2026-06-17：未走 fallback（或 fallback 失败）时，metric 用主模型最后一次耗时
+            if not effective_latency.get("total_ms"):
+                effective_latency = primary_latency or {"ttfb_ms": None, "total_ms": 0}
+
             _append_metric({
                 "ts":                  time.time(),
                 "path":                self.path,
@@ -2412,6 +2513,8 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 "used_fallback":       used_fallback,
                 "retry_count":         retry_count,                # §15 D15-1
                 "token_estimate":      token_estimate,             # §15 D15-1
+                "ttfb_ms":             effective_latency.get("ttfb_ms"),  # 2026-06-17
+                "latency_ms":          effective_latency.get("total_ms", 0),  # 2026-06-17
                 "session_id":          metric_session_id,          # §15 D15-2
                 "project_root":        metric_project_root,        # §15 D15-2
             })
