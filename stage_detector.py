@@ -666,7 +666,27 @@ def main():
             except Exception as _e:
                 log("WARN", f"~model reset 失败: {_e!r}")
                 model_msg = "~model reset 失败（fallback 清除异常）"
-            # 3) 清 in-process 状态（防御性双写：与 proxy 端 do_POST 的 ~model reset
+            # 3) 清 state JSON 的 model_override 字段（与 1/2 对称）：
+            #    此前 SET 步骤会把 override 写进 model_router_state_<sid>.json
+            #    （store.write(model_override=new_model)），如果只删 model_<sid>
+            #    文件，state JSON 里的 model_override 仍是 stale 值，statusline
+            #    与决策引擎（decision.decision_source='explicit'）继续误指代。
+            #    store.write(model_override=None) 显式清零，按 store.write 语义
+            #    （kwargs[key] is None → 直接写）会真正写入 None 而非继承。
+            try:
+                from state_persistence import SessionStateStore
+                from stage_config import STAGE_CONFIG  # noqa: F401  与正常路径一致
+                _root_reset = str(_find_project_root(
+                    Path(cwd) if not isinstance(cwd, Path) else cwd, session_id))
+                SessionStateStore().write(
+                    sid=session_id,
+                    project_root=_root_reset,
+                    model_override=None,
+                )
+                log("INFO", "~model reset: 清 state JSON 的 model_override 字段")
+            except Exception as _e:
+                log("WARN", f"~model reset 清 state JSON model_override 失败（已忽略）: {_e!r}")
+            # 4) 清 in-process 状态（防御性双写：与 proxy 端 do_POST 的 ~model reset
             #    对称执行，即便 hook 阶段先于 proxy 命中也能立刻让 provider 回到可用）。
             #    复用 proxy._clear_provider_state_on_reset，里面已用 try/except
             #    隔离单点失败，不影响 reset 主流程。

@@ -2353,7 +2353,31 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             # 2) 全局清 sticky fallback
             n = clear_fallback_all()
             log.info(f"~model reset 已清除 {n} 个 sticky fallback 文件")
-            # 3) 清 in-process 状态：token_plan 缓存 + quota 状态机 + 健康状态。
+            # 3) 清 state JSON 的 model_override 字段：SET 步骤在 stage_detector
+            #    / proxy 端 store.write 都会把 model_override=new_model 写进
+            #    model_router_state_<sid>.json，只删 model_<sid> 文件无法清除
+            #    state JSON 里的字段；statusline 与 decision.decision_source 会
+            #    继续误指代为 'explicit'。此处显式 store.write(model_override=None)
+            #    对称清零（store.write 语义：kwargs[key] is None → 直接写）。
+            #    session_id/project_root 通过 _active_stage_path() 即时解析，
+            #    与下面 §15 D15-2 路径一致；reset 命中时即使无活跃 session
+            #    （_ap_path is None）也安全跳过。
+            try:
+                _rst_ap = _active_stage_path()
+                if _rst_ap is not None:
+                    _rst_sid = _extract_session_id_from_stage_path(_rst_ap)
+                    _rst_root = str(_find_project_root_for_stage_path(_rst_ap))
+                    if _rst_sid and _rst_root:
+                        from state_persistence import SessionStateStore
+                        SessionStateStore().write(
+                            sid=_rst_sid,
+                            project_root=_rst_root,
+                            model_override=None,
+                        )
+                        log.info("~model reset: 清 state JSON 的 model_override 字段")
+            except Exception as _rst_e:
+                log.warning(f"~model reset 清 state JSON model_override 失败（已忽略）: {_rst_e}")
+            # 4) 清 in-process 状态：token_plan 缓存 + quota 状态机 + 健康状态。
             #    详见 _clear_provider_state_on_reset docstring。
             _clear_provider_state_on_reset(reset_kind="model")
 
