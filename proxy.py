@@ -1077,6 +1077,11 @@ def _batch_file_path(stage_file: Path) -> Path:
     return stage_file.with_name(stage_file.name.replace("stage_", "batch_", 1))
 
 
+def _task_field_file_path(stage_file: Path) -> Path:
+    """V1.4：从 stage_<sid> 派生 task_field_<sid> 路径（statusline 展示用，不参与路由）。"""
+    return stage_file.with_name(stage_file.name.replace("stage_", "task_field_", 1))
+
+
 def _active_stage_path() -> Path | None:
     """Resolve the active session's stage file path（multi-session aware）。
 
@@ -1490,6 +1495,23 @@ def _write_complexity_from_proxy(score: int, label: str, confidence: float,
             "label": label,
             "confidence": confidence,
             "source": source,
+            "ts": time.time(),
+        }, ensure_ascii=False))
+    except OSError:
+        pass
+
+
+def _write_task_field_from_proxy(prediction: str, confidence: float) -> None:
+    """Proxy 端写入 task_field 业务领域分类（V1.4，statusline 展示用）。"""
+    p = _active_stage_path()
+    if not p:
+        return
+    try:
+        tfp = _task_field_file_path(p)
+        tfp.parent.mkdir(parents=True, exist_ok=True)
+        tfp.write_text(json.dumps({
+            "prediction": prediction,
+            "confidence": confidence,
             "ts": time.time(),
         }, ensure_ascii=False))
     except OSError:

@@ -271,6 +271,11 @@ def _complexity_file_path(stage_file: Path) -> Path:
     return stage_file.with_name(stage_file.name.replace("stage_", "complexity_", 1))
 
 
+def _task_field_file_path(stage_file: Path) -> Path:
+    """V1.4：从 stage_<sid> 派生 task_field_<sid> 路径（业务领域分类）。"""
+    return stage_file.with_name(stage_file.name.replace("stage_", "task_field_", 1))
+
+
 def read_pattern(event: dict | None = None) -> dict | None:
     """
     读取当前 session 的 task pattern 标注（Shadow Mode 专用）。
@@ -333,6 +338,37 @@ def read_complexity(event: dict | None = None) -> dict | None:
     return None
 
 
+def read_task_field(event: dict | None = None) -> dict | None:
+    """
+    读取当前 session 的 task_field 业务领域分类（V1.4）。
+    返回 dict：{"prediction": str, "confidence": float, "ts": str} 或 None。
+    """
+    if event:
+        session_id: str | None = (event.get("session_id") or "").strip() or None
+        cwd: str | None = event.get("cwd")
+        if session_id and cwd:
+            stage_path = _stage_file_path(cwd, session_id)
+            task_field_file = _task_field_file_path(stage_path)
+            try:
+                content = task_field_file.read_text().strip()
+                if content:
+                    return json.loads(content)
+            except (FileNotFoundError, json.JSONDecodeError):
+                pass
+
+    try:
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            task_field_file = _task_field_file_path(Path(active_path))
+            content = task_field_file.read_text().strip()
+            if content:
+                return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    return None
+
+
 def main():
     event = None
     try:
@@ -347,6 +383,7 @@ def main():
 
     pattern_data = read_pattern(event)
     complexity_data = read_complexity(event)
+    task_field_data = read_task_field(event)  # V1.4 业务领域
 
     # ── ANSI palette ────────────────────────────────────────────────
     RST  = '\033[0m'
@@ -416,6 +453,22 @@ def main():
         lines.append(
             f"  {c_emoji} {c_color}复杂度: {c_label}{RST}"
             f"{GRY}  score={c_score}{RST}"
+        )
+
+    # Task Field (V1.4) — 业务领域分类，仅展示不参与路由
+    if task_field_data and task_field_data.get("prediction"):
+        tf_pred = task_field_data["prediction"]
+        tf_conf = task_field_data.get("confidence", 0.0)
+        tf_label = {
+            "frontend": "前端", "backend": "后端",
+            "ops": "运维", "product": "产品", "unknown": "未知",
+        }.get(tf_pred, tf_pred)
+        tf_color = {
+            "frontend": BLU, "backend": GRN,
+            "ops": RED, "product": MGN,
+        }.get(tf_pred, GRY)
+        lines.append(
+            f"  {DIM}{tf_color}🏷️ 领域: {tf_label}  conf={tf_conf:.2f}{RST}"
         )
 
     # ── Box drawing ─────────────────────────────────────────────────

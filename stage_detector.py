@@ -860,6 +860,17 @@ def main():
             else:
                 log("INFO", "pattern (shadow): no signal")
 
+            # ── Task Field 落盘（V1.4：业务领域，statusline 展示用，不参与路由）──
+            if llm_result and llm_result.get("task_field"):
+                write_task_field(
+                    llm_result["task_field"],
+                    llm_result.get("task_field_confidence", 0.5),
+                    session_id, cwd,
+                )
+                log("INFO",
+                    f"task_field (shadow): {llm_result['task_field']} "
+                    f"(conf={llm_result.get('task_field_confidence', 0.5)})")
+
         # ── Stage Complexity 评估（设计文档 §6.4）──
         #   优先级：~careful/~quick 显式调档 > auto 检测 > PATTERN 默认
         complexity_msg: str | None = None
@@ -1191,6 +1202,14 @@ def _batch_file_path(stage_file: Path) -> Path:
     return stage_file.with_name(stage_file.name.replace("stage_", "batch_", 1))
 
 
+def _task_field_file_path(stage_file: Path) -> Path:
+    """从 stage_<sid> 派生 task_field_<sid> 路径（同目录、仅前缀替换）。
+    V1.4 新增：存储 task_field 业务领域分类标签（statusline 展示用，不参与路由）。
+    存储 JSON：{"prediction": str, "confidence": float, "ts": str}。
+    """
+    return stage_file.with_name(stage_file.name.replace("stage_", "task_field_", 1))
+
+
 def read_complexity(session_id: str | None = None,
                     cwd: str | Path | None = None) -> dict | None:
     """读取当前 session 的 complexity 评估结果。"""
@@ -1207,6 +1226,31 @@ def read_complexity(session_id: str | None = None,
             return None
     try:
         content = complexity_file.read_text().strip()
+        if not content:
+            return None
+        return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def read_task_field(session_id: str | None = None,
+                    cwd: str | Path | None = None) -> dict | None:
+    """读取当前 session 的 task_field 业务领域分类（V1.4）。
+    返回 dict：{"prediction": str, "confidence": float, "ts": str} 或 None。
+    """
+    if session_id and cwd:
+        stage_path = _stage_file_path(cwd, session_id)
+        task_field_file = _task_field_file_path(stage_path)
+    else:
+        try:
+            active_path = ACTIVE_SESSION_FILE.read_text().strip()
+            if not active_path:
+                return None
+            task_field_file = _task_field_file_path(Path(active_path))
+        except FileNotFoundError:
+            return None
+    try:
+        content = task_field_file.read_text().strip()
         if not content:
             return None
         return json.loads(content)
@@ -1236,6 +1280,28 @@ def write_complexity(score: int, label: str, confidence: float,
     )
 
 
+def write_task_field(prediction: str, confidence: float,
+                     session_id: str | None = None,
+                     cwd: str | Path | None = None) -> None:
+    """写入 task_field 业务领域分类到 task_field_<sid>（JSON 格式，V1.4）。
+
+    task_field 仅作为 statusline 展示标签，**不参与 model router proxy 路由决策**。
+    5 种枚举：frontend / backend / ops / product / unknown。
+    """
+    if not session_id or not cwd:
+        return
+    stage_path = _stage_file_path(cwd, session_id)
+    stage_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "prediction":   prediction,
+        "confidence":   round(float(confidence), 2),
+        "ts":           datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _task_field_file_path(stage_path).write_text(
+        json.dumps(payload, ensure_ascii=False)
+    )
+
+
 def clear_complexity(session_id: str | None = None,
                      cwd: str | Path | None = None) -> None:
     """清除 complexity_<sid> 文件。"""
@@ -1244,6 +1310,18 @@ def clear_complexity(session_id: str | None = None,
     stage_path = _stage_file_path(cwd, session_id)
     try:
         _complexity_file_path(stage_path).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def clear_task_field(session_id: str | None = None,
+                     cwd: str | Path | None = None) -> None:
+    """清除 task_field_<sid> 文件（V1.4）。"""
+    if not session_id or not cwd:
+        return
+    stage_path = _stage_file_path(cwd, session_id)
+    try:
+        _task_field_file_path(stage_path).unlink(missing_ok=True)
     except Exception:
         pass
 
