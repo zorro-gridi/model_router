@@ -127,23 +127,34 @@ def detect_model_override(prompt: str) -> tuple[Optional[str], bool]:
 
     优先级: 显式 ~model 指令 > 自然语言模式
     """
-    canon, is_reset, _unknown = parse_model_override(prompt)
+    canon, is_reset, _unknown, _persist = parse_model_override(prompt)
     return (canon, is_reset)
 
 
-def parse_model_override(prompt: str) -> tuple[Optional[str], bool, Optional[str]]:
-    """从用户 prompt 中检测模型覆盖指令，返回 (canonical, is_reset, unknown_alias)。
+def parse_model_override(prompt: str) -> tuple[Optional[str], bool, Optional[str], bool]:
+    """从用户 prompt 中检测模型覆盖指令，返回 (canonical, is_reset, unknown_alias, persist)。
 
     - canonical:        解析出的规范模型名；无指令或未识别时为 None
     - is_reset:         用户是否要求清除覆盖（`~model reset`）
     - unknown_alias:    用户输入但无法识别的 alias（仅显式 `~model <name>` 时设置；
                         自然语言模式不识别时**不**回传，避免误报）
+    - persist:          是否将该覆盖写入 model_<sid> 让整个 session 持续生效。
+                        - True  = 持久化（默认行为）：整个 session 路由都受此覆盖，
+                                  直到用户 `~model reset` 才解除。
+                        - False = 一次性（one-shot）：仅本请求使用，下一回合回到
+                                  自动 stage 路由。
+
+    持久化开关语法（2026-06-18 引入，~model <alias> 后追加数字）：
+        ~model mm3         → persist=True（默认 = session 持续）
+        ~model mm3 1       → persist=True（显式声明）
+        ~model mm3 0       → persist=False（一次性不写盘）
+        ~model mm3 一次    → 暂不支持（数字是最小集，扩展留作未来）
 
     设计文档 §12 D12-3：未识别的 alias 必须显式提示用户，不能静默失效。
     调用方拿到 unknown_alias 后应记 warning / 返回 400 / 在响应中提示合法 model 列表。
     """
     if not prompt:
-        return (None, False, None)
+        return (None, False, None, False)
 
     stripped = prompt.strip()
     prompt_lower = stripped.lower()
@@ -156,29 +167,40 @@ def parse_model_override(prompt: str) -> tuple[Optional[str], bool, Optional[str
         # （如 `~model <model_alias>: 表示...`）的冒号被当作 alias 的一部分
         raw = raw.rstrip(':.,;)')
         if not raw:
-            return (None, False, None)
+            return (None, False, None, False)
         # 跳过角括号占位符（如 <model_alias>），这是文档/指令文本而非实际 alias
         if raw.startswith('<') or raw.startswith('['):
-            return (None, False, None)
+            return (None, False, None, False)
         # 检查 reset/default/auto/clear/off 关键词
         if raw.lower() in MODEL_RESET_WORDS:
-            return (None, True, None)  # is_reset
-        canon = resolve_model(raw)
+            return (None, True, None, False)  # is_reset
+        # ── 持久化开关解析（2026-06-18）────────────────────────
+        # ~model <alias> 后面可追加 0/1 控制是否写盘。
+        # split 后第一段是 alias，第二段（若存在且为 0/1）是 persist 标志；
+        # 多余 token 忽略——保持解析器最小惊讶原则。
+        parts = raw.split()
+        alias_token = parts[0]
+        persist = True  # 默认 = session 持续有效（2026-06-18 行为变更）
+        if len(parts) >= 2 and parts[1] in ("0", "1"):
+            persist = (parts[1] == "1")
+        canon = resolve_model(alias_token)
         if canon:
-            return (canon, False, None)
+            return (canon, False, None, persist)
         # 未识别 → 返回 None + 原始 alias（供调用方给 warning，修复 §12 D12-3 静默失效）
-        return (None, False, raw)
+        return (None, False, raw, persist)
 
     # ── 2. 自然语言模式 ─────────────────────────────────────
     # 注意：只在 ~model 未命中时才走自然语言，避免 "~model" 被
     # 自然语言正则误匹配。
+    # 自然语言模式不接 persist 标志——只用「use mm3」这种说法的用户大概率是
+    # 一次性意图，强行持久化反而违背直觉。
     for m_nat in NATURAL_MODEL_RE.finditer(prompt_lower):
         raw = m_nat.group(1).strip()
         canon = resolve_model(raw)
         if canon:
-            return (canon, False, None)
+            return (canon, False, None, False)
 
-    return (None, False, None)
+    return (None, False, None, False)
 
 
 # ── Provider 指令解析（provider 级 fallback，2026-06-16）─────────
