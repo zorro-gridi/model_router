@@ -2450,14 +2450,14 @@ def _call_with_retry(
                     f"次重试成功（status={status}）"
                 )
             return status, h, b, latency, attempt
-        # 2026-06-17：504/529 是上游明确"过载/超时"（不是网络抖动）。
-        # 重试 3 次 = 浪费 ~90s+ 且大概率同样失败，直接返回 retriable
-        # 让外层走 sticky fallback（proxy.py:2249）接管。
+        # 2026-06-17/18：非瞬时错误码不重试，直接走 sticky fallback
+        #   504/529 — 上游明确"过载/超时"，重试大概率同样失败
+        #   402     — 上游余额不足（Insufficient Balance），重试不会恢复
         # STAGE_ROUTER_SKIP_504_RETRY=0 时回滚到原 1s×3 重试（保留旧行为）。
-        if status in (504, 529) and STAGE_ROUTER_SKIP_504_RETRY:
+        if status in (402, 504, 529) and STAGE_ROUTER_SKIP_504_RETRY:
             log.warning(
                 f"主模型 {target_model} 返回 {status}（attempt {attempt}/"
-                f"{PRIMARY_MODEL_RETRY_ATTEMPTS}），上游明确过载/超时，"
+                f"{PRIMARY_MODEL_RETRY_ATTEMPTS}），非瞬时错误，"
                 f"跳过重试直接走 sticky fallback"
             )
             return status, h, b, latency, attempt

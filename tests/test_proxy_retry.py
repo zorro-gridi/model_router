@@ -13,8 +13,9 @@ test_proxy_retry.py — 主模型重试 + fallback 触发测试
   5. sleep_fn 注入：固定 1s × N 退避，单测时跳过实际等待
   6. PRIMARY_MODEL_RETRY_ATTEMPTS 常量值 = 3
   7. PRIMARY_MODEL_RETRY_BACKOFF_SECONDS = 1.0
-  8. retriable 错误码（401/402/403/429/5xx/0）都触发重试
+  8. retriable 错误码（401/402/403/429/5xx/0）都触发 fallback
   9. non-retriable 错误码（400/404/422）不触发重试
+ 10. 402 余额不足 → 跳过重试直接走 fallback（与 504/529 同为非瞬时错误）
 """
 
 import unittest
@@ -190,6 +191,36 @@ class TestCallWithRetry(unittest.TestCase):
         from proxy import _is_retriable
         for s in (500, 502, 503, 504, 599):
             self.assertTrue(_is_retriable(s), f"status={s} 应当 retriable")
+
+    def test_402_is_retriable(self):
+        """402 余额不足 → _is_retriable=True，会触发 fallback。"""
+        from proxy import _is_retriable
+        self.assertTrue(_is_retriable(402))
+
+    def test_402_skips_retry_goes_straight_to_fallback(self):
+        """402 余额不足 → 非瞬时错误，跳过重试直接返回（让外层走 fallback）。
+
+        与 504/529 相同的 skip-retry 语义：余额不会在 1s 内恢复，
+        重试 3 次纯浪费流量，应直接走 sticky fallback。"""
+        from proxy import _call_with_retry
+
+        sleep_calls = []
+        def fake_sleep(s):
+            sleep_calls.append(s)
+
+        with patch("proxy.forward_request", return_value=(402, {}, b'{"error":"Insufficient Balance"}', _LAT)) as mock_fwd:
+            status, _, body, _, attempts = _call_with_retry(
+                method="POST", path="/v1/messages", headers={}, body=b"{}",
+                target_base="https://api.deepseek.com/anthropic",
+                target_model="deepseek-v4-pro",
+                api_key_env="DEEPSEEK_API_KEY", protocol="anthropic", dry_run=False,
+                sleep_fn=fake_sleep,
+            )
+        self.assertEqual(status, 402)
+        self.assertEqual(attempts, 1)  # 首次就跳过，不重试
+        self.assertEqual(mock_fwd.call_count, 1)
+        self.assertEqual(sleep_calls, [])  # 不 sleep，直接返回
+        self.assertIn(b"Insufficient Balance", body)
 
 
 # ── 测试 _call_with_retry 接到 forward_request 的参数透传 ──────────────────
