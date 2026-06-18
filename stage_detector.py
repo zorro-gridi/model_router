@@ -666,6 +666,15 @@ def main():
             except Exception as _e:
                 log("WARN", f"~model reset 失败: {_e!r}")
                 model_msg = "~model reset 失败（fallback 清除异常）"
+            # 3) 清 in-process 状态（防御性双写：与 proxy 端 do_POST 的 ~model reset
+            #    对称执行，即便 hook 阶段先于 proxy 命中也能立刻让 provider 回到可用）。
+            #    复用 proxy._clear_provider_state_on_reset，里面已用 try/except
+            #    隔离单点失败，不影响 reset 主流程。
+            try:
+                from proxy import _clear_provider_state_on_reset as _reset_clear
+                _reset_clear(reset_kind="model")
+            except Exception as _e:
+                log("WARN", f"~model reset 清 in-process 状态失败（已忽略）: {_e!r}")
         elif new_model:
             # 2026-06-18 行为变更：默认写回 model_<sid>（与 2026-06-16 的"一次性"行为相反）。
             # proxy 端 do_POST 会按相同规则写盘并应用到当前请求；
@@ -693,6 +702,12 @@ def main():
             except Exception as _e:
                 log("WARN", f"~provider reset clear_fallback_all 失败: {_e!r}")
                 prov_msg = "~provider reset 失败（fallback 清除异常）"
+            # 清 in-process 状态：与 proxy 端对称执行，让 provider 真正回到「可用」。
+            try:
+                from proxy import _clear_provider_state_on_reset as _reset_clear
+                _reset_clear(reset_kind="provider")
+            except Exception as _e:
+                log("WARN", f"~provider reset 清 in-process 状态失败（已忽略）: {_e!r}")
         else:
             prov_msg = None
 

@@ -999,6 +999,70 @@ def clear_fallback_all() -> int:
     return removed
 
 
+def _clear_provider_state_on_reset(*, reset_kind: str) -> None:
+    """~provider reset / ~model reset 触发的 in-process 状态清理。
+
+    磁盘侧 `fallback_<sid>` 已被 clear_fallback_all() 删掉，但还有 3 处
+    in-process 状态仍把 provider 视为「不可用」：
+
+      1. token_plan._cache：60s in-process 缓存，下一次 precheck_and_fallback
+         仍会命中「minimax 已耗尽」→ 立刻 try_write_fallback("minimax")，
+         sticky 被重新写回磁盘——statusline 第三行 model 又被覆盖。
+      2. health_checker._QUOTA_STATE：one-shot timer 把 next_check_after
+         钉在 remains_time，且 last_weekly_status 仍为 2（已耗尽），
+         即使 cache 清了，监控线程的状态机仍判定 minimax 不可路由。
+      3. health_checker._HEALTH_STATUS[provider]：探测结果缓存，ok=False
+         会让 /health 端点继续报告「minimax 不可用」，与 reset 语义不符。
+
+    重置这三处后，provider 真正回到「可用状态」，下次请求按 stage 路由
+    走主模型。同时不触碰写入侧接口（try_write_fallback /
+    precheck_and_fallback）——其它模块仍可正常修改 provider/model 状态。
+
+    异常隔离：任何一步失败都用 try/except 单独吞掉（仅记 warning），不阻塞
+    reset 主流程（清 fallback 文件才是用户预期的主要动作）。
+
+    Args:
+        reset_kind: "provider" 或 "model"（仅用于日志区分）。
+    """
+    # 1) token_plan 缓存：清掉 minimax 配额缓存，下次 precheck 立即重拉。
+    #    拉新数据会反映真实配额状态；若仍超阈值，precheck 会再次触发
+    #    sticky——这与 reset 语义一致（reset 只清「历史 sticky」，
+    #    不改变配额判断逻辑本身）。
+    try:
+        from token_plan import clear_cache as _tp_clear_cache
+        _tp_clear_cache()
+        log.info(f"~{reset_kind} reset：token_plan 缓存已清空")
+    except Exception as _e:
+        log.warning(f"~{reset_kind} reset 清 token_plan 缓存失败（已忽略）: {_e!r}")
+
+    # 2) health_checker 配额监控 one-shot timer 状态机：重置 _QUOTA_STATE
+    #    让下一次 _quota_recovery_check() 立即按 QUOTA_CHECK_INTERVAL 节奏
+    #    重新探测，而不是被 next_check_after 跳过。
+    try:
+        from health_checker import clear_quota_state as _hc_clear_quota
+        _hc_clear_quota()
+        log.info(f"~{reset_kind} reset：health_checker 配额状态已重置")
+    except Exception as _e:
+        log.warning(f"~{reset_kind} reset 清 quota 状态失败（已忽略）: {_e!r}")
+
+    # 3) health_checker 健康状态：把 minimax 标记为 ok=True（不写 lat/err
+    #    字段，避免污染 /health 端点的可视化；用 ok=True 已足够表达
+    #    「reset 后视为可用」）。其它 provider 不动——reset 是针对主 provider
+    #    的局部操作，不应波及 alternative providers。
+    try:
+        import health_checker as _hc_mod
+        with _hc_mod._HEALTH_STATUS_LOCK:
+            entry = _hc_mod._HEALTH_STATUS.get("minimax")
+            if entry is not None:
+                entry["ok"] = True
+                # 清掉上次错误原因（保留 status code 便于历史追溯），
+                # 只重置 ok 标记 + 清 error 字段。
+                entry["error"] = None
+        log.info(f"~{reset_kind} reset：health_checker._HEALTH_STATUS[minimax].ok = True")
+    except Exception as _e:
+        log.warning(f"~{reset_kind} reset 重置 _HEALTH_STATUS 失败（已忽略）: {_e!r}")
+
+
 # ── Pattern / Complexity / Batch / State-Index 读取（设计文档 §6.2-6.4 / §13）──
 
 def _pattern_file_path(stage_file: Path) -> Path:
@@ -2289,6 +2353,9 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             # 2) 全局清 sticky fallback
             n = clear_fallback_all()
             log.info(f"~model reset 已清除 {n} 个 sticky fallback 文件")
+            # 3) 清 in-process 状态：token_plan 缓存 + quota 状态机 + 健康状态。
+            #    详见 _clear_provider_state_on_reset docstring。
+            _clear_provider_state_on_reset(reset_kind="model")
 
         # ── ~provider reset ──────────────────────────────────────────
         # provider 级 fallback（2026-06-16）：~provider reset 全局清除所有
@@ -2297,6 +2364,8 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             log.info("prompt ~provider reset：全局清除所有 session 的 sticky fallback")
             n = clear_fallback_all()
             log.info(f"~provider reset 已清除 {n} 个 sticky fallback 文件")
+            # 清 in-process 状态：让 provider 真正回到「可用状态」。
+            _clear_provider_state_on_reset(reset_kind="provider")
 
         # ── Per-API-Request 分类（2026-06-16 起已禁用，保留代码以备回滚）────
         # 旧逻辑：计数器在 UserPromptSubmit (Hook) 时重置为 0；本回合若计数器到达
