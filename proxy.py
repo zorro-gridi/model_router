@@ -154,18 +154,23 @@ from rate_limit import check_rate_limit, consume as rate_limit_consume      # no
 sys.path.insert(0, os.path.expanduser("~/.claude"))
 from hooks.compact.utils import _find_project_root  # noqa: E402
 
-# ── 原生 Anthropic 端点白名单 ──
-# 这些端点的 extended thinking 是**真实现**的（合法 signature、再次回传能校验过），
-# 代理不应剥离请求里的 thinking 字段。
-# 其它端点（即使是 anthropic 协议兼容的）也走降级——实测 deepseek / MiniMax 的
-# signature 都是 message id 假装的，会间歇性触发 400。
+# ── 原生 Anthropic 端点白名单（2026-06-18 弃用，保留向后兼容）──
+# 历史上用 URL 白名单判断是否原生 Anthropic 端点（决定是否剥 thinking block）。
+# 2026-06-18 起，forward_request 改用 target_model.startswith("claude-") 判定，
+# 该白名单不再被 forward_request 调用，仅保留符号供外部 import 不破坏。
+# 实测 deepseek / MiniMax 的 signature 都是 message id 假装的，会间歇性触发 400。
 NATIVE_ANTHROPIC_DOMAINS: tuple[str, ...] = (
     "api.anthropic.com",
 )
 
 
 def _is_native_anthropic(target_base: str) -> bool:
-    """判断目标 base URL 是否为原生 Anthropic 端点（白名单匹配）。"""
+    """判断目标 base URL 是否为原生 Anthropic 端点（白名单匹配）。
+
+    .. deprecated::
+        2026-06-18 起，thinking 降级判定改用 target_model.startswith("claude-")。
+        本函数保留仅为向后兼容外部调用，新代码请直接判断 model 名前缀。
+    """
     return any(domain in target_base for domain in NATIVE_ANTHROPIC_DOMAINS)
 
 # ── Per-Session 路由绑定（2026-06-17）─────────────────────────────────────────
@@ -1595,11 +1600,12 @@ def _strip_thinking_blocks(body: dict) -> tuple[int, int]:
     """
     从请求体的所有 messages[].content[] 里删除 thinking / redacted_thinking block。
 
-    策略（2026-06 修正）：
-      非 Anthropic 端点（DeepSeek, MiniMax）看到历史中的 type: "thinking" block
-      会隐式进入 thinking mode，但顶层 thinking 参数已被代理移除 → 400 错误。
-      "保留 thinking block 原样透传是安全的"已被运行证伪；正确做法是直接删除——
-      DeepSeek 看不到 thinking block 就不会进入 thinking mode。
+    策略：
+      非 Anthropic 模型（MiniMax、DeepSeek 等）不认识 type: "thinking" content block，
+      收到后直接 400 "the content[].thinking in the thinking mode must be passed back
+      to the API"。在转发前统一剥离，避免 API 报错中断 Claude Code 会话。
+
+    同时递归清理 tool_result 内嵌 content[] 中可能存在的 thinking 块。
 
     content 为字符串时跳过（无 block 可剥）;
     content 为列表时过滤掉这两个 type 的 dict;
@@ -1610,21 +1616,40 @@ def _strip_thinking_blocks(body: dict) -> tuple[int, int]:
       参数 body 被原地修改。
     """
     _stripped = _redacted = 0
+
+    def _filter_blocks(blocks: list) -> tuple[list, int, int]:
+        """递归过滤 thinking 块，返回 (filtered, stripped, redacted)。"""
+        out: list = []
+        s = r = 0
+        for block in blocks:
+            if not isinstance(block, dict):
+                out.append(block)
+                continue
+            if block.get("type") in _THINKING_BLOCK_TYPES:
+                if block.get("type") == "thinking":
+                    s += 1
+                else:
+                    r += 1
+            else:
+                # tool_result 内部 content[] 可能嵌套 thinking 块 → 递归清理
+                if block.get("type") == "tool_result" and isinstance(block.get("content"), list):
+                    nested_content, ns, nr = _filter_blocks(block["content"])
+                    s += ns
+                    r += nr
+                    block = {**block, "content": nested_content}
+                out.append(block)
+        return out, s, r
+
     for msg in body.get("messages", []):
         content = msg.get("content")
         if not isinstance(content, list):
             continue
         before = len(content)
-        filtered: list = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") in _THINKING_BLOCK_TYPES:
-                if block.get("type") == "thinking":
-                    _stripped += 1
-                else:
-                    _redacted += 1
-            else:
-                filtered.append(block)
-        if len(filtered) != before:
+        filtered, s, r = _filter_blocks(content)
+        _stripped += s
+        _redacted += r
+        # 若有任何 thinking 被剥（含递归修改 tool_result 内嵌）→ 落回 filtered
+        if s or r:
             msg["content"] = filtered
     return _stripped, _redacted
 
@@ -1654,6 +1679,27 @@ def _strip_thinking_from_response(resp_body: bytes) -> bytes:
     except (json.JSONDecodeError, TypeError):
         return resp_body
     return resp_body
+
+
+# 非 Anthropic 模型不识别的请求头，命中后从转发头里剔除
+_NON_ANTHROPIC_HEADERS_TO_DROP = frozenset({
+    "anthropic-beta",
+    "anthropic-version",
+})
+
+
+def _clean_headers_for_non_anthropic(headers: dict) -> dict:
+    """
+    从转发头里剔除 Anthropic 专属 header（大小写不敏感）。
+
+    非 Anthropic 模型（MiniMax、DeepSeek 等）收到 anthropic-beta / anthropic-version
+    会直接报错或忽略，但 anthropic-beta 里常含 interleaved-thinking-2025-05-08
+    等仅 Anthropic SDK 认识的 beta 标识，原样转发可能引发 400。
+    """
+    return {
+        k: v for k, v in headers.items()
+        if k.lower() not in _NON_ANTHROPIC_HEADERS_TO_DROP
+    }
 
 
 # ── 请求转发 ───────────────────────────────────────────────────────────────────
@@ -1731,22 +1777,27 @@ def forward_request(
     original_model = body_json.get("model", "unknown")
     body_json["model"] = target_model
 
-    # ── 防御式：thinking 字段降级（非原生 Anthropic 端点）──
+    # ── 防御式：thinking 字段降级（非 Anthropic 模型）──
     #
-    # 策略（2026-06 修正）：
+    # 策略（2026-06-18 用户方案）：
     #   1. 删除顶层 thinking 参数（阻止上游进入 extended thinking 模式）
-    #   2. 删除消息历史中所有 type: "thinking" / "redacted_thinking" content block
+    #   2. 删除顶层 betas 参数（interleaved-thinking 等 beta 头对应项）
+    #   3. 调用 _strip_thinking_blocks 递归剥离 messages[].content[] 中所有
+    #      type: "thinking" / "redacted_thinking" block（含 tool_result 内嵌）
     #
-    # 根因：非 Anthropic 端点（DeepSeek, MiniMax）看到历史中的 thinking block
-    #   会隐式进入 thinking mode，但顶层 thinking 参数已被移除 → 400 错误。
-    #   "保留 thinking block 原样透传是安全的"已被运行证伪。
-    #   详见 _strip_thinking_blocks() 和 _strip_thinking_from_response() 注释。
+    # 根因：非 Anthropic 模型（MiniMax、DeepSeek 等）看到历史中的 thinking block
+    #   隐式进入 thinking mode，但顶层 thinking 已被移除 → 400
+    #   "the content[].thinking in the thinking mode must be passed back to the API"。
     #
-    # 注意：原生 Anthropic 端点（api.anthropic.com）的 signature 校验是真实的——
-    #   删除 thinking block 会破坏签名验证导致 400，因此不做任何降级。
-    if not _is_native_anthropic(target_base):
-        if "thinking" in body_json:
-            del body_json["thinking"]
+    # 判定：以 target_model 是否以 "claude-" 前缀为准——所有原生 Anthropic 模型的
+    #   命名都符合该前缀，且无论走哪个 upstream 域名（如通过代理 / 镜像），只要
+    #   target_model 是 claude-*，就视为 Anthropic 模型，原样透传。
+    #   原生 Anthropic 端点的 signature 校验是真实的，删除 thinking block 会破坏
+    #   签名验证导致 400，因此 claude-* 模型不做任何降级。
+    is_anthropic_model = target_model.startswith("claude-")
+    if not is_anthropic_model:
+        body_json.pop("thinking", None)
+        body_json.pop("betas", None)
         _stripped, _redacted = _strip_thinking_blocks(body_json)
         if _stripped or _redacted:
             log.info(
@@ -1801,11 +1852,16 @@ def forward_request(
         fwd_headers["Authorization"] = f"Bearer {api_key}"
     else:
         # Anthropic 用 x-api-key + anthropic-version
-        fwd_headers["anthropic-version"] = headers.get("anthropic-version", "2023-06-01")
+        # 非 claude-* 模型：剥离 anthropic-beta / anthropic-version 等专属头
+        src_headers = (
+            headers if is_anthropic_model
+            else _clean_headers_for_non_anthropic(headers)
+        )
+        fwd_headers["anthropic-version"] = src_headers.get("anthropic-version", "2023-06-01")
         fwd_headers["x-api-key"] = api_key
         # 透传 beta 头（CC 会附加）
-        if "anthropic-beta" in headers:
-            fwd_headers["anthropic-beta"] = headers["anthropic-beta"]
+        if "anthropic-beta" in src_headers:
+            fwd_headers["anthropic-beta"] = src_headers["anthropic-beta"]
 
     req = urllib.request.Request(url, data=new_body, headers=fwd_headers, method=method)
     try:
@@ -1818,7 +1874,7 @@ def forward_request(
             resp_headers = dict(resp.headers)
             if protocol == "openai":
                 resp_body = _from_openai_response(resp_body)
-            elif protocol == "anthropic" and not _is_native_anthropic(target_base):
+            elif protocol == "anthropic" and not is_anthropic_model:
                 # 防御：剥离上游响应中的 thinking block（防止进入 CC 会话历史死循环）
                 resp_body = _strip_thinking_from_response(resp_body)
             _latency["total_ms"] = int((time.time() - _t0) * 1000)
