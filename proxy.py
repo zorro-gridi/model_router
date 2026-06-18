@@ -2470,9 +2470,28 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             # 直接返回主模型错误（CC SDK 会触发新请求，新请求读 sticky 走
             # provider swap 路径），避免对替代 provider 的 N 倍流量放大。
             i_am_first_writer = False
-            if not sticky_provider and not model_override:
-                failed_provider = MODEL_TO_PROVIDER.get(session_model)
+            if not model_override:
+                # ── 确定实际失败的 provider ──
+                # session_model 是 sticky swap / token-plan 之前捕获的，
+                # 若 sticky swap 已发生，则实际失败的 model 是 swap 后的 model
+                # （即当前请求真正请求的目标），而非 session_model。
+                # 否则 sticky swap 会把 deepseek 的断联归因到 minimax。
+                if sticky_provider:
+                    # sticky swap / token-plan 后：失败的 provider = swap 后 model 的 provider
+                    failed_provider = MODEL_TO_PROVIDER.get(model)
+                else:
+                    # 无 sticky：失败的 provider = session_model 的 provider
+                    failed_provider = MODEL_TO_PROVIDER.get(session_model)
+
                 if failed_provider:
+                    # 如果已有 stale sticky 但实际失败的 provider 不同，先清除旧的
+                    if sticky_provider and failed_provider != sticky_provider:
+                        clear_fallback()
+                        log.info(
+                            f"[{routing_source}] sticky provider 已过期: "
+                            f"旧={sticky_provider} 实际失败={failed_provider}，"
+                            f"已清除旧 sticky 并准备写入新 sticky"
+                        )
                     i_am_first_writer = try_write_fallback(failed_provider)
                     if i_am_first_writer:
                         log.info(
