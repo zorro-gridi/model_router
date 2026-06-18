@@ -355,38 +355,36 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
 
         mock_clear.assert_not_called()
 
-    def test_weekly_status_3_to_1_no_recovery(self):
-        """每周 status 从 3(unused) → 1：本就非耗尽（status≠2），不触发恢复。"""
+    def test_weekly_status_3_to_1_triggers_recovery(self):
+        """每周 status 从 3(unused/saturated) → 1：状态 3 不可路由，→1 应触发恢复。"""
         from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
 
         with _QUOTA_STATE_LOCK:
             _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
-            _QUOTA_STATE["last_weekly_status"] = 3   # unused
+            _QUOTA_STATE["last_weekly_status"] = 3   # unused/saturated → 不可路由
             _QUOTA_STATE["last_interval_status"] = 1  # 5h 正常
             _QUOTA_STATE["last_check_ts"] = 0.0
 
-        # 3→1：之前 (interval=1,weekly=3) → routable (neither is 2)
-        # 现在 (interval=1,weekly=1) → routable
-        # was_routable=True → 不触发
+        # weekly=3 不可路由（只有 ==1 才 routable），→1 后恢复
         response = _make_api_response(
             weekly_end_time=OLD_WEEKLY_END_TIME, weekly_status=1, interval_status=1,
         )
 
         with self._patch_api(response), \
              patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}), \
-             patch("health_checker._clear_all_minimax_stickies") as mock_clear:
+             patch("health_checker._clear_all_minimax_stickies", return_value=1) as mock_clear:
             _quota_recovery_check()
 
-        mock_clear.assert_not_called()
+        mock_clear.assert_called_once()
 
-    def test_interval_status_3_to_1_no_recovery(self):
-        """5h status 从 3(unused) → 1：本就非耗尽，不触发恢复。"""
+    def test_interval_status_3_to_1_triggers_recovery(self):
+        """5h status 从 3(unused/saturated) → 1：状态 3 不可路由，→1 应触发恢复。"""
         from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
 
         with _QUOTA_STATE_LOCK:
             _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
-            _QUOTA_STATE["last_weekly_status"] = 1
-            _QUOTA_STATE["last_interval_status"] = 3  # unused
+            _QUOTA_STATE["last_weekly_status"] = 1   # 周正常
+            _QUOTA_STATE["last_interval_status"] = 3  # unused/saturated → 不可路由
             _QUOTA_STATE["last_check_ts"] = 0.0
 
         response = _make_api_response(
@@ -395,10 +393,10 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
 
         with self._patch_api(response), \
              patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}), \
-             patch("health_checker._clear_all_minimax_stickies") as mock_clear:
+             patch("health_checker._clear_all_minimax_stickies", return_value=1) as mock_clear:
             _quota_recovery_check()
 
-        mock_clear.assert_not_called()
+        mock_clear.assert_called_once()
 
     def test_both_unchanged_exhausted_no_recovery(self):
         """双窗口均保持耗尽 → 不触发恢复。"""
