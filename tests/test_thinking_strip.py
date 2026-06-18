@@ -247,14 +247,30 @@ class TestCleanHeaders(unittest.TestCase):
         self.assertIn("x-api-key", cleaned)
 
     def test_strips_anthropic_version(self):
+        """有 anthropic-beta 同时存在时，version 也剥（避免 400 双重触发）。"""
+        from proxy import _clean_headers_for_non_anthropic
+        h = {
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "interleaved-thinking-2025-05-08",
+            "content-type": "application/json",
+        }
+        cleaned = _clean_headers_for_non_anthropic(h)
+        self.assertNotIn("anthropic-version", cleaned)
+        self.assertNotIn("anthropic-beta", cleaned)
+        self.assertIn("content-type", cleaned)
+
+    def test_keeps_anthropic_version_when_no_beta(self):
+        """无 anthropic-beta 时保留 version（MiniMax 兼容端点要求 version 头存在）。
+        2026-06-18 加固：旧策略无条件剥 version 会导致 MiniMax 缺头 400。"""
         from proxy import _clean_headers_for_non_anthropic
         h = {
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
         cleaned = _clean_headers_for_non_anthropic(h)
-        self.assertNotIn("anthropic-version", cleaned)
-        self.assertIn("content-type", cleaned)
+        self.assertIn("anthropic-version", cleaned,
+                      "无 beta 时必须保留 version（MimiMax/DeepSeek 兼容端点要求）")
+        self.assertEqual(cleaned["anthropic-version"], "2023-06-01")
 
     def test_case_insensitive_strip(self):
         from proxy import _clean_headers_for_non_anthropic

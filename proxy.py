@@ -1717,17 +1717,29 @@ def _strip_thinking_blocks(body: dict, *, keep_thinking: bool = False) -> tuple[
                 out.append(block)
         return out, s, r
 
+    # 1) 标准 Anthropic Messages API 路径：messages[].content[]
     for msg in body.get("messages", []):
         content = msg.get("content")
         if not isinstance(content, list):
             continue
-        before = len(content)
         filtered, s, r = _filter_blocks(content)
         _stripped += s
         _redacted += r
         # 若有任何目标类型被剥（含递归修改 tool_result 内嵌）→ 落回 filtered
         if s or r:
             msg["content"] = filtered
+
+    # 2) system 字段（Anthropic Messages API 允许 system 为 array of blocks，
+    #    CC 偶发会把 thinking 块透传到 system[]；MiniMax 在 system 收到 thinking
+    #    也直接 400 — 根因记录见 .knowledge-base/hooks.md §"[2026-06-13] ... 400"）。
+    system = body.get("system")
+    if isinstance(system, list):
+        filtered_sys, s, r = _filter_blocks(system)
+        _stripped += s
+        _redacted += r
+        if s or r:
+            body["system"] = filtered_sys
+
     return _stripped, _redacted
 
 
@@ -1741,35 +1753,233 @@ def _strip_thinking_from_response(resp_body: bytes, *, keep_thinking: bool = Fal
     keep_thinking=True（DeepSeek 策略）：只剥 redacted_thinking，保留 thinking 块。
     keep_thinking=False（MiniMax 策略）：两者全剥。
 
+    支持三种响应形态：
+      - 纯 JSON（Anthropic non-streaming）
+      - SSE 流（Anthropic streaming：event/message_start 时 content[] 是空或部分，
+        event/content_block_start 时 index 标识 + content块类型 → 这里要把
+        type=thinking 的 content_block_start 整段屏蔽掉 + content_block_delta
+        相应 index 屏蔽 + content_block_stop 屏蔽）
+      - 错误 envelope（{"error": {"content": [...]}}）：error.message.content[]
+        嵌套也要扫。
+
     解析失败或 content 不是 list 时原样返回。
     """
     _strip_types: frozenset = (
         frozenset({"redacted_thinking"}) if keep_thinking
         else frozenset(_THINKING_BLOCK_TYPES)
     )
+
+    # ── 分支 1：SSE 流（Content-Type: text/event-stream）──
+    if _looks_like_sse(resp_body):
+        return _strip_thinking_from_sse(resp_body, _strip_types)
+
+    # ── 分支 2：纯 JSON（非流式响应 + 错误 envelope）──
     try:
         data = json.loads(resp_body)
         if not isinstance(data, dict):
             return resp_body
+        changed = False
+
+        # 顶层 content[]
         content = data.get("content")
-        if not isinstance(content, list):
-            return resp_body
-        before = len(content)
-        data["content"] = [
-            b for b in content
-            if not (isinstance(b, dict) and b.get("type") in _strip_types)
-        ]
-        if len(data["content"]) != before:
-            return json.dumps(data).encode()
+        if isinstance(content, list):
+            new_content = [
+                b for b in content
+                if not (isinstance(b, dict) and b.get("type") in _strip_types)
+            ]
+            if len(new_content) != len(content):
+                data["content"] = new_content
+                changed = True
+
+        # error envelope：Anthropic SDK 错误可能含 .error.content[]
+        err = data.get("error")
+        if isinstance(err, dict):
+            ec = err.get("content")
+            if isinstance(ec, list):
+                new_ec = [
+                    b for b in ec
+                    if not (isinstance(b, dict) and b.get("type") in _strip_types)
+                ]
+                if len(new_ec) != len(ec):
+                    err["content"] = new_ec
+                    changed = True
+            # error.message 也可能含嵌套 content
+            msg = err.get("message")
+            if isinstance(msg, dict):
+                mc = msg.get("content")
+                if isinstance(mc, list):
+                    new_mc = [
+                        b for b in mc
+                        if not (isinstance(b, dict) and b.get("type") in _strip_types)
+                    ]
+                    if len(new_mc) != len(mc):
+                        msg["content"] = new_mc
+                        changed = True
+
+        if changed:
+            return json.dumps(data, ensure_ascii=False).encode()
     except (json.JSONDecodeError, TypeError):
         return resp_body
     return resp_body
 
 
+def _looks_like_sse(resp_body: bytes) -> bool:
+    """嗅探响应是否为 SSE 流（Anthropic streaming 协议）。
+
+    SSE 帧以 `event:` / `data:` 行开头，前若干字节应为 ASCII。
+    用前 64 字节的低开销嗅探，避免对纯 JSON 走错分支。
+    """
+    if not resp_body:
+        return False
+    head = resp_body[:64]
+    # 必须可解码为 ASCII / UTF-8（多语言 content_block_delta 也兼容）
+    try:
+        head.decode("ascii")
+    except UnicodeDecodeError:
+        return False
+    # 必须含 event: 或 data: 行（典型 SSE 帧头）
+    return b"event:" in head or b"data:" in head
+
+
+def _strip_thinking_from_sse(resp_body: bytes, strip_types: frozenset) -> bytes:
+    """
+    在 SSE 流中屏蔽 type∈strip_types 的 content_block。
+
+    SSE 帧协议（Anthropic Messages Streaming）：
+      event: message_start
+      data: {"type":"message_start","message":{"content":[]}}
+
+      event: content_block_start
+      data: {"type":"content_block_start","index":N,"content_block":{"type":"thinking","thinking":""}}
+
+      event: content_block_delta
+      data: {"type":"content_block_delta","index":N,"delta":{"type":"thinking_delta","thinking":"..."}}
+
+      event: content_block_stop
+      data: {"type":"content_block_stop","index":N}
+
+    屏蔽策略：
+      - message_start → 不动（content[] 此时为空，跳过）
+      - content_block_start：若 content_block.type ∈ strip_types → 记下该 index
+        → 该帧整体丢弃（连同同 index 后续所有 delta/stop 帧）
+      - content_block_delta：若 index 命中屏蔽集 → 丢弃
+      - content_block_stop：若 index 命中屏蔽集 → 丢弃
+      - 其他事件（text / tool_use / message_delta 等）原样保留
+
+    帧与帧之间用 `\\n\\n` 分隔（标准 SSE）。
+
+    Args:
+        resp_body: 完整 SSE 字节流。
+        strip_types: 要屏蔽的 content_block.type 集合。
+
+    Returns:
+        清洗后的字节流。无任何匹配时原样返回（零拷贝优化）。
+    """
+    try:
+        text = resp_body.decode("utf-8")
+    except UnicodeDecodeError:
+        return resp_body
+
+    # 拆分 SSE 帧；用 splitlines(keepends=False) 后手动按空行切分更稳：
+    # SSE 规范帧分隔符为 \\n\\n，但很多 SDK 用 \\r\\n\\r\\n。
+    raw_blocks = text.replace("\r\n", "\n").split("\n\n")
+
+    new_blocks: list[str] = []
+    blocked_indices: set[int] = set()
+    changed = False
+
+    for blk in raw_blocks:
+        if not blk.strip():
+            # 保留空帧结构（原样回写）
+            new_blocks.append(blk)
+            continue
+        # 拆 event: / data: 行
+        lines = blk.split("\n")
+        event_line = ""
+        data_line = ""
+        for ln in lines:
+            if ln.startswith("event:"):
+                event_line = ln[len("event:"):].strip()
+            elif ln.startswith("data:"):
+                # data: 后面可能有一个空格（规范）；保留原样兼容
+                data_line = ln[len("data:"):].lstrip()
+        if not data_line:
+            new_blocks.append(blk)
+            continue
+
+        try:
+            payload = json.loads(data_line)
+        except json.JSONDecodeError:
+            # 非 JSON data 行（少见，如 ping）→ 原样保留
+            new_blocks.append(blk)
+            continue
+
+        if not isinstance(payload, dict):
+            new_blocks.append(blk)
+            continue
+
+        et = payload.get("type")
+
+        if et == "content_block_start":
+            cb = payload.get("content_block")
+            if isinstance(cb, dict) and cb.get("type") in strip_types:
+                idx = payload.get("index")
+                if isinstance(idx, int):
+                    blocked_indices.add(idx)
+                    changed = True
+                    continue  # 整帧丢弃
+            new_blocks.append(blk)
+
+        elif et == "content_block_delta":
+            idx = payload.get("index")
+            if isinstance(idx, int) and idx in blocked_indices:
+                changed = True
+                continue
+            new_blocks.append(blk)
+
+        elif et == "content_block_stop":
+            idx = payload.get("index")
+            if isinstance(idx, int) and idx in blocked_indices:
+                changed = True
+                continue
+            new_blocks.append(blk)
+
+        elif et == "error":
+            # 流式错误也可能内嵌 thinking（罕见），扫描一次
+            err = payload.get("error")
+            if isinstance(err, dict):
+                ec = err.get("content")
+                if isinstance(ec, list):
+                    payload["error"]["content"] = [
+                        b for b in ec
+                        if not (isinstance(b, dict) and b.get("type") in strip_types)
+                    ]
+                    new_blocks.append("event: error\ndata: " + json.dumps(payload, ensure_ascii=False))
+                    changed = True
+                    continue
+            new_blocks.append(blk)
+
+        else:
+            new_blocks.append(blk)
+
+    if not changed:
+        return resp_body
+
+    return "\n\n".join(new_blocks).encode("utf-8")
+
+
 # 非 Anthropic 模型不识别的请求头，命中后从转发头里剔除
-_NON_ANTHROPIC_HEADERS_TO_DROP = frozenset({
+#
+# 2026-06-18 加固：
+#   - anthropic-beta：无条件剥离（含 interleaved-thinking-2025-05-08 等仅
+#     Anthropic SDK 认识的 beta 标识，原样转发会触发 MiniMax/DeepSeek 的 400）
+#   - anthropic-version：仅在 anthropic-beta 同时存在时剥离。
+#     MiniMax 的 Anthropic 兼容端点（https://api.minimaxi.com/anthropic）
+#     要求 x-api-key + anthropic-version 双头同时存在，少一个就 400；
+#     若客户端没传 anthropic-beta（说明没启用 thinking），保留 version 头
+#     能避免不必要的 400。
+_NON_ANTHROPIC_HEADERS_TO_DROP_ALWAYS = frozenset({
     "anthropic-beta",
-    "anthropic-version",
 })
 
 
@@ -1777,13 +1987,23 @@ def _clean_headers_for_non_anthropic(headers: dict) -> dict:
     """
     从转发头里剔除 Anthropic 专属 header（大小写不敏感）。
 
-    非 Anthropic 模型（MiniMax、DeepSeek 等）收到 anthropic-beta / anthropic-version
-    会直接报错或忽略，但 anthropic-beta 里常含 interleaved-thinking-2025-05-08
-    等仅 Anthropic SDK 认识的 beta 标识，原样转发可能引发 400。
+    策略（2026-06-18 收紧）：
+      - 必剥：anthropic-beta（非原生 provider 不识别 beta flag）
+      - 条件剥：anthropic-version → 仅当 anthropic-beta 也在时才剥
+        （MiniMax 兼容端点要求 version 头在场）
+      - 其它 Anthropic 专属头后续按需扩展。
+
+    注意：本函数只决定"是否剥"，不补默认值；缺省的 anthropic-version
+    由 forward_request 后续逻辑统一补 "2023-06-01"。
     """
+    lower = {k.lower(): k for k in headers.keys()}
+    has_beta = "anthropic-beta" in lower
+    drop: set[str] = set(_NON_ANTHROPIC_HEADERS_TO_DROP_ALWAYS)
+    if has_beta:
+        drop.add("anthropic-version")
     return {
         k: v for k, v in headers.items()
-        if k.lower() not in _NON_ANTHROPIC_HEADERS_TO_DROP
+        if k.lower() not in drop
     }
 
 
@@ -1957,8 +2177,10 @@ def forward_request(
             headers if is_claude
             else _clean_headers_for_non_anthropic(headers)
         )
-        if is_claude:
-            fwd_headers["anthropic-version"] = src_headers.get("anthropic-version", "2023-06-01")
+        # 2026-06-18 加固：anthropic-version 头对 MiniMax / DeepSeek 的
+        # Anthropic 兼容端点必须存在（缺该头部分版本会直接 400）。
+        # 原先仅 claude 分支补默认值；现在 claude / 非 claude 都补。
+        fwd_headers["anthropic-version"] = src_headers.get("anthropic-version", "2023-06-01")
         fwd_headers["x-api-key"] = api_key
         # 透传 beta 头（CC 会附加）
         if "anthropic-beta" in src_headers:
