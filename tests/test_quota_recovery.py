@@ -49,6 +49,7 @@ def _make_api_response(
     weekly_status: int = 1,
     interval_status: int = 1,
     weekly_remains_time: int = 18000 * 1000,  # 5h in ms
+    interval_remains_time: int = 18000 * 1000,  # 5h in ms (remains_time field)
 ) -> dict:
     """构造 minimax /v1/token_plan/remains API 响应的 JSON dict。"""
     return {
@@ -61,6 +62,7 @@ def _make_api_response(
                 "current_weekly_remaining_percent": 50 if weekly_status == 1 else 0,
                 "weekly_end_time": weekly_end_time or int((time.time() + 86400) * 1000),
                 "weekly_remains_time": weekly_remains_time,
+                "remains_time": interval_remains_time,
                 "weekly_boost_permille": 1000,
             },
             {
@@ -71,6 +73,7 @@ def _make_api_response(
                 "current_weekly_remaining_percent": 80,
                 "weekly_end_time": int((time.time() + 86400) * 1000),
                 "weekly_remains_time": 5000000,
+                "remains_time": 5000000,
                 "weekly_boost_permille": 1000,
             },
         ],
@@ -418,6 +421,178 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
             _quota_recovery_check()
 
         mock_clear.assert_not_called()
+
+    # ── One-shot timer 测试 ──
+
+    def test_routable_clears_next_check_after(self):
+        """可路由时清除 one-shot timer（next_check_after → None），恢复正常轮询。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
+
+        # 先设置一个已过期的 next_check_after（确保函数不提前返回）
+        with _QUOTA_STATE_LOCK:
+            _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
+            _QUOTA_STATE["last_weekly_status"] = 2
+            _QUOTA_STATE["last_interval_status"] = 1
+            _QUOTA_STATE["last_check_ts"] = 0.0
+            _QUOTA_STATE["next_check_after"] = time.time() - 60  # 已过期
+
+        # 当前已可路由
+        response = _make_api_response(weekly_status=1, interval_status=1)
+
+        with self._patch_api(response), \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}), \
+             patch("health_checker._clear_all_minimax_stickies", return_value=1):
+            _quota_recovery_check()
+
+        with _QUOTA_STATE_LOCK:
+            self.assertIsNone(_QUOTA_STATE["next_check_after"])
+
+    def test_not_routable_sets_next_check_after_from_both_exhausted(self):
+        """双窗口均耗尽 → 取 min(interval_remains, weekly_remains) + 30s buffer。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
+
+        with _QUOTA_STATE_LOCK:
+            _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
+            _QUOTA_STATE["last_weekly_status"] = 2
+            _QUOTA_STATE["last_interval_status"] = 2
+            _QUOTA_STATE["last_check_ts"] = 0.0
+            _QUOTA_STATE["next_check_after"] = None
+
+        before = time.time()
+        # 5h 恢复 120s，周恢复 300s → 应取 120s + 30s buffer
+        response = _make_api_response(
+            weekly_end_time=OLD_WEEKLY_END_TIME,
+            weekly_status=2, interval_status=2,
+            interval_remains_time=120000,    # 120s
+            weekly_remains_time=300000,      # 300s
+        )
+
+        with self._patch_api(response), \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}):
+            _quota_recovery_check()
+
+        with _QUOTA_STATE_LOCK:
+            self.assertIsNotNone(_QUOTA_STATE["next_check_after"])
+            expected = before + 150  # 120 + 30 buffer
+            self.assertAlmostEqual(_QUOTA_STATE["next_check_after"], expected, delta=2)
+
+    def test_not_routable_sets_next_check_after_from_interval_alone(self):
+        """仅 5h 耗尽，周正常 → next_check_after 基于 interval remains_time。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
+
+        with _QUOTA_STATE_LOCK:
+            _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
+            _QUOTA_STATE["last_weekly_status"] = 1  # 周正常
+            _QUOTA_STATE["last_interval_status"] = 2  # 5h 耗尽
+            _QUOTA_STATE["last_check_ts"] = 0.0
+            _QUOTA_STATE["next_check_after"] = None
+
+        before = time.time()
+        response = _make_api_response(
+            weekly_end_time=OLD_WEEKLY_END_TIME,
+            weekly_status=1, interval_status=2,
+            interval_remains_time=180000,  # 3 min
+        )
+
+        with self._patch_api(response), \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}):
+            _quota_recovery_check()
+
+        with _QUOTA_STATE_LOCK:
+            self.assertIsNotNone(_QUOTA_STATE["next_check_after"])
+            expected = before + 210  # 180 + 30 buffer
+            self.assertAlmostEqual(_QUOTA_STATE["next_check_after"], expected, delta=2)
+
+    def test_not_routable_sets_next_check_after_from_weekly_alone(self):
+        """仅周耗尽，5h 正常 → next_check_after 基于 weekly remains_time。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
+
+        with _QUOTA_STATE_LOCK:
+            _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
+            _QUOTA_STATE["last_weekly_status"] = 2  # 周耗尽
+            _QUOTA_STATE["last_interval_status"] = 1  # 5h 正常
+            _QUOTA_STATE["last_check_ts"] = 0.0
+            _QUOTA_STATE["next_check_after"] = None
+
+        before = time.time()
+        response = _make_api_response(
+            weekly_end_time=OLD_WEEKLY_END_TIME,
+            weekly_status=2, interval_status=1,
+            weekly_remains_time=3600000,  # 1h
+        )
+
+        with self._patch_api(response), \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}):
+            _quota_recovery_check()
+
+        with _QUOTA_STATE_LOCK:
+            self.assertIsNotNone(_QUOTA_STATE["next_check_after"])
+            expected = before + 3630  # 3600 + 30 buffer
+            self.assertAlmostEqual(_QUOTA_STATE["next_check_after"], expected, delta=2)
+
+    def test_next_check_after_skips_api_call(self):
+        """next_check_after 在未来 → 跳过 API 调用，直接返回。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
+
+        with _QUOTA_STATE_LOCK:
+            _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
+            _QUOTA_STATE["last_weekly_status"] = 2
+            _QUOTA_STATE["last_interval_status"] = 2
+            _QUOTA_STATE["last_check_ts"] = 0.0
+            _QUOTA_STATE["next_check_after"] = time.time() + 7200  # 2h 后
+
+        response = _make_api_response()
+        with self._patch_api(response) as mock_urlopen, \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}):
+            _quota_recovery_check()
+
+        # API 不应被调用（next_check_after 在未来）
+        mock_urlopen.assert_not_called()
+
+    def test_next_check_after_expired_calls_api(self):
+        """next_check_after 已到期 → 正常调用 API，不跳过。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
+
+        with _QUOTA_STATE_LOCK:
+            _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
+            _QUOTA_STATE["last_weekly_status"] = 2
+            _QUOTA_STATE["last_interval_status"] = 1
+            _QUOTA_STATE["last_check_ts"] = 0.0
+            _QUOTA_STATE["next_check_after"] = time.time() - 60  # 已过期
+
+        response = _make_api_response(
+            weekly_end_time=OLD_WEEKLY_END_TIME, weekly_status=2, interval_status=1,
+        )
+
+        with self._patch_api(response) as mock_urlopen, \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}):
+            _quota_recovery_check()
+
+        # timer 已过期，应正常调 API
+        mock_urlopen.assert_called_once()
+
+    def test_not_routable_status_3_falls_back_to_interval_polling(self):
+        """status=3(unused/saturated) → 无法从 API 获取恢复时间 → next_check_after=None（回退轮询）。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
+
+        with _QUOTA_STATE_LOCK:
+            _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
+            _QUOTA_STATE["last_weekly_status"] = 3  # unused/saturated
+            _QUOTA_STATE["last_interval_status"] = 1
+            _QUOTA_STATE["last_check_ts"] = 0.0
+            _QUOTA_STATE["next_check_after"] = time.time() - 60  # 已过期，确保函数能执行
+
+        response = _make_api_response(
+            weekly_end_time=OLD_WEEKLY_END_TIME, weekly_status=3, interval_status=1,
+        )
+
+        with self._patch_api(response), \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}):
+            _quota_recovery_check()
+
+        with _QUOTA_STATE_LOCK:
+            # status=3 无法确定恢复时间 → timer 应清除，回退到正常轮询
+            self.assertIsNone(_QUOTA_STATE["next_check_after"])
 
 
 # ─────────────────────────────────────────────────────────────────────
