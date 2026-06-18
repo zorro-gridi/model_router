@@ -1893,7 +1893,8 @@ def forward_request(
             headers if is_claude
             else _clean_headers_for_non_anthropic(headers)
         )
-        fwd_headers["anthropic-version"] = src_headers.get("anthropic-version", "2023-06-01")
+        if is_claude:
+            fwd_headers["anthropic-version"] = src_headers.get("anthropic-version", "2023-06-01")
         fwd_headers["x-api-key"] = api_key
         # 透传 beta 头（CC 会附加）
         if "anthropic-beta" in src_headers:
