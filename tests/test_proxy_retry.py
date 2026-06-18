@@ -45,7 +45,7 @@ class TestCallWithRetry(unittest.TestCase):
             sleep_calls.append(s)
 
         with patch("proxy.forward_request", return_value=(200, {"h": "v"}, b"ok", _LAT)) as mock_fwd:
-            status, h, b, attempts = _call_with_retry(
+            status, h, b, latency, attempts = _call_with_retry(
                 method="POST", path="/v1/messages", headers={}, body=b"{}",
                 target_base="https://api.x", target_model="MiniMax-M3",
                 api_key_env="KEY", protocol="anthropic", dry_run=False,
@@ -71,7 +71,7 @@ class TestCallWithRetry(unittest.TestCase):
             (200, {}, b"ok", _LAT),
         ]
         with patch("proxy.forward_request", side_effect=side_effects) as mock_fwd:
-            status, _, b, attempts = _call_with_retry(
+            status, _, b, _, attempts = _call_with_retry(
                 method="POST", path="/v1/messages", headers={}, body=b"{}",
                 target_base="https://api.x", target_model="MiniMax-M3",
                 api_key_env="KEY", protocol="anthropic", dry_run=False,
@@ -98,7 +98,7 @@ class TestCallWithRetry(unittest.TestCase):
             (502, {}, b"err3", _LAT),
         ]
         with patch("proxy.forward_request", side_effect=side_effects) as mock_fwd:
-            status, _, b, attempts = _call_with_retry(
+            status, _, b, _, attempts = _call_with_retry(
                 method="POST", path="/v1/messages", headers={}, body=b"{}",
                 target_base="https://api.x", target_model="MiniMax-M3",
                 api_key_env="KEY", protocol="anthropic", dry_run=False,
@@ -121,7 +121,7 @@ class TestCallWithRetry(unittest.TestCase):
             sleep_calls.append(s)
 
         with patch("proxy.forward_request", return_value=(400, {}, b"bad", _LAT)) as mock_fwd:
-            status, _, b, attempts = _call_with_retry(
+            status, _, b, _, attempts = _call_with_retry(
                 method="POST", path="/v1/messages", headers={}, body=b"{}",
                 target_base="https://api.x", target_model="MiniMax-M3",
                 api_key_env="KEY", protocol="anthropic", dry_run=False,
@@ -139,7 +139,7 @@ class TestCallWithRetry(unittest.TestCase):
         self.assertFalse(_is_retriable(404))
 
         with patch("proxy.forward_request", return_value=(404, {}, b"nf", _LAT)):
-            status, _, b, attempts = _call_with_retry(
+            status, _, b, _, attempts = _call_with_retry(
                 method="POST", path="/v1/messages", headers={}, body=b"{}",
                 target_base="https://api.x", target_model="MiniMax-M3",
                 api_key_env="KEY", protocol="anthropic", dry_run=False,
@@ -155,7 +155,7 @@ class TestCallWithRetry(unittest.TestCase):
         self.assertFalse(_is_retriable(422))
 
         with patch("proxy.forward_request", return_value=(422, {}, b"bad", _LAT)):
-            status, _, _, attempts = _call_with_retry(
+            status, _, _, _, attempts = _call_with_retry(
                 method="POST", path="/v1/messages", headers={}, body=b"{}",
                 target_base="https://api.x", target_model="MiniMax-M3",
                 api_key_env="KEY", protocol="anthropic", dry_run=False,
@@ -171,7 +171,7 @@ class TestCallWithRetry(unittest.TestCase):
 
         side_effects = [(429, {}, b"rl", _LAT), (200, {}, b"ok", _LAT)]
         with patch("proxy.forward_request", side_effect=side_effects):
-            status, _, b, attempts = _call_with_retry(
+            status, _, b, _, attempts = _call_with_retry(
                 method="POST", path="/v1/messages", headers={}, body=b"{}",
                 target_base="https://api.x", target_model="MiniMax-M3",
                 api_key_env="KEY", protocol="anthropic", dry_run=False,
