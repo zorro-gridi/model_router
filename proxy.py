@@ -1995,6 +1995,44 @@ def _check_required_keys() -> list[str]:
     return missing
 
 
+def _resolve_failed_provider(
+    *,
+    sticky_provider: str | None,
+    session_model: str,
+    current_model: str,
+) -> str | None:
+    """确定本次请求"实际失败的 provider"，并按需清除 stale sticky。
+
+    设计动机（2026-06-18 修复）：
+      do_POST 中原本用 `MODEL_TO_PROVIDER.get(session_model)` 推断失败 provider。
+      但 sticky swap / token-plan 之后，`session_model` 是 swap **前**的模型名，
+      实际请求目标（`current_model`）是 swap **后**的模型名——两者属于不同 provider
+      时，session_model 路径会**误归因**：
+        例：sticky=minimax → swap 到 deepseek → deepseek 调用失败 →
+        session_model='MiniMax-M3' → 算 provider='minimax' → 错误写入 minimax sticky。
+      反过来，stale sticky=minimax 实际 deepseek 失败时，旧逻辑
+      `if not sticky_provider` 又阻止了写入新 sticky，结果旧 sticky 永不被覆盖。
+
+    本函数语义：
+      - 有 sticky_provider（说明发生过 swap 或 token-plan 触发）：
+        失败的 provider = 当前请求真正请求的 model 的 provider
+        （即 swap 目标的 provider，不一定是 sticky 指向的）
+      - 无 sticky_provider：
+        失败的 provider = session_model 的 provider
+        （与原始 session 模型一致）
+
+    返回：
+      failed_provider（str 或 None：模型名无法识别 provider 时返回 None，调用方跳过写入）。
+      调用方负责：
+        - 若 sticky_provider 且 failed_provider != sticky_provider：调 clear_fallback()
+        - 调用 try_write_fallback(failed_provider) 完成原子写
+    """
+    if sticky_provider:
+        # sticky swap / token-plan 已发生 → 失败方 = 当前 model 的 provider
+        return MODEL_TO_PROVIDER.get(current_model)
+    return MODEL_TO_PROVIDER.get(session_model)
+
+
 # ── HTTP 服务器 ────────────────────────────────────────────────────────────────
 
 def _is_retriable(status: int) -> bool:
@@ -2527,17 +2565,14 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             # provider swap 路径），避免对替代 provider 的 N 倍流量放大。
             i_am_first_writer = False
             if not model_override:
-                # ── 确定实际失败的 provider ──
-                # session_model 是 sticky swap / token-plan 之前捕获的，
-                # 若 sticky swap 已发生，则实际失败的 model 是 swap 后的 model
-                # （即当前请求真正请求的目标），而非 session_model。
-                # 否则 sticky swap 会把 deepseek 的断联归因到 minimax。
-                if sticky_provider:
-                    # sticky swap / token-plan 后：失败的 provider = swap 后 model 的 provider
-                    failed_provider = MODEL_TO_PROVIDER.get(model)
-                else:
-                    # 无 sticky：失败的 provider = session_model 的 provider
-                    failed_provider = MODEL_TO_PROVIDER.get(session_model)
+                # ── 确定实际失败的 provider（详见 _resolve_failed_provider 注释）──
+                # 关键：sticky swap / token-plan 后失败的可能是替代 provider，
+                # 不能用 session_model（swap 前的模型）算 provider。
+                failed_provider = _resolve_failed_provider(
+                    sticky_provider=sticky_provider,
+                    session_model=session_model,
+                    current_model=model,
+                )
 
                 if failed_provider:
                     # 如果已有 stale sticky 但实际失败的 provider 不同，先清除旧的
