@@ -38,6 +38,10 @@ import os
 import sys
 from pathlib import Path
 
+# Make `from hooks.compact.utils import ...` work regardless of CWD
+# (Claude Code runs hooks as standalone scripts)
+sys.path.insert(0, os.path.expanduser('~/.claude'))
+
 # ── 分 session 阶段管理 ──
 # 存放位置：<project_root>/.claude/stage_<session_id>
 # active_session 指针：~/.claude/hooks/model_router/active_session → 完整路径

@@ -52,6 +52,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Make `from hooks.compact.utils import ...` work regardless of CWD
+# (Claude Code runs hooks as standalone scripts)
+sys.path.insert(0, os.path.expanduser('~/.claude'))
+
 # 将同目录加入 sys.path，确保 `from stage_config import ...` 与
 # `from model_alias import ...` 在 Hook 直接执行时也能 import 到。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
