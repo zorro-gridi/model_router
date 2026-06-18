@@ -82,8 +82,9 @@ _LEADER_FD: list = [None]
 _TICK_SECONDS = 5
 
 # ── minimax 配额恢复监控状态 ──────────────────────────────────
-# 追踪 minimax API 返回的 weekly_end_time 和 current_weekly_status，
-# 检测周窗口重置（end_time 变化）或状态恢复（exhausted→normal）。
+# 追踪 minimax API 返回的双窗口状态，检测配额恢复并自动清除 sticky。
+# 采用 one-shot timer 模式：不可路由时根据 API 返回的 remains_time 设置
+# 下次检查时间，避免在漫长的耗尽期内频繁轮询（节省 API 调用）。
 _QUOTA_STATE_LOCK = threading.Lock()
 _QUOTA_STATE: dict = {
     "last_weekly_end_time": None,     # int|None: 上次的 weekly_end_time (ms unix)
@@ -91,6 +92,7 @@ _QUOTA_STATE: dict = {
     "last_interval_status": None,     # int|None: 上次的 current_interval_status
     "last_check_ts": 0.0,             # float: 上次 API 调用时间
     "last_weekly_remains_time": None, # int|None: 上次的 weekly_remains_time (ms)
+    "next_check_after": None,         # float|None: 在此时间戳之前跳过 API 调用（one-shot timer）
 }
 
 
@@ -140,6 +142,7 @@ def clear_quota_state() -> None:
             "last_interval_status": None,
             "last_check_ts": 0.0,
             "last_weekly_remains_time": None,
+            "next_check_after": None,
         }
     log.info("配额监控状态已重置")
 
@@ -300,22 +303,24 @@ def _try_clear_sticky_for_session(
 
 # ── minimax 配额恢复监控 ──────────────────────────────────────
 def _quota_recovery_check() -> None:
-    """检测 minimax 配额是否恢复（周窗口重置 / status 恢复 → 清除所有 minimax sticky）。
+    """检测 minimax 配额是否恢复（双窗口联合判断 → 清除所有 minimax sticky）。
 
     设计依据（2026-06-18）：
-      minimax 的 5h/周配额通过 /v1/token_plan/remains API 返回的
-      weekly_end_time（毫秒 unixtime）管理周窗口边界。当 weekly_end_time 变化时
-      → 新的一周开始 → quota 刷新 → 所有因"minimax 不可用"写入的 sticky 应自动清除。
+      minimax 有双重配额限制——5h 滚动窗口 + 周窗口，必须同时可用才能路由。
+      /v1/token_plan/remains API 返回两个窗口的 status 和 remains_time，
+      据此判断是否可路由，并在恢复时自动清除 sticky。
 
-      同时，若 current_weekly_status 从非 1（exhausted/saturated）恢复为 1（normal），
-      → 额度恢复（如管理员充值/月初重置）→ 同样应清除 minimax sticky。
+    One-shot timer 模式（2026-06-18）：
+      当 minimax 不可路由时，API 返回的 remains_time（5h 恢复剩余 ms）和
+      weekly_remains_time（周恢复剩余 ms）告知确切的恢复时间点。
+      据此设置 next_check_after 时间戳，在该时间之前完全跳过 API 调用，
+      避免在漫长耗尽期（如周配额耗尽 76h）内每分钟无意义轮询。
 
-    检测策略（双重触发，任一满足即清除）：
-      A. weekly_end_time 发生变化 → 周窗口重置
-      B. current_weekly_status 从非 1 变为 1 → 状态恢复
+      可路由时回退到 QUOTA_CHECK_INTERVAL 正常频率（检测新的耗尽）。
 
-    频率控制：受 QUOTA_CHECK_INTERVAL 节流（默认 60s），避免频繁调 API。
-    首次启动不触发（_QUOTA_STATE 无历史值，仅记录基线）。
+    触发条件（双窗口同时可用时触发恢复）：
+      routable = (interval_status==1 AND weekly_status==1)
+      recovery = was_routable==False → routable==True
 
     安全性：
       - API 调用失败 → 静默跳过（fail-safe：不误清 sticky）
@@ -327,11 +332,16 @@ def _quota_recovery_check() -> None:
 
     with _QUOTA_STATE_LOCK:
         now = time.time()
+        # One-shot timer：在预定恢复时间之前，跳过所有 API 调用
+        next_check = _QUOTA_STATE["next_check_after"]
+        if next_check is not None and now < next_check:
+            return
+        # 正常频率控制（可路由时或 timer 到期后）
         if now - _QUOTA_STATE["last_check_ts"] < QUOTA_CHECK_INTERVAL:
             return
         _QUOTA_STATE["last_check_ts"] = now
 
-    # 调用 minimax token plan API（直接调，不依赖 token_plan 模块的缓存）
+    # 调用 minimax token plan API
     try:
         api_key = os.environ.get("MINIMAX_API_KEY", "").strip()
         if not api_key:
@@ -380,23 +390,20 @@ def _quota_recovery_check() -> None:
     weekly_status = plan.get("current_weekly_status")
     interval_status = plan.get("current_interval_status")
     weekly_remains_time = plan.get("weekly_remains_time")
+    interval_remains_time = plan.get("remains_time")      # 5h 滚动窗口恢复剩余 ms
 
-    # 读取旧状态
+    # 读取旧状态 + 更新
     with _QUOTA_STATE_LOCK:
         prev_end_time = _QUOTA_STATE["last_weekly_end_time"]
         prev_weekly = _QUOTA_STATE["last_weekly_status"]
         prev_interval = _QUOTA_STATE["last_interval_status"]
 
         # ── 核心判断：minimax 是否"可路由" ──
-        # minimax 有双重配额限制（5h 滚动窗口 + 周窗口），必须同时可用才能路由。
-        # recovery = 上次不可路由 → 本次可路由
         routable = (
             interval_status == 1 and weekly_status == 1
         )
 
-        # 首次启动（无历史基线）：仅记录，不触发
         is_first_run = prev_weekly is None or prev_interval is None
-
         was_routable = (
             prev_interval == 1 and prev_weekly == 1
         ) if not is_first_run else None
@@ -405,7 +412,6 @@ def _quota_recovery_check() -> None:
 
         reasons: list[str] = []
         if recovered:
-            # 列出具体哪些窗口恢复了
             interval_recovered = (
                 prev_interval is not None and prev_interval != 1 and interval_status == 1
             )
@@ -425,6 +431,33 @@ def _quota_recovery_check() -> None:
                     f"weekly_status recovered: {prev_weekly} → {weekly_status}"
                 )
 
+        # ── One-shot timer：不可路由时根据 API 返回的恢复时间设置定时器 ──
+        if routable:
+            # 可路由：清除定时器，回退到正常 QUOTA_CHECK_INTERVAL 频率
+            if _QUOTA_STATE["next_check_after"] is not None:
+                log.debug("minimax 已可路由，清除 one-shot timer")
+            _QUOTA_STATE["next_check_after"] = None
+        else:
+            # 不可路由：计算最近的恢复时间点
+            recovery_times: list[float] = []
+            if interval_status == 2 and isinstance(interval_remains_time, (int, float)) and interval_remains_time > 0:
+                recovery_times.append(interval_remains_time / 1000.0)
+            if weekly_status == 2 and isinstance(weekly_remains_time, (int, float)) and weekly_remains_time > 0:
+                recovery_times.append(weekly_remains_time / 1000.0)
+
+            if recovery_times:
+                # 最近恢复的那个窗口 + 30s 安全余量
+                wait_s = min(recovery_times) + 30
+                _QUOTA_STATE["next_check_after"] = now + wait_s
+                log.info(
+                    f"minimax 不可路由，one-shot timer: "
+                    f"下次检查 ≈ {time.strftime('%H:%M:%S', time.localtime(now + wait_s))} "
+                    f"（{wait_s/60:.1f} min 后）"
+                )
+            else:
+                # 无法确定恢复时间（status=3 饱和状态等）→ 保持 QUOTA_CHECK_INTERVAL 轮询
+                _QUOTA_STATE["next_check_after"] = None
+
         # 更新跟踪状态
         _QUOTA_STATE["last_weekly_end_time"] = weekly_end_time
         _QUOTA_STATE["last_weekly_status"] = weekly_status
@@ -439,16 +472,17 @@ def _quota_recovery_check() -> None:
         cleared = _clear_all_minimax_stickies()
         log.info(f"配额恢复 auto-clean: 已清除 {cleared} 个 minimax sticky 文件")
     elif routable and is_first_run:
-        # 首次启动且可路由——只记基线
         log.debug(
             f"配额恢复监控基线已记录: interval_status={interval_status}, "
             f"weekly_status={weekly_status}, weekly_end_time={weekly_end_time}"
         )
     elif not routable:
-        # 不可路由——记录哪些窗口被限制
         parts: list[str] = []
         if interval_status == 2:
-            parts.append("5h_window=exhausted")
+            if isinstance(interval_remains_time, (int, float)) and interval_remains_time > 0:
+                parts.append(f"5h_window=exhausted(reset_in_{interval_remains_time/60000:.0f}min)")
+            else:
+                parts.append("5h_window=exhausted")
         elif interval_status == 3:
             parts.append("5h_window=unused/saturated")
         if weekly_status == 2:
