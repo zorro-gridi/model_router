@@ -244,13 +244,19 @@ class TestForwardToMiniMax(unittest.TestCase):
                         "非 claude-* 模型不应保留顶层 betas 字段")
 
     def test_minimax_headers_stripped(self):
-        """MiniMax-M3：anthropic-beta/anthropic-version 请求头被剥离。"""
+        """MiniMax-M3：anthropic-beta 必剥；anthropic-version 补默认值保留。
+        2026-06-18 加固：旧策略"无条件剥 version"会导致 MiniMax 缺 version 头 400；
+        新策略"清洗剥 beta + 兜底补 version 默认值"更稳。
+        fixture 中 headers_in 含 anthropic-beta=interleaved-thinking → 必剥；
+        version 在清洗时被剥，但 forward_request 兜底补回 2023-06-01。"""
         cap = _capture_forward("MiniMax-M3",
                                env_override={"MINIMAX_API_KEY": "sk-minimax-test"})
         self.assertFalse(cap.has_header("anthropic-beta"),
-                         "MiniMax 不应带 anthropic-beta 头")
-        self.assertFalse(cap.has_header("anthropic-version"),
-                         "MiniMax 不应带 anthropic-version 头")
+                         "MiniMax 不应带 anthropic-beta 头（会触发 400）")
+        self.assertTrue(cap.has_header("anthropic-version"),
+                        "MiniMax 必须带 anthropic-version 头（兼容端点要求）")
+        self.assertEqual(cap.get_header("anthropic-version"), "2023-06-01",
+                         "version 头缺省应补 2023-06-01")
 
 
 class TestForwardToDeepSeek(unittest.TestCase):
@@ -307,8 +313,10 @@ class TestForwardToDeepSeek(unittest.TestCase):
                                env_override={"MINIMAX_API_KEY": "sk-deepseek-test"})
         self.assertFalse(cap.has_header("anthropic-beta"),
                          "DeepSeek 不应带 anthropic-beta 头")
-        self.assertFalse(cap.has_header("anthropic-version"),
-                         "DeepSeek 不应带 anthropic-version 头")
+        self.assertTrue(cap.has_header("anthropic-version"),
+                        "DeepSeek 必须带 anthropic-version 头（兼容端点要求）")
+        self.assertEqual(cap.get_header("anthropic-version"), "2023-06-01",
+                         "version 头缺省应补 2023-06-01")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
