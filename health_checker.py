@@ -69,6 +69,14 @@ QUOTA_CHECK_INTERVAL = int(os.environ.get("STAGE_ROUTER_QUOTA_CHECK_INTERVAL", "
 QUOTA_API_TIMEOUT_SECONDS = float(
     os.environ.get("STAGE_ROUTER_QUOTA_API_TIMEOUT_SECONDS", "5")
 )
+# 预恢复窗口：恢复前 10 分钟进入密集轮询，之外完全跳过 API 调用
+QUOTA_PRE_RECOVERY_WINDOW_S = int(os.environ.get(
+    "STAGE_ROUTER_QUOTA_PRE_RECOVERY_WINDOW_S", "600"
+))  # 10 min
+# 预恢复窗口内的轮询间隔
+QUOTA_PRE_RECOVERY_POLL_S = int(os.environ.get(
+    "STAGE_ROUTER_QUOTA_PRE_RECOVERY_POLL_S", "60"
+))  # 1 min
 
 # ── 模块状态 ──────────────────────────────────────────────────
 HEALTH_LOCK_PATH = HOOK_DIR / "health_check.lock"
@@ -310,11 +318,14 @@ def _quota_recovery_check() -> None:
       /v1/token_plan/remains API 返回两个窗口的 status 和 remains_time，
       据此判断是否可路由，并在恢复时自动清除 sticky。
 
-    One-shot timer 模式（2026-06-18）：
+    提前密集轮询模式（2026-06-18）：
       当 minimax 不可路由时，API 返回的 remains_time（5h 恢复剩余 ms）和
       weekly_remains_time（周恢复剩余 ms）告知确切的恢复时间点。
-      据此设置 next_check_after 时间戳，在该时间之前完全跳过 API 调用，
-      避免在漫长耗尽期（如周配额耗尽 76h）内每分钟无意义轮询。
+      据此设置 next_check_after：
+        - 距恢复 >10 分钟：休眠到恢复前 10 分钟（next_check_after = recovery - 10min），
+          完全跳过 API 调用，避免漫长耗尽期（如 76h）的无意义轮询
+        - 距恢复 ≤10 分钟：next_check_after = now + 60s，进入每 60s 轮询模式，
+          一旦检测到恢复立即清除 sticky，感知延迟 ≤ 60s
 
       可路由时回退到 QUOTA_CHECK_INTERVAL 正常频率（检测新的耗尽）。
 
@@ -431,14 +442,14 @@ def _quota_recovery_check() -> None:
                     f"weekly_status recovered: {prev_weekly} → {weekly_status}"
                 )
 
-        # ── One-shot timer：不可路由时根据 API 返回的恢复时间设置定时器 ──
+        # ── 提前密集轮询调度：恢复前 10min 每 60s 轮询，之外完全跳过 ──
         if routable:
             # 可路由：清除定时器，回退到正常 QUOTA_CHECK_INTERVAL 频率
             if _QUOTA_STATE["next_check_after"] is not None:
-                log.debug("minimax 已可路由，清除 one-shot timer")
+                log.debug("minimax 已可路由，清除提前轮询 timer")
             _QUOTA_STATE["next_check_after"] = None
         else:
-            # 不可路由：计算最近的恢复时间点
+            # 不可路由：取最近恢复时间（毫秒 → 秒）
             recovery_times: list[float] = []
             if interval_status == 2 and isinstance(interval_remains_time, (int, float)) and interval_remains_time > 0:
                 recovery_times.append(interval_remains_time / 1000.0)
@@ -446,14 +457,22 @@ def _quota_recovery_check() -> None:
                 recovery_times.append(weekly_remains_time / 1000.0)
 
             if recovery_times:
-                # 最近恢复的那个窗口 + 30s 安全余量
-                wait_s = min(recovery_times) + 30
-                _QUOTA_STATE["next_check_after"] = now + wait_s
-                log.info(
-                    f"minimax 不可路由，one-shot timer: "
-                    f"下次检查 ≈ {time.strftime('%H:%M:%S', time.localtime(now + wait_s))} "
-                    f"（{wait_s/60:.1f} min 后）"
-                )
+                shortest_remain_s = min(recovery_times)
+                if shortest_remain_s > QUOTA_PRE_RECOVERY_WINDOW_S:
+                    # 距恢复 > 10min → 休眠到 recovery - 10min
+                    wait_s = shortest_remain_s - QUOTA_PRE_RECOVERY_WINDOW_S
+                    _QUOTA_STATE["next_check_after"] = now + wait_s
+                    log.info(
+                        f"minimax 不可路由，距恢复 {shortest_remain_s/60:.1f}min："
+                        f"休眠到恢复前 10min（{wait_s/60:.1f} min 后唤醒）"
+                    )
+                else:
+                    # 距恢复 ≤ 10min → 进入每 60s 轮询模式
+                    _QUOTA_STATE["next_check_after"] = now + QUOTA_PRE_RECOVERY_POLL_S
+                    log.info(
+                        f"minimax 不可路由，距恢复 {shortest_remain_s/60:.1f}min："
+                        f"进入预恢复轮询（每 {QUOTA_PRE_RECOVERY_POLL_S}s 一次）"
+                    )
             else:
                 # 无法确定恢复时间（status=3 饱和状态等）→ 保持 QUOTA_CHECK_INTERVAL 轮询
                 _QUOTA_STATE["next_check_after"] = None

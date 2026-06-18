@@ -447,8 +447,8 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
         with _QUOTA_STATE_LOCK:
             self.assertIsNone(_QUOTA_STATE["next_check_after"])
 
-    def test_not_routable_sets_next_check_after_from_both_exhausted(self):
-        """双窗口均耗尽 → 取 min(interval_remains, weekly_remains) + 30s buffer。"""
+    def test_not_routable_far_from_recovery_sleeps_to_pre_recovery_window(self):
+        """距恢复 >10min → next_check_after = recovery - 10min（避开长耗尽期无意义轮询）。"""
         from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
 
         with _QUOTA_STATE_LOCK:
@@ -459,12 +459,12 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
             _QUOTA_STATE["next_check_after"] = None
 
         before = time.time()
-        # 5h 恢复 120s，周恢复 300s → 应取 120s + 30s buffer
+        # 5h 恢复 2h，周恢复 1h → 最短 1h = 3600s > 10min → sleep (3600 - 600) = 3000s
         response = _make_api_response(
             weekly_end_time=OLD_WEEKLY_END_TIME,
             weekly_status=2, interval_status=2,
-            interval_remains_time=120000,    # 120s
-            weekly_remains_time=300000,      # 300s
+            interval_remains_time=7200000,    # 2h
+            weekly_remains_time=3600000,      # 1h
         )
 
         with self._patch_api(response), \
@@ -473,11 +473,11 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
 
         with _QUOTA_STATE_LOCK:
             self.assertIsNotNone(_QUOTA_STATE["next_check_after"])
-            expected = before + 150  # 120 + 30 buffer
+            expected = before + 3000  # 3600 - 600 (10 min pre-recovery window)
             self.assertAlmostEqual(_QUOTA_STATE["next_check_after"], expected, delta=2)
 
-    def test_not_routable_sets_next_check_after_from_interval_alone(self):
-        """仅 5h 耗尽，周正常 → next_check_after 基于 interval remains_time。"""
+    def test_not_routable_within_pre_recovery_window_polls_every_60s(self):
+        """距恢复 ≤10min → next_check_after = now + 60s（预恢复轮询模式）。"""
         from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
 
         with _QUOTA_STATE_LOCK:
@@ -488,6 +488,7 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
             _QUOTA_STATE["next_check_after"] = None
 
         before = time.time()
+        # 距恢复 3 min（< 10 min）→ 应进入预恢复轮询，每 60s
         response = _make_api_response(
             weekly_end_time=OLD_WEEKLY_END_TIME,
             weekly_status=1, interval_status=2,
@@ -500,11 +501,11 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
 
         with _QUOTA_STATE_LOCK:
             self.assertIsNotNone(_QUOTA_STATE["next_check_after"])
-            expected = before + 210  # 180 + 30 buffer
+            expected = before + 60  # 预恢复窗口内每 60s 轮询
             self.assertAlmostEqual(_QUOTA_STATE["next_check_after"], expected, delta=2)
 
-    def test_not_routable_sets_next_check_after_from_weekly_alone(self):
-        """仅周耗尽，5h 正常 → next_check_after 基于 weekly remains_time。"""
+    def test_not_routable_long_weekly_sleeps_to_pre_recovery(self):
+        """周耗尽、5h 正常且距恢复 >10min → sleep 到周恢复前 10min。"""
         from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
 
         with _QUOTA_STATE_LOCK:
@@ -515,6 +516,7 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
             _QUOTA_STATE["next_check_after"] = None
 
         before = time.time()
+        # 周 1h = 3600s > 10min → sleep 3000s
         response = _make_api_response(
             weekly_end_time=OLD_WEEKLY_END_TIME,
             weekly_status=2, interval_status=1,
@@ -527,7 +529,35 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
 
         with _QUOTA_STATE_LOCK:
             self.assertIsNotNone(_QUOTA_STATE["next_check_after"])
-            expected = before + 3630  # 3600 + 30 buffer
+            expected = before + 3000  # 3600 - 600
+            self.assertAlmostEqual(_QUOTA_STATE["next_check_after"], expected, delta=2)
+
+    def test_not_routable_at_pre_recovery_boundary_polls(self):
+        """距恢复恰好 ~10min 边界（9 min）→ 预恢复轮询模式生效。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
+
+        with _QUOTA_STATE_LOCK:
+            _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
+            _QUOTA_STATE["last_weekly_status"] = 1
+            _QUOTA_STATE["last_interval_status"] = 2
+            _QUOTA_STATE["last_check_ts"] = 0.0
+            _QUOTA_STATE["next_check_after"] = None
+
+        before = time.time()
+        # 9 min < 10 min 边界 → 60s 轮询
+        response = _make_api_response(
+            weekly_end_time=OLD_WEEKLY_END_TIME,
+            weekly_status=1, interval_status=2,
+            interval_remains_time=540000,  # 9 min
+        )
+
+        with self._patch_api(response), \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}):
+            _quota_recovery_check()
+
+        with _QUOTA_STATE_LOCK:
+            self.assertIsNotNone(_QUOTA_STATE["next_check_after"])
+            expected = before + 60
             self.assertAlmostEqual(_QUOTA_STATE["next_check_after"], expected, delta=2)
 
     def test_next_check_after_skips_api_call(self):
