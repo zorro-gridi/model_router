@@ -548,31 +548,36 @@ def read_model_override() -> str | None:
     return None
 
 
-def _extract_prompt_model_override(body: bytes) -> tuple[Optional[str], bool, Optional[str]]:
+def _extract_prompt_model_override(body: bytes) -> tuple[Optional[str], bool, Optional[str], bool]:
     """
     从 Anthropic Messages API 请求 body 中提取"最近一条 user message"的内容，
-    喂给 model_alias.parse_model_override()，返回 (canonical_model, is_reset, unknown_alias)。
+    喂给 model_alias.parse_model_override()，返回 (canonical_model, is_reset, unknown_alias, persist)。
 
     仅解析请求 body 里的最后一条 user 消息——因为 user 可能在中途改模型。
     请求/响应都是 JSON。body 可能是：{"messages": [{"role": "user", "content": "..."}]}
     content 可能是字符串，也可能是 [{"type": "text", "text": "..."}] 数组。
 
-    解析失败（非 JSON、空 body、无 user message）时返回 (None, False, None)，
+    解析失败（非 JSON、空 body、无 user message）时返回 (None, False, None, False)，
     让 proxy 继续走 op/stage 默认路由。
 
     unknown_alias 非空时表示用户输入了显式 `~model <name>` 但 alias 未识别——
     设计文档 §12 D12-3：必须给 warning 提示，避免静默失效。
+
+    persist（2026-06-18 行为变更引入）:
+        - True  = 用户用 `~model <alias>` 或 `~model <alias> 1`，要求写盘让整个
+                  session 持续生效（取消 2026-06-16 的"一次性覆盖"语义）
+        - False = 用户用 `~model <alias> 0`，仅本请求一次性覆盖
     """
     if not body:
-        return (None, False, None)
+        return (None, False, None, False)
     try:
         data = json.loads(body.decode("utf-8", errors="replace"))
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return (None, False, None)
+        return (None, False, None, False)
 
     messages = data.get("messages")
     if not isinstance(messages, list) or not messages:
-        return (None, False, None)
+        return (None, False, None, False)
 
     # 反向找最近一条 user 消息
     user_msg = None
@@ -581,7 +586,7 @@ def _extract_prompt_model_override(body: bytes) -> tuple[Optional[str], bool, Op
             user_msg = m
             break
     if user_msg is None:
-        return (None, False, None)
+        return (None, False, None, False)
 
     content = user_msg.get("content")
     text_parts: list[str] = []
@@ -595,13 +600,37 @@ def _extract_prompt_model_override(body: bytes) -> tuple[Optional[str], bool, Op
                     text_parts.append(part["text"])
                 # tool_result 也带内容（用户工具返回的"文本"），不参与 ~model 解析——跳过
     else:
-        return (None, False, None)
+        return (None, False, None, False)
 
     user_text = "\n".join(text_parts)
     if not user_text.strip():
-        return (None, False, None)
+        return (None, False, None, False)
 
     return parse_model_override(user_text)
+
+
+def _write_model_override_for_active(model: str) -> bool:
+    """把 model 覆盖写回当前 active session 的 model_<sid> 文件。
+
+    用于 `~model <alias>` 的 session 持久化语义（2026-06-18 行为变更）。
+    写盘后 stage_detector 后续回合读取到 model_<sid> 就能保持同一覆盖。
+
+    Returns:
+        True  = 成功写盘
+        False = 无法解析 active session（state_index 为空、stage 文件不存在等），
+                调用方应当继续走本请求一次性覆盖 + 记 warning
+    """
+    p = _active_stage_path()
+    if p is None:
+        return False
+    try:
+        model_path = _model_file_path(p)
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        model_path.write_text(model + "\n")
+        return True
+    except Exception as e:
+        log.warning(f"写回 model_<sid> 失败（仅一次性覆盖当前请求）: {e}")
+        return False
 
 
 # ── Prompt 文本提取 + 脱敏（设计文档 §15 D15-6）─────────────────────
@@ -2062,10 +2091,10 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # ── Prompt 内嵌 ~model 检测（消除一回合延迟）──────────
         # 用户在 ~model ds-v4-pro 的那一回合，stage_detector 写入 model_<sid>
         # 是在请求发起之后。当前 do_POST 收到请求时先扫一次 body 里最近的
-        # user message，命中就立刻用命中的模型作为 model_override（写回
-        # model_<sid> 文件让 stage_detector 后续也走同一覆盖）。这样用户
-        # 发 ~model 的"当前请求"就立即生效，不再等下一回合。
-        prompt_model_override, prompt_is_reset, prompt_unknown_alias = _extract_prompt_model_override(body)
+        # user message，命中就立刻用命中的模型作为 model_override。
+        # 2026-06-18 行为变更：默认 persist=True（写回 model_<sid>，让整个 session
+        # 持续生效）；用户可在指令尾加 `0` 走一次性覆盖。
+        prompt_model_override, prompt_is_reset, prompt_unknown_alias, prompt_persist = _extract_prompt_model_override(body)
 
         # 设计文档 §12 D12-3：显式 `~model <name>` 但 alias 未识别时必须警告用户，
         # 列出合法 alias / 规范名。否则用户以为生效、实际是静默失效。
@@ -2078,29 +2107,54 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
 
         # ── 路由决策：prompt_model_override > model_override(file) > op > stage > default ──
         # 1) prompt 内嵌 ~model 优先（消除一回合延迟）。
-        # 2026-06-16 行为变更：~model 改为「本请求一次性」覆盖，**不再写回** model_<sid> 文件。
-        # 旧逻辑：写盘让 stage_detector 下一回合保持一致 → 整个 session 都被钉死。
-        # 新逻辑：只在本请求使用 prompt_model_override，下一请求（无 ~model）回到自动路由。
+        # 2026-06-18 行为变更（撤销 2026-06-16 的一次性逻辑）：
+        #   - 默认 `~model <alias>`     → persist=True，写回 model_<sid>，整个 session 持续生效
+        #   - `~model <alias> 0`         → persist=False，仅本请求一次性覆盖
+        #   - `~model <alias> 1`         → persist=True（与默认等价，显式声明）
+        # 写盘后 stage_detector 下一回合读取 model_<sid> 自动接续同一覆盖。
         # 显式初始化 model_override=None，避免下面 elif/1001 行 if 分支里
         # UnboundLocalError（命中分支才会赋值）。
         model_override = None
         if prompt_model_override:
-            log.info(
-                f"prompt ~model 命中: {prompt_model_override!r} "
-                f"（一次性覆盖，仅当前请求生效，不写 model_<sid>）"
-            )
-            model_override = prompt_model_override
+            if prompt_persist:
+                # 持久化语义：当前请求立即生效 + 写回 model_<sid> 让后续回合保持
+                if _write_model_override_for_active(prompt_model_override):
+                    log.info(
+                        f"prompt ~model 命中: {prompt_model_override!r} "
+                        f"（已写回 model_<sid>，整个 session 持续生效；"
+                        f"解除方式: ~model reset）"
+                    )
+                else:
+                    log.warning(
+                        f"prompt ~model 命中: {prompt_model_override!r}，"
+                        f"但无法解析 active session → 仅本次请求生效，"
+                        f"后续回合不会延续"
+                    )
+                model_override = prompt_model_override
+            else:
+                log.info(
+                    f"prompt ~model 命中: {prompt_model_override!r} "
+                    f"（一次性覆盖，~model {prompt_model_override!r} 0，仅当前请求生效）"
+                )
+                model_override = prompt_model_override
         elif prompt_is_reset:
-            # ~model reset 清除 sticky fallback，让后续请求回到正常 stage 路由。
-            # ~model 虽然已改为一次性的 model_override（不写 model_<sid> 持久文件），
-            # 但 sticky fallback 文件（fallback_<sid>）是持久存在的独立机制——
-            # 主模型（如 MiniMax-M3）网络恢复后，用户通过 ~model reset 手动解除 sticky。
+            # ~model reset 清除 model_<sid> 覆盖 + 全局清除所有 session 的 sticky fallback。
+            # 让后续请求回到正常 stage 路由——主模型（如 MiniMax-M3）网络恢复后，
+            # 用户通过 ~model reset 手动解除 sticky 与 model 覆盖。
             #
             # 2026-06-16 行为变更：reset 现在对**所有 session** 生效。
             # 原因：sticky 触发条件是「主模型 API 失败」——进程/网络级问题，
             # 不分 session。多 session 并发时所有 session 都会被同一波失败触发 sticky，
             # 用户执行 ~model reset 时只清当前 session 显然不够，必须全局清。
-            log.info("prompt ~model reset：全局清除所有 session 的 sticky fallback")
+            log.info("prompt ~model reset：清除 model_<sid> 覆盖 + 全局清除所有 session 的 sticky fallback")
+            # 1) 清当前 session 的 model_<sid>（如果存在）
+            p = _active_stage_path()
+            if p is not None:
+                try:
+                    _model_file_path(p).unlink(missing_ok=True)
+                except Exception as e:
+                    log.warning(f"~model reset 删除 model_<sid> 失败: {e}")
+            # 2) 全局清 sticky fallback
             n = clear_fallback_all()
             log.info(f"~model reset 已清除 {n} 个 sticky fallback 文件")
 

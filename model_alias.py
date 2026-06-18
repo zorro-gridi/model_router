@@ -74,9 +74,12 @@ KNOWN_MODEL_NAMES: set[str] = _collect_known_models()
 
 # ── 正则：显式指令（~model / ~m，最高优先级）─────────────────────
 
-# ~model <alias> 或 ~m <alias>
+# ~model <alias> 或 ~m <alias>，可选追加 `0`/`1` 持久化标志（2026-06-18）。
+# group(1) = alias，group(2) = 可选 `0`/`1`。
+# 注意：alias 部分用 `[^~\s]+`（不允许空格），让后续可能追加的 `0`/`1` 留给 group(2)。
+# 若用 `\S+` 贪婪匹配 + `re.search` 找最长，alias 后的数字 flag 会被 alias "吞掉"。
 MODEL_OVERRIDE_PREFIX_RE = re.compile(
-    r"(?:^|\s)~(?:model|m)\s+(\S+)",
+    r"(?:^|\s)~(?:model|m)\s+([^~\s]+)(?:\s+([01]))?\b",
     re.IGNORECASE,
 )
 
@@ -175,15 +178,15 @@ def parse_model_override(prompt: str) -> tuple[Optional[str], bool, Optional[str
         if raw.lower() in MODEL_RESET_WORDS:
             return (None, True, None, False)  # is_reset
         # ── 持久化开关解析（2026-06-18）────────────────────────
-        # ~model <alias> 后面可追加 0/1 控制是否写盘。
-        # split 后第一段是 alias，第二段（若存在且为 0/1）是 persist 标志；
-        # 多余 token 忽略——保持解析器最小惊讶原则。
-        parts = raw.split()
-        alias_token = parts[0]
-        persist = True  # 默认 = session 持续有效（2026-06-18 行为变更）
-        if len(parts) >= 2 and parts[1] in ("0", "1"):
-            persist = (parts[1] == "1")
-        canon = resolve_model(alias_token)
+        # 0/1 标志已在正则 group(2) 里抽出（见 MODEL_OVERRIDE_PREFIX_RE）。
+        # 默认 persist=True（= session 持续有效），仅当显式 0 时才转 one-shot。
+        # 这样写避免 `\S+` 贪婪匹配把 `0`/`1` 吞进 alias，
+        # 也避免后续多余 token 干扰（多余的字符如果用户在 alias 后面写了
+        # 不构成 0/1 的东西，persist 仍然走默认 True，符合最小惊讶原则）。
+        persist = True
+        if m.group(2) is not None:
+            persist = (m.group(2) == "1")
+        canon = resolve_model(raw)
         if canon:
             return (canon, False, None, persist)
         # 未识别 → 返回 None + 原始 alias（供调用方给 warning，修复 §12 D12-3 静默失效）

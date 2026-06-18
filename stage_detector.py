@@ -57,8 +57,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from model_alias import (  # noqa: E402
-    detect_model_override,   # 用户模型覆盖（最高路由优先级）
+    detect_model_override,   # 用户模型覆盖（最高路由优先级，2-tuple 便捷封装）
     detect_provider_override,  # provider 级 fallback：~provider reset
+    parse_model_override,    # 4-tuple 全量版（含 persist 标志，2026-06-18 行为变更用）
 )
 # 2026-06-16：~model reset / ~provider reset 现在对所有 session 生效，
 # 导入全局清除函数。延迟到函数体调用以避免 proxy 模块顶层副作用
@@ -613,13 +614,16 @@ def main():
             sys.exit(0)
 
         # ── Model-override 检测（最高优先级，在 stage/op 之前）──
-        # 2026-06-16 行为变更：~model 改为「本回合一次性」覆盖，不再写 model_<sid> 持久文件。
-        # 用户在 prompt 里写 `~model ds-v4-pro` 时，proxy 端会从请求 body 里识别并
-        # 立即用该模型处理当前请求；下一次提交（不再带 ~model）则回到自动路由。
-        # 这样 ~model 与 ~stage / ~<op> 的语义对齐（都是「本次会话指令」），避免
-        # 用户在 prompt 里随手带 `~model` 后忘了清，导致整个 session 都被钉死。
-        # 显式 sticky 需求 → 在 settings.json 里配环境变量或每次 prompt 都带 ~model。
-        new_model, is_reset = detect_model_override(prompt)
+        # 2026-06-18 行为变更（撤销 2026-06-16 的一次性逻辑）：
+        #   - 默认 `~model <alias>`         → persist=True，写回 model_<sid> 让整个
+        #                                       session 持续生效（直到 ~model reset）
+        #   - `~model <alias> 0`             → persist=False，仅本回合一次性覆盖
+        #   - `~model <alias> 1`             → persist=True（显式声明，与默认等价）
+        # 这里主要承担「写盘」职责；proxy 端 do_POST 在请求到达时会再扫一次 body
+        # 里的 ~model 并立刻应用到当前请求（消除一回合延迟），并按相同规则写盘。
+        # 用 parse_model_override 拿 4-tuple（含 persist），detect_model_override
+        # 是 2-tuple 便捷封装，不能区分「一次性 vs 持久化」。
+        new_model, is_reset, _unknown_alias, persist = parse_model_override(prompt)
 
         model_msg: str | None = None
         if is_reset:
@@ -628,24 +632,36 @@ def main():
             # 是「主模型 API 失败」——进程/网络级问题，不分 session。
             # 多 session 并发时所有 session 都会被同一波失败触发 sticky，
             # reset 必须全局清才能让用户「主模型恢复后回到正常路由」的语义对齐。
-            # ~model 本身是一次性指令（不写 model_<sid>），但 sticky fallback
-            # 文件（fallback_<sid>）是持久存在的独立机制——仍然需要清。
+            # 2026-06-18 补充：reset 同时清当前 session 的 model_<sid>（持久化覆盖），
+            # 让整个 model 覆盖链路完整重置。
             global _clear_fallback_all
             if _clear_fallback_all is None:
                 # 延迟 import：避免 proxy 顶层副作用（load_plugin_env 等）拖慢 hook
                 from proxy import clear_fallback_all as _cfa
                 _clear_fallback_all = _cfa
             try:
+                # 1) 清当前 session 的 model_<sid>（如果有）
+                clear_model_override(session_id=session_id, cwd=cwd)
+                # 2) 全局清 sticky fallback
                 n = _clear_fallback_all()
-                log("INFO", f"prompt ~model reset: 全局清除 sticky fallback ({n} 个文件)")
-                model_msg = f"~model reset：已清除 {n} 个 session 的 sticky fallback"
+                log("INFO", f"prompt ~model reset: 清 model_<sid> + 全局清除 sticky fallback ({n} 个文件)")
+                model_msg = f"~model reset：已清 model_<sid> + 清除 {n} 个 session 的 sticky fallback"
             except Exception as _e:
-                log("WARN", f"~model reset clear_fallback_all 失败: {_e!r}")
+                log("WARN", f"~model reset 失败: {_e!r}")
                 model_msg = "~model reset 失败（fallback 清除异常）"
         elif new_model:
-            # 仅打印 + 提示用户，不再写 model_<sid>
-            log("INFO", f"prompt ~model one-shot override: {new_model} (no persist)")
-            model_msg = f"本回合 model 覆盖: {new_model}（一次性，不持久化）"
+            # 2026-06-18 行为变更：默认写回 model_<sid>（与 2026-06-16 的"一次性"行为相反）。
+            # proxy 端 do_POST 会按相同规则写盘并应用到当前请求；
+            # stage_detector 这里也同步写盘，双向冗余防御：
+            #   - 即便 proxy 端写盘失败（state_index 异常），stage_detector 也会兜底写
+            #   - 即便用户没真的发起请求（只发 hook），下一次请求也能读到这个覆盖
+            if persist:
+                write_model_override(new_model, session_id=session_id, cwd=cwd)
+                log("INFO", f"prompt ~model 持久化覆盖: {new_model}（写 model_<sid>，整个 session 生效）")
+                model_msg = f"model 覆盖: {new_model}（整个 session 持续生效；~model reset 解除）"
+            else:
+                log("INFO", f"prompt ~model 一次性覆盖: {new_model}（不写 model_<sid>）")
+                model_msg = f"model 覆盖: {new_model}（一次性，本回合生效）"
 
         # ── ~provider reset（provider 级 fallback，2026-06-16）─────────
         prov_override, prov_is_reset = detect_provider_override(prompt)
