@@ -603,5 +603,153 @@ class TestResponseSideThinkingStrip(unittest.TestCase):
         self.assertEqual(json.loads(cleaned)["content"][0]["text"], "hello")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  第五部分：模型切换场景 — 验证 DeepSeek→MiniMax 切换时遗留 thinking 块被剥离
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestMidSessionModelSwitch(unittest.TestCase):
+    """验证 session 中途模型切换时（如 DeepSeek→MiniMax）thinking 块正确剥离。
+
+    根因：CC 客户端在 DeepSeek 会话中积累了 type=thinking 块，切换模型后
+    的历史消息仍包含这些块。代理必须确保在转发到不支持 thinking 的模型
+    （MiniMax-M3）时完全剥离，否则上游返回 400。
+    """
+
+    def test_deepseek_to_minimax_strips_legacy_thinking(self):
+        """DeepSeek→MiniMax 切换：转发前剥离所有遗留 thinking 块。
+
+        body 含有 DeepSeek 时代遗留的 thinking 块（含 tool_result 嵌套），
+        target_model=MiniMax-M3 → tier 3 全剥策略 → 发出的请求体中
+        thinking 块数应为 0。
+        """
+        cap = _capture_forward("MiniMax-M3",
+                               env_override={"MINIMAX_API_KEY": "sk-minimax-test"})
+        counts = _count_thinking_blocks(cap.json)
+
+        self.assertEqual(
+            counts["total"], 0,
+            f"DeepSeek→MiniMax 切换后遗留 thinking 块未剥离: "
+            f"thinking={counts['thinking']} redacted={counts['redacted_thinking']}"
+        )
+
+    def test_deepseek_to_minimax_with_real_routing_simulation(self):
+        """模拟完整路由：body 含遗留 thinking 块，forward_request 目标为 MiniMax。
+
+        使用 strict_upstream mock 检查实际发出的请求体是否含 thinking 块。
+        含 thinking 块 → mock 返回 400（模拟真实 MiniMax 错误）；
+        无 thinking 块 → 返回 200。
+        """
+        import urllib.error
+
+        def strict_upstream(req, timeout=None):
+            body = json.loads(req.data.decode())
+            msgs = body.get("messages", [])
+            has_thinking = any(
+                isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking")
+                for m in msgs
+                for b in (m.get("content") if isinstance(m.get("content"), list) else [])
+            )
+            if has_thinking or "thinking" in body:
+                raise urllib.error.HTTPError(
+                    url="https://api.minimaxi.com/v1/messages",
+                    code=400,
+                    msg="Bad Request",
+                    hdrs={},
+                    fp=None,
+                )
+            mock_resp = MagicMock()
+            mock_resp.status = 200
+            mock_resp.headers = {"content-type": "application/json"}
+            mock_resp.read.return_value = json.dumps({
+                "content": [{"type": "text", "text": "ok — model switch handled correctly"}]
+            }).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            return mock_resp
+
+        from proxy import forward_request
+
+        with patch("proxy.urllib.request.urlopen", side_effect=strict_upstream), \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-minimax-test"}):
+            status, _, body_bytes, _ = forward_request(
+                method="POST",
+                path="/v1/messages",
+                headers={
+                    "content-type": "application/json",
+                    "anthropic-beta": "interleaved-thinking-2025-05-08",
+                },
+                body=json.dumps(_BODY_WITH_THINKING).encode(),
+                target_base="https://api.minimaxi.com",
+                target_model="MiniMax-M3",
+                api_key_env="MINIMAX_API_KEY",
+                protocol="anthropic",
+                dry_run=False,
+            )
+
+        self.assertEqual(status, 200,
+                         f"模型切换后遗留 thinking 未剥离 → 400: "
+                         f"实际 status={status}")
+
+    def test_minimax_to_deepseek_preserves_thinking(self):
+        """MiniMax→DeepSeek 切换：thinking 块应保留（DeepSeek 兼容）。
+
+        验证即使历史消息中不含 thinking 块，切换后发送到 DeepSeek 的
+        请求也不应额外注入 thinking 块 — 即 keep_thinking=True 不会
+        产生副作用。
+        """
+        clean_body = {
+            "model": "MiniMax-M3",
+            "max_tokens": 8000,
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": [{"type": "text", "text": "Hi"}]},
+                {"role": "user", "content": "How are you?"},
+            ],
+        }
+
+        cap = _capture_forward(
+            "deepseek-v4-pro",
+            body_override=clean_body,
+            env_override={"MINIMAX_API_KEY": "sk-deepseek-test"},
+        )
+
+        counts = _count_thinking_blocks(cap.json)
+        self.assertEqual(counts["total"], 0,
+                        "MiniMax→DeepSeek 切换后不应引入额外的 thinking 块")
+
+    def test_sticky_fallback_scenario(self):
+        """模拟 sticky fallback：provider 级别回退时 thinking 策略正确。
+
+        当 sticky 从 deepseek 回退到 minimax 时，body 中的 thinking 块
+        必须被完全剥离；反之，从 minimax 回退到 deepseek 时，thinking 块
+        应保留（仅剥 redacted_thinking）。
+        """
+        # 场景 A：sticky 切到 DeepSeek（类似 DeepSeek 曾是替代 provider）
+        cap_ds = _capture_forward(
+            "deepseek-v4-pro",
+            env_override={"MINIMAX_API_KEY": "sk-deepseek-test"},
+        )
+        ds_counts = _count_thinking_blocks(cap_ds.json)
+        self.assertGreater(
+            ds_counts["thinking"], 0,
+            "sticky fallback→DeepSeek 应保留 thinking 块"
+        )
+        self.assertEqual(
+            ds_counts["redacted_thinking"], 0,
+            "sticky fallback→DeepSeek 应剥离 redacted_thinking"
+        )
+
+        # 场景 B：sticky 切到 MiniMax → thinking 全剥
+        cap_mm = _capture_forward(
+            "MiniMax-M3",
+            env_override={"MINIMAX_API_KEY": "sk-minimax-test"},
+        )
+        mm_counts = _count_thinking_blocks(cap_mm.json)
+        self.assertEqual(
+            mm_counts["total"], 0,
+            "sticky fallback→MiniMax 应全剥 thinking 块"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
