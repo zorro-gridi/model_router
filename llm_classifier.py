@@ -303,7 +303,8 @@ without prior conversation context.
 - complexity_confidence: 0.0-1.0 (how sure you are about the complexity)
 - task_field_confidence: 0.0-1.0 (how sure you are about the task_field)
 
-## Response format (JSON only,
+## Response format (JSON only):
+{
   "stage": "implement",
   "pattern": "implement",
   "pattern_confidence": 0.92,
@@ -316,8 +317,8 @@ without prior conversation context.
   "is_valid_prompt": true
 }
 
-NOTE: pattern must be exactly one of the 12 values listed above.
-NOTE: task_field must be exactly one of: "frontend", "backend", "ops", "product", "unknown".
+NOTE-1: pattern must be exactly one of the 12 values listed above.
+NOTE-2: task_field must be exactly one of: "frontend", "backend", "ops", "product", "unknown".
 """
 
 
