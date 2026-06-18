@@ -133,6 +133,104 @@ class TestStripThinkingBlocks(unittest.TestCase):
         self.assertEqual(c[1], "a plain string block")
 
 
+class TestDeepSeekKeepThinking(unittest.TestCase):
+    """keep_thinking=True（DeepSeek 策略）：保留 thinking 块，仅剥 redacted_thinking。"""
+
+    def test_preserves_thinking_blocks(self):
+        """keep_thinking=True：type='thinking' 块原样保留（DeepSeek 支持）。"""
+        from proxy import _strip_thinking_blocks
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hello"}],
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "内部推理", "signature": "sig1"},
+                        {"type": "redacted_thinking", "data": "xxx"},
+                        {"type": "text", "text": "回复文本"},
+                    ],
+                },
+            ]
+        }
+        stripped, redacted = _strip_thinking_blocks(body, keep_thinking=True)
+        self.assertEqual(stripped, 0)  # thinking 保留
+        self.assertEqual(redacted, 1)  # redacted 剥离
+        # assistant 剩 thinking + text 两个
+        self.assertEqual(len(body["messages"][1]["content"]), 2)
+
+    def test_strips_redacted_thinking_only(self):
+        """keep_thinking=True：redacted_thinking 仍被剥离。"""
+        from proxy import _strip_thinking_blocks
+        body = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "redacted_thinking", "data": "xxx"},
+                    ],
+                },
+            ]
+        }
+        stripped, redacted = _strip_thinking_blocks(body, keep_thinking=True)
+        self.assertEqual(stripped, 0)
+        self.assertEqual(redacted, 1)
+        self.assertEqual(body["messages"][0]["content"], [])
+
+    def test_keep_thinking_recursive_tool_result(self):
+        """keep_thinking=True + tool_result 内嵌：保留 thinking，剥 redacted。"""
+        from proxy import _strip_thinking_blocks
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_001",
+                            "content": [
+                                {"type": "text", "text": "ok"},
+                                {"type": "thinking", "thinking": "嵌套推理"},
+                                {"type": "redacted_thinking", "data": "x"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        stripped, redacted = _strip_thinking_blocks(body, keep_thinking=True)
+        self.assertEqual(stripped, 0)  # thinking 保留
+        self.assertEqual(redacted, 1)  # redacted 剥离
+        tc = body["messages"][0]["content"][0]
+        # text + thinking 保留，redacted 已剥
+        self.assertEqual(len(tc["content"]), 2)
+        types = [b["type"] for b in tc["content"] if isinstance(b, dict)]
+        self.assertIn("thinking", types)
+        self.assertNotIn("redacted_thinking", types)
+
+    def test_default_keep_thinking_false(self):
+        """默认 keep_thinking=False → 两者全剥。"""
+        from proxy import _strip_thinking_blocks
+        body = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "x"},
+                        {"type": "redacted_thinking", "data": "y"},
+                        {"type": "text", "text": "z"},
+                    ],
+                },
+            ]
+        }
+        stripped, redacted = _strip_thinking_blocks(body)
+        self.assertEqual(stripped, 1)
+        self.assertEqual(redacted, 1)
+        self.assertEqual(len(body["messages"][0]["content"]), 1)
+
+
 class TestCleanHeaders(unittest.TestCase):
     """_clean_headers_for_non_anthropic 的请求头清理行为。"""
 
@@ -171,67 +269,91 @@ class TestCleanHeaders(unittest.TestCase):
         self.assertEqual(cleaned, h)
 
 
-class TestIsAnthropicModel(unittest.TestCase):
-    """target_model.startswith("claude-") 判定逻辑。"""
+class TestModelTierClassification(unittest.TestCase):
+    """三层模型分类：claude-* (全透传) / deepseek-* (保留thinking) / 其它 (全剥)。"""
 
-    def test_claude_models_are_anthropic(self):
-        """claude-* 前缀被视为 Anthropic 模型。"""
+    def test_claude_models_are_tier1(self):
+        """claude-* 前缀 → 全透传，不剥任何内容。"""
         for name in [
             "claude-sonnet-4-6",
             "claude-opus-4-8",
             "claude-haiku-4-5-20251001",
             "claude-fable-5",
         ]:
-            self.assertTrue(name.startswith("claude-"), f"{name} should be anthropic")
+            self.assertTrue(name.startswith("claude-"), f"{name} should be claude tier")
 
-    def test_non_claude_models_are_not_anthropic(self):
-        """非 claude- 前缀被视为非 Anthropic，应走降级。"""
+    def test_deepseek_models_are_tier2(self):
+        """deepseek-* 前缀 → 保留 thinking，仅剥 redacted_thinking。"""
         for name in [
             "deepseek-v4-pro",
             "deepseek-v4-flash",
+        ]:
+            self.assertTrue(name.startswith("deepseek-"), f"{name} should be deepseek tier")
+            self.assertFalse(name.startswith("claude-"), f"{name} should NOT be claude tier")
+
+    def test_other_models_are_tier3(self):
+        """非 claude-* 非 deepseek-* → 全剥。"""
+        for name in [
             "minimax-m3",
+            "MiniMax-M3",
             "gpt-4o",
             "",
-            "Claude-sonnet",  # 大小写敏感，大 C 不匹配
         ]:
-            self.assertFalse(name.startswith("claude-"), f"{name!r} should not be anthropic")
+            is_claude = name.startswith("claude-")
+            is_deepseek = name.startswith("deepseek-")
+            self.assertFalse(is_claude or is_deepseek,
+                             f"{name!r} should be tier 3 (full strip)")
 
 
 class TestTopLevelThinkingAndBetasPop(unittest.TestCase):
-    """forward_request 中对非 claude-* 模型删除 thinking / betas 顶层字段。"""
+    """forward_request 中对非 claude-* 模型删除 thinking / betas 顶层字段。
 
-    def test_thinking_and_betas_removed_for_non_claude_model(self):
-        """minimax-m3 作为 target_model → thinking + betas 被 pop。"""
-        # 模拟 forward_request 中的逻辑片段
+    注意：DeepSeek 虽保留 thinking 块，但顶层 thinking/betas 仍 pop——
+    DeepSeek 文档明确这两个字段被忽略（不生效），pop 无害。
+    """
+
+    def test_thinking_and_betas_removed_for_minimax(self):
+        """minimax-m3 → thinking + betas 被 pop。"""
         body = {
             "model": "minimax-m3",
             "thinking": {"type": "enabled", "budget_tokens": 16000},
             "betas": ["interleaved-thinking-2025-05-08"],
             "messages": [{"role": "user", "content": "hi"}],
         }
-        target_model = body["model"]
-        is_anthropic = target_model.startswith("claude-")
-        self.assertFalse(is_anthropic)
-        if not is_anthropic:
+        is_claude = body["model"].startswith("claude-")
+        self.assertFalse(is_claude)
+        if not is_claude:
             body.pop("thinking", None)
             body.pop("betas", None)
         self.assertNotIn("thinking", body)
         self.assertNotIn("betas", body)
-        self.assertIn("model", body)
-        self.assertIn("messages", body)
+
+    def test_thinking_and_betas_removed_for_deepseek(self):
+        """deepseek-v4-pro → thinking + betas 也被 pop（DeepSeek 忽略这些字段）。"""
+        body = {
+            "model": "deepseek-v4-pro",
+            "thinking": {"type": "enabled", "budget_tokens": 16000},
+            "betas": ["interleaved-thinking-2025-05-08"],
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        is_claude = body["model"].startswith("claude-")
+        self.assertFalse(is_claude)
+        if not is_claude:
+            body.pop("thinking", None)
+            body.pop("betas", None)
+        self.assertNotIn("thinking", body)
+        self.assertNotIn("betas", body)
 
     def test_thinking_and_betas_kept_for_claude_model(self):
-        """claude-sonnet-4-6 作为 target_model → thinking + betas 保留。"""
+        """claude-sonnet-4-6 → thinking + betas 保留。"""
         body = {
             "model": "claude-sonnet-4-6",
             "thinking": {"type": "enabled", "budget_tokens": 16000},
             "betas": ["interleaved-thinking"],
             "messages": [{"role": "user", "content": "hi"}],
         }
-        target_model = body["model"]
-        is_anthropic = target_model.startswith("claude-")
-        self.assertTrue(is_anthropic)
-        # claude-* 模型不做任何删除
+        is_claude = body["model"].startswith("claude-")
+        self.assertTrue(is_claude)
         self.assertIn("thinking", body)
         self.assertIn("betas", body)
 
