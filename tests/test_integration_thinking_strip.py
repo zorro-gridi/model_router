@@ -92,7 +92,11 @@ _BODY_WITH_THINKING = {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class _CapturedRequest:
-    """forward_request 截获器：记录实际发送到上游的 body 和 headers。"""
+    """forward_request 截获器：记录实际发送到上游的 body 和 headers。
+
+    headers 的 key 被归一化为小写，因为 urllib 会做 title-case 转换
+    (anthropic-version → Anthropic-version)，直接用 has_header 判段。
+    """
 
     def __init__(self, body: bytes, headers: dict):
         self.body = body
@@ -101,6 +105,19 @@ class _CapturedRequest:
     @property
     def json(self) -> dict:
         return json.loads(self.body.decode())
+
+    def has_header(self, name: str) -> bool:
+        """大小写不敏感地检查请求头是否存在。"""
+        target = name.lower()
+        return target in (k.lower() for k in self.headers)
+
+    def get_header(self, name: str) -> str | None:
+        """大小写不敏感地获取请求头值。"""
+        target = name.lower()
+        for k, v in self.headers.items():
+            if k.lower() == target:
+                return v
+        return None
 
 
 def _capture_forward(target_model: str, headers: dict | None = None,
@@ -243,10 +260,8 @@ class TestForwardToNonClaudeModel(unittest.TestCase):
         """非 claude-* 模型：anthropic-beta 请求头被剥离。"""
         cap = _capture_forward("MiniMax-M3",
                                env_override={"MINIMAX_API_KEY": "sk-minimax-test"})
-        self.assertNotIn("anthropic-beta", cap.headers,
+        self.assertFalse(cap.has_header("anthropic-beta"),
                          "非 claude-* 模型不应带 anthropic-beta 头")
-        # anthropic-version 是 proxy 自己加的，始终存在
-        self.assertIn("anthropic-version", cap.headers)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -277,8 +292,10 @@ class TestForwardToClaudeModel(unittest.TestCase):
         """claude-* 模型保留 anthropic-beta 请求头。"""
         cap = _capture_forward("claude-sonnet-4-6",
                                env_override={"MINIMAX_API_KEY": "sk-anthropic-test"})
-        self.assertIn("anthropic-beta", cap.headers,
-                      "claude-* 模型应保留 anthropic-beta 请求头")
+        self.assertTrue(cap.has_header("anthropic-beta"),
+                        "claude-* 模型应保留 anthropic-beta 请求头")
+        self.assertTrue(cap.has_header("anthropic-version"),
+                        "claude-* 模型应保留 anthropic-version 请求头")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
