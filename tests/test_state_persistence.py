@@ -25,12 +25,15 @@ SessionStateStore 职责：
 """
 
 import json
-
+import sys
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+
+# 把 model_router/ 加到 sys.path 以便 import state_persistence
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 
@@ -428,3 +431,85 @@ class TestThreadSafety(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# BUG 3 回归测试（2026-06-18）：state.fallback 在 sticky 清除后必须清空
+# ─────────────────────────────────────────────────────────────────────
+#
+# 根因：SessionStateStore.write() 旧实现对 optional_fields 用
+#   `if key in kwargs and kwargs[key] is not None` 判定
+# 导致显式传入 `fallback=None`（sticky 已被 health_checker 清除）
+# 被误跳过，转而从 existing 继承 stale 值 → statusline 永久误显 fallback。
+#
+# 修复：判定改为 `if key in kwargs`，None 也是有效值（明确清除）。
+class FallbackFieldClearTest(unittest.TestCase):
+    """state.fallback 字段在显式传 None 时必须被清除。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_root = Path(self.tmp.name)
+        self.claude_dir = self.project_root / ".claude"
+        self.claude_dir.mkdir()
+        self.sid = "fb-clear-867263e4"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _store(self):
+        from state_persistence import SessionStateStore
+        return SessionStateStore()
+
+    def _read_state(self):
+        new_file = self.claude_dir / f"model_router_state_{self.sid}.json"
+        return json.loads(new_file.read_text(encoding="utf-8"))
+
+    def test_explicit_none_clears_stale_fallback(self):
+        """【BUG 3 复现】旧 sticky=minimax 已清除 → 显式传 fallback=None
+        → state.fallback 必须为 None（不能继承旧值 "minimax"）。"""
+        store = self._store()
+        # 第一轮：fallback=minimax（模拟 proxy 写 sticky 时同步写 state）
+        store.write(
+            self.sid, str(self.project_root),
+            decision={},
+            route_model="deepseek-v4-pro",
+            fallback="minimax",
+        )
+        state = self._read_state()
+        self.assertEqual(state["fallback"], "minimax",
+                         "首轮：fallback='minimax' 应被正确写入")
+
+        # 第二轮：sticky 已被 health_checker 清除 → fallback=None
+        # 修复前：fallback 仍是 "minimax"（继承自 existing）
+        # 修复后：fallback 是 None（显式传 None 清除）
+        store.write(
+            self.sid, str(self.project_root),
+            decision={},
+            route_model="MiniMax-M3",  # 已恢复
+            fallback=None,
+        )
+        state = self._read_state()
+        self.assertIsNone(
+            state["fallback"],
+            "【BUG 3 修复】sticky 清除后显式传 None → state.fallback 必须为 None，"
+            "不能继承 stale 'minimax'（否则 statusline 永久误显 fallback 标签）",
+        )
+        # 其他字段仍需正确保留
+        self.assertEqual(state["route_model"], "MiniMax-M3")
+
+    def test_omitted_key_still_inherits_from_existing(self):
+        """未传 fallback 时仍应从 existing 继承（保持向后兼容）。"""
+        store = self._store()
+        # 第一轮：写入 fallback
+        store.write(
+            self.sid, str(self.project_root),
+            decision={},
+            fallback="deepseek",
+        )
+        # 第二轮：完全不传 fallback 字段
+        store.write(self.sid, str(self.project_root), decision={})
+        state = self._read_state()
+        self.assertEqual(
+            state["fallback"], "deepseek",
+            "未显式传 fallback → 应从 existing 继承（避免漏传关键字时误清）",
+        )

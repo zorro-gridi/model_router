@@ -146,7 +146,12 @@ class SessionStateStore:
             #   statusline 用来叠加 override + fallback 提示（规范 v2 §4）。
         )
         for key in optional_fields:
-            if key in kwargs and kwargs[key] is not None:
+            if key in kwargs:
+                # 显式传入（包括 None = 明确清除）→ 直接写。
+                # 2026-06-18 修复：旧逻辑 `kwargs[key] is not None` 会把
+                # fallback=None（sticky 已被 health_checker 清除）误跳过，
+                # 转而从 existing 继承 stale 值，导致 statusline 永久误显
+                # fallback 标签（详见 hooks.md § sticky 归因错误记录）。
                 new_data[key] = kwargs[key]
             elif key in existing:
                 # 未显式传入时从 existing 继承——避免 write() 调用方漏传
