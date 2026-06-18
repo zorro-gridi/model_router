@@ -2417,6 +2417,11 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # 供 statusline 第三行准确显示当前使用的模型。
         actual_route_model = model  # sticky swap 后的 model
 
+        # 2026-06-18 statusline v2 元数据：fallback 触发前的 route_model +
+        # override 失效标记。默认空/false；仅当下方 fallback 分支命中时才覆盖。
+        pre_fallback_route_model: str | None = None
+        override_degraded: bool = False
+
         # 2026-06-17：埋点最终生效的请求耗时。默认 = 主模型最后一次耗时；
         # fallback 成功时会被覆盖为 fb_latency（fallback 分支 :2429）。
         effective_latency: dict = {"ttfb_ms": None, "total_ms": 0}
@@ -2443,6 +2448,15 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                 f"切换到备用 {fb_model} [{fb_base}]"
             )
             fallback_invoked = True
+            # ── 2026-06-18 statusline v2：记录 fallback 前的 route_model ──
+            # `model` 是 sticky swap 后的最终候选（即 proxy 本想跑的 model，
+            # 可能是 override model 或 stage default model），不是 stage_model()。
+            # statusline 用来在 fallback 标签里回指"原想跑的 model"，避免用
+            # stage default model 误指代。仅在本请求触发 fallback 时记一次。
+            pre_fallback_route_model = model
+            # override 失效标记：用户明确指定了 override model，本轮却因 provider
+            # 不可用触发了 fallback。statusline 据此叠加 override→fallback 提示。
+            override_degraded = bool(model_override)
             # ── 写入 sticky fallback：主 provider 已确认不可用 ──
             # 在发起 fallback 请求**之前**就写入 sticky，原因：
             #   1. 并发请求：避免多个并行请求都先尝试失败的主 provider
@@ -2609,6 +2623,9 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                         route_model=actual_route_model,
                         task_complexity=complexity_label,
                         fallback=read_fallback(),
+                        # 2026-06-18 statusline v2：override→fallback 冲突显示
+                        pre_fallback_route_model=pre_fallback_route_model,
+                        override_degraded=override_degraded,
                     )
                 except Exception as _state_exc:
                     log.warning(

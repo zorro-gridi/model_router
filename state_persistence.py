@@ -135,6 +135,15 @@ class SessionStateStore:
             "route_model",      # 当前任务路由到的最终模型（proxy 写入）
             "task_complexity",  # 任务复杂度标签（proxy 写入）
             "current_prompt_id",  # V1.3 §4.2 当前 prompt ID（stage_detector 写入）
+            # ── 2026-06-18 statusline v2：override→fallback 显示冲突 ──
+            "pre_fallback_route_model",
+            #   fallback 触发前的 route_model（sticky swap 后、fb_model 覆盖前）。
+            #   statusline 用来在 fallback 标签里回指"原想跑的 model"，
+            #   避免用 stage default model 误指代。proxy 端在 fallback 命中时写入。
+            "override_degraded",
+            #   bool。True = model_override 非空 + 本轮 fallback 被激活，
+            #   即"用户指定的 override model 不可用、proxy 已切到备用 provider"。
+            #   statusline 用来叠加 override + fallback 提示（规范 v2 §4）。
         )
         for key in optional_fields:
             if key in kwargs and kwargs[key] is not None:
