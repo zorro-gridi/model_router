@@ -173,6 +173,12 @@ def _find_project_root(start: Path, session_id: str | None = None) -> Path:
     # 1. If session_id is available, walk up looking for an existing per-session
     #    file.  Its parent directory IS the project-root anchor.
     if session_id:
+        # Priority 0: session anchor file (survives cwd drift)
+        from hooks.compact.utils import read_session_anchor
+        anchored = read_session_anchor(session_id)
+        if anchored is not None:
+            return anchored
+
         anchor_p = start
         for _ in range(20):
             claude_dir = anchor_p / ".claude"
@@ -285,6 +291,13 @@ def _ensure_session_stage(session_id: str, cwd: str | Path) -> str:
         stage_path.parent.mkdir(parents=True, exist_ok=True)
         stage_path.write_text("default\n")
         log("INFO", f"初始化 stage_{session_id} = default → {stage_path}")
+        # 锚点：首次 stage 落盘时同步写入，后续 prompt 直接命中 Priority 0
+        try:
+            from hooks.compact.utils import write_session_anchor
+            _pr = _find_project_root(Path(cwd) if isinstance(cwd, str) else cwd, session_id)
+            write_session_anchor(session_id, _pr, Path(cwd) if isinstance(cwd, str) else cwd)
+        except Exception:
+            pass  # 静默吞错 — 锚点写入不能阻塞 stage 落盘
     # 始终刷新 active_session 指针（存储完整路径，多 session 时最后活跃的获胜）
     HOOK_DIR.mkdir(parents=True, exist_ok=True)
     ACTIVE_SESSION_FILE.write_text(str(stage_path))

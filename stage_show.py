@@ -114,6 +114,12 @@ def _find_project_root(start: Path, session_id: str | None = None) -> Path:
     p = start
 
     if session_id:
+        # Priority 0: session anchor file (survives cwd drift)
+        from hooks.compact.utils import read_session_anchor
+        anchored = read_session_anchor(session_id)
+        if anchored is not None:
+            return anchored
+
         anchor_p = start
         for _ in range(20):
             claude_dir = anchor_p / ".claude"
