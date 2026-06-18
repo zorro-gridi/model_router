@@ -1,13 +1,14 @@
 """
-test_integration_thinking_strip.py — 集成测试：thinking 降级方案端到端验证
-=============================================================================
+test_integration_thinking_strip.py — 集成测试：三层 thinking 降级方案端到端验证
+===============================================================================
 
 测试目标：
   1. 模拟 Claude Extended Thinking 产生的真实消息历史（含 thinking 块）
-  2. 验证新方案下转发给非 Claude 模型（MiniMax/DeepSeek）时 thinking 块被剥离
-  3. 验证旧方案（不剥离）下同请求会触发上游 API 400 错误
-  4. 验证 Claude 模型原样透传
-  5. 验证响应端 thinking 块清洗
+  2. Tier 1 (claude-*)：全透传，thinking/redacted_thinking/顶层字段/请求头全部保留
+  3. Tier 2 (deepseek-*)：保留 thinking 块，剥离 redacted_thinking，pop 顶层字段，清 Anthropic 头
+  4. Tier 3 (MiniMax/其它)：全剥 — thinking+redacted_thinking 归零
+  5. 验证旧方案（不剥离）下同请求会触发上游 API 400 错误
+  6. 验证响应端 thinking 块清洗（DeepSeek 保留 thinking、MiniMax 全剥）
 
 与 test_thinking_strip.py 的区别：
   - test_thinking_strip.py：单元测试，直接调 _strip_thinking_blocks / _clean_headers_for_non_anthropic
@@ -207,10 +208,8 @@ def _count_thinking_blocks(body: dict) -> dict:
 #  第一部分：新方案核心验证 — 转发给非 Claude 模型时 thinking 被剥离
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestForwardToNonClaudeModel(unittest.TestCase):
-    """转发给 MiniMax / DeepSeek 等非 claude- 模型 → thinking 剥离生效。"""
-
-    # ── MiniMax ──
+class TestForwardToMiniMax(unittest.TestCase):
+    """转发给 MiniMax（tier 3：全剥）→ thinking/redacted_thinking 全部剥离。"""
 
     def test_minimax_strips_all_thinking_blocks(self):
         """MiniMax-M3：messages 中所有 thinking/redacted_thinking 块归零。"""
@@ -244,24 +243,72 @@ class TestForwardToNonClaudeModel(unittest.TestCase):
         self.assertNotIn("betas", cap.json,
                         "非 claude-* 模型不应保留顶层 betas 字段")
 
-    # ── DeepSeek ──
-
-    def test_deepseek_strips_all_thinking_blocks(self):
-        """DeepSeek 同样剥离所有 thinking 块。"""
-        cap = _capture_forward("deepseek-v4-pro",
-                               env_override={"MINIMAX_API_KEY": "sk-deepseek-test"})
-        counts = _count_thinking_blocks(cap.json)
-        self.assertEqual(counts["total"], 0,
-                        f"转发 DeepSeek 的请求体仍含 {counts['total']} 个 thinking 块")
-
-    # ── 请求头 ──
-
-    def test_non_claude_headers_stripped(self):
-        """非 claude-* 模型：anthropic-beta 请求头被剥离。"""
+    def test_minimax_headers_stripped(self):
+        """MiniMax-M3：anthropic-beta/anthropic-version 请求头被剥离。"""
         cap = _capture_forward("MiniMax-M3",
                                env_override={"MINIMAX_API_KEY": "sk-minimax-test"})
         self.assertFalse(cap.has_header("anthropic-beta"),
-                         "非 claude-* 模型不应带 anthropic-beta 头")
+                         "MiniMax 不应带 anthropic-beta 头")
+        self.assertFalse(cap.has_header("anthropic-version"),
+                         "MiniMax 不应带 anthropic-version 头")
+
+
+class TestForwardToDeepSeek(unittest.TestCase):
+    """转发给 DeepSeek（tier 2：保留 thinking，仅剥 redacted_thinking）。
+
+    DeepSeek API 文档明确支持 type='thinking' 块（遵循 Anthropic 兼容规范），
+    但不支持 type='redacted_thinking'。因此：
+      - thinking 块原样保留
+      - redacted_thinking 块剥离
+      - 顶层 thinking/betas 仍 pop（DeepSeek 忽略这两个字段）
+      - anthropic-* 请求头仍剥离（DeepSeek 不需要）
+    """
+
+    def test_deepseek_preserves_thinking_blocks(self):
+        """DeepSeek：type='thinking' 块保留（DeepSeek 兼容）。"""
+        cap = _capture_forward("deepseek-v4-pro",
+                               env_override={"MINIMAX_API_KEY": "sk-deepseek-test"})
+        counts = _count_thinking_blocks(cap.json)
+        # thinking 保留，redacted 已剥
+        self.assertGreater(counts["thinking"], 0,
+                          f"DeepSeek 应保留 thinking 块，实际 thinking={counts['thinking']}")
+        self.assertEqual(counts["redacted_thinking"], 0,
+                        f"DeepSeek 应剥离 redacted_thinking，实际={counts['redacted_thinking']}")
+
+    def test_deepseek_strips_only_redacted_thinking(self):
+        """DeepSeek：tool_result 内嵌的 thinking 保留，redacted 剥离。"""
+        cap = _capture_forward("deepseek-v4-pro",
+                               env_override={"MINIMAX_API_KEY": "sk-deepseek-test"})
+        # 检查 assistant（第二条消息，索引 2，第二轮回复）的状态
+        # _BODY_WITH_THINKING 的 messages[2] 是 tool_result，messages[3] 是 assistant
+        assistant_msg = cap.json["messages"][3]
+        self.assertEqual(assistant_msg["role"], "assistant")
+        types_present = set()
+        for b in assistant_msg.get("content", []):
+            if isinstance(b, dict):
+                types_present.add(b.get("type"))
+        self.assertIn("thinking", types_present,
+                      "DeepSeek 应保留 thinking 块")
+        self.assertNotIn("redacted_thinking", types_present,
+                         "DeepSeek 应剥离 redacted_thinking 块")
+
+    def test_deepseek_pops_thinking_and_betas_top_level(self):
+        """DeepSeek：顶层 thinking/betas 字段仍被 pop（DeepSeek 忽略这些字段）。"""
+        cap = _capture_forward("deepseek-v4-pro",
+                               env_override={"MINIMAX_API_KEY": "sk-deepseek-test"})
+        self.assertNotIn("thinking", cap.json,
+                        "DeepSeek 不应保留顶层 thinking（会被忽略）")
+        self.assertNotIn("betas", cap.json,
+                        "DeepSeek 不应保留顶层 betas（会被忽略）")
+
+    def test_deepseek_headers_stripped(self):
+        """DeepSeek：anthropic-beta/anthropic-version 请求头被剥离。"""
+        cap = _capture_forward("deepseek-v4-pro",
+                               env_override={"MINIMAX_API_KEY": "sk-deepseek-test"})
+        self.assertFalse(cap.has_header("anthropic-beta"),
+                         "DeepSeek 不应带 anthropic-beta 头")
+        self.assertFalse(cap.has_header("anthropic-version"),
+                         "DeepSeek 不应带 anthropic-version 头")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -475,17 +522,15 @@ class Test400ErrorReproduction(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestResponseSideThinkingStrip(unittest.TestCase):
-    """非 claude-* 模型上游返回的 thinking 块被清洗，防止进入 CC 会话历史。"""
+    """响应端 thinking 清洗：三层策略分别验证。"""
 
-    def test_strips_thinking_from_response(self):
-        """上游返回含 thinking/redacted_thinking 块的响应 → 清洗后只剩 text。"""
-        cap = _capture_forward("MiniMax-M3",
-                               env_override={"MINIMAX_API_KEY": "sk-minimax-test"})
-        # 截获的请求已验证无 thinking，这里关注响应清洗
-        # 直接测 _strip_thinking_from_response 函数
+    # ── MiniMax（tier 3）全剥 ──
+
+    def test_minimax_strips_all_thinking_from_response(self):
+        """MiniMax 响应：thinking + redacted_thinking 全剥。"""
         from proxy import _strip_thinking_from_response
 
-        resp_with_thinking = {
+        resp = {
             "id": "msg_001",
             "content": [
                 {"type": "thinking", "thinking": "upstream internal reasoning",
@@ -497,16 +542,47 @@ class TestResponseSideThinkingStrip(unittest.TestCase):
             "usage": {"input_tokens": 500, "output_tokens": 200},
         }
 
-        cleaned = _strip_thinking_from_response(json.dumps(resp_with_thinking).encode())
+        cleaned = _strip_thinking_from_response(json.dumps(resp).encode(),
+                                                 keep_thinking=False)
         parsed = json.loads(cleaned)
 
         self.assertEqual(len(parsed["content"]), 1,
-                         "清洗后应只剩 text block")
+                         "MiniMax 清洗后应只剩 text block")
         self.assertEqual(parsed["content"][0]["type"], "text")
         self.assertEqual(parsed["content"][0]["text"], "visible reply text")
-        # 其他字段不受影响
         self.assertEqual(parsed["stop_reason"], "end_turn")
         self.assertEqual(parsed["usage"]["input_tokens"], 500)
+
+    # ── DeepSeek（tier 2）保留 thinking，仅剥 redacted ──
+
+    def test_deepseek_preserves_thinking_in_response(self):
+        """DeepSeek 响应：保留 thinking 块，仅剥离 redacted_thinking。"""
+        from proxy import _strip_thinking_from_response
+
+        resp = {
+            "id": "msg_002",
+            "content": [
+                {"type": "thinking", "thinking": "deepseek internal reasoning",
+                 "signature": "sig_ds"},
+                {"type": "text", "text": "visible reply"},
+                {"type": "redacted_thinking", "data": "<redacted>"},
+            ],
+            "stop_reason": "end_turn",
+        }
+
+        cleaned = _strip_thinking_from_response(json.dumps(resp).encode(),
+                                                 keep_thinking=True)
+        parsed = json.loads(cleaned)
+
+        # thinking + text 保留，redacted 剥离
+        self.assertEqual(len(parsed["content"]), 2)
+        types = [b["type"] for b in parsed["content"]]
+        self.assertIn("thinking", types, "DeepSeek 响应应保留 thinking 块")
+        self.assertIn("text", types)
+        self.assertNotIn("redacted_thinking", types,
+                         "DeepSeek 响应应剥离 redacted_thinking")
+
+    # ── 通用 ──
 
     def test_response_without_thinking_untouched(self):
         """不含 thinking 块的正常响应不做任何修改。"""

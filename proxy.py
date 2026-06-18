@@ -1596,43 +1596,56 @@ def _inject_sid_to_response(resp_body: bytes, sid: str) -> bytes:
 _THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")
 
 
-def _strip_thinking_blocks(body: dict) -> tuple[int, int]:
+def _strip_thinking_blocks(body: dict, *, keep_thinking: bool = False) -> tuple[int, int]:
     """
     从请求体的所有 messages[].content[] 里删除 thinking / redacted_thinking block。
 
-    策略：
-      非 Anthropic 模型（MiniMax、DeepSeek 等）不认识 type: "thinking" content block，
-      收到后直接 400 "the content[].thinking in the thinking mode must be passed back
-      to the API"。在转发前统一剥离，避免 API 报错中断 Claude Code 会话。
+    策略（2026-06-18 按模型个性化）：
+      - MiniMax 等：不认识 type: "thinking"，收到直接 400 → 两者全剥
+      - DeepSeek：文档明确支持 type='thinking'，但不支持 type='redacted_thinking'
+        → keep_thinking=True 时仅剥 redacted_thinking，保留 thinking 块原样透传。
+        记忆记录：DeepSeek 对 thinking block 格式敏感，将 type=thinking 转为 text
+        会破坏内部校验，正确做法是保留 thinking block、只清理顶层 thinking 参数。
 
-    同时递归清理 tool_result 内嵌 content[] 中可能存在的 thinking 块。
+    同时递归清理 tool_result 内嵌 content[] 中可能存在的目标类型块。
 
     content 为字符串时跳过（无 block 可剥）;
-    content 为列表时过滤掉这两个 type 的 dict;
+    content 为列表时过滤掉目标 type 的 dict;
     过滤后保留空列表（避免删整条 message 破坏 tool_result 顺序）。
+
+    Args:
+        body: 请求体 dict，原地修改。
+        keep_thinking: True 时保留 type='thinking' 块，仅剥 redacted_thinking
+                       （DeepSeek 策略）；默认 False 两者全剥（MiniMax 策略）。
 
     Returns:
         (thinking_stripped, redacted_stripped) — 计数供日志使用。
-      参数 body 被原地修改。
     """
     _stripped = _redacted = 0
 
+    # 按 keep_thinking 决定要剥的类型集
+    _strip_types: frozenset = (
+        frozenset({"redacted_thinking"}) if keep_thinking
+        else frozenset(_THINKING_BLOCK_TYPES)
+    )
+
     def _filter_blocks(blocks: list) -> tuple[list, int, int]:
-        """递归过滤 thinking 块，返回 (filtered, stripped, redacted)。"""
+        """递归过滤目标类型块，返回 (filtered, stripped, redacted)。"""
         out: list = []
         s = r = 0
         for block in blocks:
             if not isinstance(block, dict):
                 out.append(block)
                 continue
-            if block.get("type") in _THINKING_BLOCK_TYPES:
-                if block.get("type") == "thinking":
+            bt = block.get("type")
+            if bt in _strip_types:
+                if bt == "thinking":
                     s += 1
                 else:
                     r += 1
             else:
-                # tool_result 内部 content[] 可能嵌套 thinking 块 → 递归清理
-                if block.get("type") == "tool_result" and isinstance(block.get("content"), list):
+                # tool_result 内部 content[] 可能嵌套目标类型块 → 递归清理
+                if bt == "tool_result" and isinstance(block.get("content"), list):
                     nested_content, ns, nr = _filter_blocks(block["content"])
                     s += ns
                     r += nr
@@ -1648,20 +1661,28 @@ def _strip_thinking_blocks(body: dict) -> tuple[int, int]:
         filtered, s, r = _filter_blocks(content)
         _stripped += s
         _redacted += r
-        # 若有任何 thinking 被剥（含递归修改 tool_result 内嵌）→ 落回 filtered
+        # 若有任何目标类型被剥（含递归修改 tool_result 内嵌）→ 落回 filtered
         if s or r:
             msg["content"] = filtered
     return _stripped, _redacted
 
 
-def _strip_thinking_from_response(resp_body: bytes) -> bytes:
+def _strip_thinking_from_response(resp_body: bytes, *, keep_thinking: bool = False) -> bytes:
     """
     从上游 Anthropic Messages 响应体顶层 content[] 中删除 thinking block。
 
     非原生端点（DeepSeek/MiniMax）偶尔在 Anthropic 协议响应中返回 thinking block。
     若不剥离，CC 会将其存入会话历史——下一轮请求携带 thinking block → 400 死循环。
+
+    keep_thinking=True（DeepSeek 策略）：只剥 redacted_thinking，保留 thinking 块。
+    keep_thinking=False（MiniMax 策略）：两者全剥。
+
     解析失败或 content 不是 list 时原样返回。
     """
+    _strip_types: frozenset = (
+        frozenset({"redacted_thinking"}) if keep_thinking
+        else frozenset(_THINKING_BLOCK_TYPES)
+    )
     try:
         data = json.loads(resp_body)
         if not isinstance(data, dict):
@@ -1672,7 +1693,7 @@ def _strip_thinking_from_response(resp_body: bytes) -> bytes:
         before = len(content)
         data["content"] = [
             b for b in content
-            if not (isinstance(b, dict) and b.get("type") in _THINKING_BLOCK_TYPES)
+            if not (isinstance(b, dict) and b.get("type") in _strip_types)
         ]
         if len(data["content"]) != before:
             return json.dumps(data).encode()
@@ -1777,32 +1798,47 @@ def forward_request(
     original_model = body_json.get("model", "unknown")
     body_json["model"] = target_model
 
-    # ── 防御式：thinking 字段降级（非 Anthropic 模型）──
+    # ── 防御式：thinking 字段降级（按模型个性化）──
     #
-    # 策略（2026-06-18 用户方案）：
-    #   1. 删除顶层 thinking 参数（阻止上游进入 extended thinking 模式）
-    #   2. 删除顶层 betas 参数（interleaved-thinking 等 beta 头对应项）
-    #   3. 调用 _strip_thinking_blocks 递归剥离 messages[].content[] 中所有
-    #      type: "thinking" / "redacted_thinking" block（含 tool_result 内嵌）
+    # 策略（2026-06-18 三层个性化）：
+    #   判定以 target_model 前缀为准，三档处理：
     #
-    # 根因：非 Anthropic 模型（MiniMax、DeepSeek 等）看到历史中的 thinking block
-    #   隐式进入 thinking mode，但顶层 thinking 已被移除 → 400
-    #   "the content[].thinking in the thinking mode must be passed back to the API"。
+    #   ① claude-* — 原生 Anthropic 模型，全透传
+    #     · 不修改 body、不剥任何 block（signature 校验依赖完整性）
+    #     · 保留所有顶层字段 + 请求头
     #
-    # 判定：以 target_model 是否以 "claude-" 前缀为准——所有原生 Anthropic 模型的
-    #   命名都符合该前缀，且无论走哪个 upstream 域名（如通过代理 / 镜像），只要
-    #   target_model 是 claude-*，就视为 Anthropic 模型，原样透传。
-    #   原生 Anthropic 端点的 signature 校验是真实的，删除 thinking block 会破坏
-    #   签名验证导致 400，因此 claude-* 模型不做任何降级。
-    is_anthropic_model = target_model.startswith("claude-")
-    if not is_anthropic_model:
+    #   ② deepseek-* — Anthropic 协议兼容，显式支持 type='thinking'
+    #     （文档: /websites/api-docs_deepseek, "Message Fields"）
+    #     但不支持 type='redacted_thinking'
+    #     → 保留 thinking 块，仅剥 redacted_thinking
+    #     → pop 顶层 thinking / betas（DeepSeek 忽略这两个字段）
+    #     → 清洗 anthropic-beta / anthropic-version 请求头
+    #     → 响应端保留 thinking 块，仅剥 redacted_thinking
+    #
+    #   ③ 其它（MiniMax-M3 等）— 不认识 thinking block
+    #     → thinking + redacted_thinking 两者全剥
+    #     → pop 顶层 thinking / betas
+    #     → 清洗 Anthropic 专属头
+    #     → 响应端两者全剥
+    #
+    #   根因：MiniMax 不认识 type: "thinking"，收到后进入 thinking mode
+    #     但顶层 thinking 已被移除 → 400
+    #     "the content[].thinking in the thinking mode must be passed back
+    #      to the API"。
+    #   DeepSeek 支持 thinking 块但不支持 redacted_thinking，保留 thinking
+    #     避免了"将 type=thinking 转为 text 破坏内部校验"的坑（历史记忆）。
+    is_claude = target_model.startswith("claude-")
+    is_deepseek = target_model.startswith("deepseek-")
+    if not is_claude:
         body_json.pop("thinking", None)
         body_json.pop("betas", None)
-        _stripped, _redacted = _strip_thinking_blocks(body_json)
+        _keep = is_deepseek  # DeepSeek → 保留 thinking，仅剥 redacted
+        _stripped, _redacted = _strip_thinking_blocks(body_json, keep_thinking=_keep)
         if _stripped or _redacted:
             log.info(
                 f"thinking降级: 剥离 thinking={_stripped} redacted={_redacted} "
-                f"目标={target_model} provider={target_base}"
+                f"目标={target_model} provider={target_base} "
+                f"策略={'DeepSeek(保留thinking)' if _keep else '全剥'}"
             )
 
     if protocol == "openai":
@@ -1854,10 +1890,11 @@ def forward_request(
         # Anthropic 用 x-api-key + anthropic-version
         # 非 claude-* 模型：剥离 anthropic-beta / anthropic-version 等专属头
         src_headers = (
-            headers if is_anthropic_model
+            headers if is_claude
             else _clean_headers_for_non_anthropic(headers)
         )
-        fwd_headers["anthropic-version"] = src_headers.get("anthropic-version", "2023-06-01")
+        if is_claude:
+            fwd_headers["anthropic-version"] = src_headers.get("anthropic-version", "2023-06-01")
         fwd_headers["x-api-key"] = api_key
         # 透传 beta 头（CC 会附加）
         if "anthropic-beta" in src_headers:
@@ -1874,9 +1911,10 @@ def forward_request(
             resp_headers = dict(resp.headers)
             if protocol == "openai":
                 resp_body = _from_openai_response(resp_body)
-            elif protocol == "anthropic" and not is_anthropic_model:
+            elif protocol == "anthropic" and not is_claude:
                 # 防御：剥离上游响应中的 thinking block（防止进入 CC 会话历史死循环）
-                resp_body = _strip_thinking_from_response(resp_body)
+                # DeepSeek → 只剥 redacted_thinking；MiniMax 等 → 两者全剥
+                resp_body = _strip_thinking_from_response(resp_body, keep_thinking=is_deepseek)
             _latency["total_ms"] = int((time.time() - _t0) * 1000)
             return resp.status, resp_headers, resp_body, _latency
     except urllib.error.HTTPError as e:
