@@ -86,10 +86,11 @@ _TICK_SECONDS = 5
 # 检测周窗口重置（end_time 变化）或状态恢复（exhausted→normal）。
 _QUOTA_STATE_LOCK = threading.Lock()
 _QUOTA_STATE: dict = {
-    "last_weekly_end_time": None,   # int|None: 上次的 weekly_end_time (ms unix)
-    "last_weekly_status": None,     # int|None: 上次的 current_weekly_status
-    "last_check_ts": 0.0,           # float: 上次 API 调用时间
-    "last_weekly_remains_time": None,  # int|None: 上次的 weekly_remains_time (ms)
+    "last_weekly_end_time": None,     # int|None: 上次的 weekly_end_time (ms unix)
+    "last_weekly_status": None,       # int|None: 上次的 current_weekly_status
+    "last_interval_status": None,     # int|None: 上次的 current_interval_status
+    "last_check_ts": 0.0,             # float: 上次 API 调用时间
+    "last_weekly_remains_time": None, # int|None: 上次的 weekly_remains_time (ms)
 }
 
 
@@ -136,6 +137,7 @@ def clear_quota_state() -> None:
         _QUOTA_STATE = {
             "last_weekly_end_time": None,
             "last_weekly_status": None,
+            "last_interval_status": None,
             "last_check_ts": 0.0,
             "last_weekly_remains_time": None,
         }
@@ -376,64 +378,91 @@ def _quota_recovery_check() -> None:
 
     weekly_end_time = plan.get("weekly_end_time")
     weekly_status = plan.get("current_weekly_status")
+    interval_status = plan.get("current_interval_status")
     weekly_remains_time = plan.get("weekly_remains_time")
 
-    # 读取旧状态，更新新状态
+    # 读取旧状态
     with _QUOTA_STATE_LOCK:
         prev_end_time = _QUOTA_STATE["last_weekly_end_time"]
-        prev_status = _QUOTA_STATE["last_weekly_status"]
+        prev_weekly = _QUOTA_STATE["last_weekly_status"]
+        prev_interval = _QUOTA_STATE["last_interval_status"]
 
-        recovered = False
+        # ── 核心判断：minimax 是否"可路由" ──
+        # minimax 有双重配额限制（5h 滚动窗口 + 周窗口），必须同时可用才能路由。
+        # recovery = 上次不可路由 → 本次可路由
+        routable = (
+            interval_status == 1 and weekly_status == 1
+        )
+
+        # 首次启动（无历史基线）：仅记录，不触发
+        is_first_run = prev_weekly is None or prev_interval is None
+
+        was_routable = (
+            prev_interval == 1 and prev_weekly == 1
+        ) if not is_first_run else None
+
+        recovered = was_routable is False and routable is True
+
         reasons: list[str] = []
-
-        # 触发 A：周窗口重置（weekly_end_time 变化）
-        if (
-            prev_end_time is not None
-            and weekly_end_time is not None
-            and weekly_end_time != prev_end_time
-        ):
-            recovered = True
-            reasons.append(
-                f"weekly_end_time changed: {prev_end_time} → {weekly_end_time}"
+        if recovered:
+            # 列出具体哪些窗口恢复了
+            interval_recovered = (
+                prev_interval is not None and prev_interval != 1 and interval_status == 1
             )
-
-        # 触发 B：状态从耗尽(2)恢复为正常(1)
-        # status=3 是 saturated/unused（饱和/未使用），不是耗尽，
-        # 从 3→1 不表示"恢复"，只是不再饱和。
-        if (
-            prev_status is not None
-            and prev_status == 2
-            and weekly_status == 1
-        ):
-            recovered = True
-            reasons.append(f"weekly_status recovered: {prev_status} → {weekly_status}")
+            weekly_recovered = (
+                prev_weekly is not None and prev_weekly != 1 and weekly_status == 1
+            )
+            if weekly_end_time is not None and prev_end_time is not None and weekly_end_time != prev_end_time:
+                reasons.append(
+                    f"weekly_end_time changed: {prev_end_time} → {weekly_end_time}"
+                )
+            if interval_recovered:
+                reasons.append(
+                    f"interval_status recovered: {prev_interval} → {interval_status}"
+                )
+            if weekly_recovered:
+                reasons.append(
+                    f"weekly_status recovered: {prev_weekly} → {weekly_status}"
+                )
 
         # 更新跟踪状态
         _QUOTA_STATE["last_weekly_end_time"] = weekly_end_time
         _QUOTA_STATE["last_weekly_status"] = weekly_status
+        _QUOTA_STATE["last_interval_status"] = interval_status
         _QUOTA_STATE["last_weekly_remains_time"] = weekly_remains_time
 
     if recovered:
         log.warning(
-            f"minimax 配额已恢复 ({'; '.join(reasons)})，"
-            f"自动清除所有 minimax sticky fallback"
+            f"minimax 配额已恢复（5h+周双窗口均可用）"
+            + (f": {'; '.join(reasons)}" if reasons else "")
         )
         cleared = _clear_all_minimax_stickies()
         log.info(f"配额恢复 auto-clean: 已清除 {cleared} 个 minimax sticky 文件")
-    elif weekly_status == 2:
-        # 配额耗尽状态——记录剩余时间便于运维
-        remaining_s = (weekly_remains_time or 0) / 1000.0
-        remaining_h = remaining_s / 3600.0
+    elif routable and is_first_run:
+        # 首次启动且可路由——只记基线
         log.debug(
-            f"minimax 配额已耗尽 (weekly_status=2)，"
-            f"距周窗口重置约 {remaining_h:.1f}h"
+            f"配额恢复监控基线已记录: interval_status={interval_status}, "
+            f"weekly_status={weekly_status}, weekly_end_time={weekly_end_time}"
         )
-    elif prev_end_time is None:
-        # 首次启动，仅记录基线
-        log.debug(
-            f"配额恢复监控基线已记录: weekly_end_time={weekly_end_time}, "
-            f"weekly_status={weekly_status}"
-        )
+    elif not routable:
+        # 不可路由——记录哪些窗口被限制
+        parts: list[str] = []
+        if interval_status == 2:
+            parts.append("5h_window=exhausted")
+        elif interval_status == 3:
+            parts.append("5h_window=unused/saturated")
+        if weekly_status == 2:
+            remaining_s = (weekly_remains_time or 0) / 1000.0
+            parts.append(f"weekly=exhausted(reset_in_{remaining_s/3600:.1f}h)")
+        elif weekly_status == 3:
+            parts.append("weekly=unused/saturated")
+        if parts:
+            log.debug(f"minimax 不可路由: {', '.join(parts)}")
+        elif not is_first_run:
+            log.debug(
+                f"minimax 不可路由: interval_status={interval_status}, "
+                f"weekly_status={weekly_status}"
+            )
 
 
 def _clear_all_minimax_stickies() -> int:

@@ -3,12 +3,14 @@ test_quota_recovery.py — minimax 配额恢复监控 单元测试
 ========================================================
 
 覆盖：
-  A. _quota_recovery_check() 双重触发检测
-     - Trigger A: weekly_end_time 变化 → 周窗口重置
-     - Trigger B: current_weekly_status 从非 1 → 1（额度恢复）
+  A. _quota_recovery_check() 双窗口联合检测
+     - 双窗口均可用（interval≠2 AND weekly≠2）→ minimax 可路由
+     - 上次不可路由 → 本次可路由 → 触发恢复清除
+     - 仅一个窗口恢复（另一个仍耗尽）→ 不触发
      - 首次启动只记录基线，不触发
      - API 失败 → 静默跳过（fail-safe）
      - 无 API key → 跳过
+     - status=3(unused) 不阻塞路由
   B. _is_minimax_sticky() 判断
      - JSON minimax sticky → True
      - JSON deepseek sticky → False
@@ -45,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 def _make_api_response(
     weekly_end_time: int | None = None,
     weekly_status: int = 1,
+    interval_status: int = 1,
     weekly_remains_time: int = 18000 * 1000,  # 5h in ms
 ) -> dict:
     """构造 minimax /v1/token_plan/remains API 响应的 JSON dict。"""
@@ -52,8 +55,8 @@ def _make_api_response(
         "model_remains": [
             {
                 "model_name": "general",
-                "current_interval_status": 1,
-                "current_interval_remaining_percent": 50,
+                "current_interval_status": interval_status,
+                "current_interval_remaining_percent": 50 if interval_status == 1 else 0,
                 "current_weekly_status": weekly_status,
                 "current_weekly_remaining_percent": 50 if weekly_status == 1 else 0,
                 "weekly_end_time": weekly_end_time or int((time.time() + 86400) * 1000),
@@ -82,7 +85,11 @@ OLD_WEEKLY_END_TIME = 1781241600000
 # A. _quota_recovery_check() 双重触发 + 频率控制
 # ─────────────────────────────────────────────────────────────────────
 class QuotaRecoveryCheckTest(unittest.TestCase):
-    """_quota_recovery_check() 检测逻辑（mock API 调用）。"""
+    """_quota_recovery_check() 双窗口联合检测（mock API 调用）。
+
+    核心规则：minimax 可路由 ⇔ interval_status≠2 AND weekly_status≠2
+    恢复触发 = 上次不可路由 → 本次可路由
+    """
 
     def setUp(self):
         from health_checker import clear_quota_state as _clear
@@ -101,18 +108,21 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
         mock_resp.__exit__.return_value = False
         return patch("health_checker.urllib.request.urlopen", return_value=mock_resp)
 
-    def test_trigger_a_weekly_end_time_changed(self):
-        """weekly_end_time 变化 → 触发恢复清除。"""
+    def test_weekly_end_time_changed_triggers_recovery(self):
+        """周窗口重置（end_time 变化）+ 双窗口均可用 → 触发恢复。"""
         from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
 
-        # 先跑一次建立基线（旧窗口）
+        # 基线：5h 正常、周窗口耗尽（不可路由）
         with _QUOTA_STATE_LOCK:
             _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
             _QUOTA_STATE["last_weekly_status"] = 2
+            _QUOTA_STATE["last_interval_status"] = 1
             _QUOTA_STATE["last_check_ts"] = 0.0
 
         new_end_time = OLD_WEEKLY_END_TIME + 604800000  # +7 天
-        response = _make_api_response(weekly_end_time=new_end_time, weekly_status=1)
+        response = _make_api_response(
+            weekly_end_time=new_end_time, weekly_status=1, interval_status=1,
+        )
 
         with self._patch_api(response), \
              patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}), \
@@ -120,21 +130,21 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
             _quota_recovery_check()
 
         mock_clear.assert_called_once()
-        with _QUOTA_STATE_LOCK:
-            self.assertEqual(_QUOTA_STATE["last_weekly_end_time"], new_end_time)
-            self.assertEqual(_QUOTA_STATE["last_weekly_status"], 1)
 
-    def test_trigger_b_status_recovered(self):
-        """current_weekly_status 从 2→1 → 触发恢复清除。"""
+    def test_weekly_status_recovered_triggers_recovery(self):
+        """周窗口 2→1（5h 本就正常）→ 从不完全可用变为完全可用 → 触发恢复。"""
         from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
 
         same_end_time = OLD_WEEKLY_END_TIME
         with _QUOTA_STATE_LOCK:
             _QUOTA_STATE["last_weekly_end_time"] = same_end_time
-            _QUOTA_STATE["last_weekly_status"] = 2  # 之前耗尽
+            _QUOTA_STATE["last_weekly_status"] = 2   # 周窗口耗尽
+            _QUOTA_STATE["last_interval_status"] = 1  # 5h 正常
             _QUOTA_STATE["last_check_ts"] = 0.0
 
-        response = _make_api_response(weekly_end_time=same_end_time, weekly_status=1)  # 现在恢复
+        response = _make_api_response(
+            weekly_end_time=same_end_time, weekly_status=1, interval_status=1,
+        )
 
         with self._patch_api(response), \
              patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}), \
@@ -143,17 +153,107 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
 
         mock_clear.assert_called_once()
 
+    def test_interval_status_recovered_triggers_recovery(self):
+        """5h 窗口 2→1（周本就正常）→ 触发恢复。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
+
+        same_end_time = OLD_WEEKLY_END_TIME
+        with _QUOTA_STATE_LOCK:
+            _QUOTA_STATE["last_weekly_end_time"] = same_end_time
+            _QUOTA_STATE["last_weekly_status"] = 1   # 周正常
+            _QUOTA_STATE["last_interval_status"] = 2  # 5h 耗尽
+            _QUOTA_STATE["last_check_ts"] = 0.0
+
+        response = _make_api_response(
+            weekly_end_time=same_end_time, weekly_status=1, interval_status=1,
+        )
+
+        with self._patch_api(response), \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}), \
+             patch("health_checker._clear_all_minimax_stickies", return_value=1) as mock_clear:
+            _quota_recovery_check()
+
+        mock_clear.assert_called_once()
+
+    def test_both_windows_recovered_triggers_recovery(self):
+        """双窗口同时从耗尽恢复（interval 2→1 + weekly 2→1）→ 触发恢复。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
+
+        with _QUOTA_STATE_LOCK:
+            _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
+            _QUOTA_STATE["last_weekly_status"] = 2
+            _QUOTA_STATE["last_interval_status"] = 2  # 双窗口均耗尽
+            _QUOTA_STATE["last_check_ts"] = 0.0
+
+        response = _make_api_response(
+            weekly_end_time=OLD_WEEKLY_END_TIME, weekly_status=1, interval_status=1,
+        )
+
+        with self._patch_api(response), \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}), \
+             patch("health_checker._clear_all_minimax_stickies", return_value=5) as mock_clear:
+            _quota_recovery_check()
+
+        mock_clear.assert_called_once()
+
+    def test_only_interval_recovered_no_trigger(self):
+        """仅 5h 恢复，周窗口仍耗尽 → 不可路由 → 不触发。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
+
+        with _QUOTA_STATE_LOCK:
+            _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
+            _QUOTA_STATE["last_weekly_status"] = 2   # 周仍耗尽
+            _QUOTA_STATE["last_interval_status"] = 2  # 5h 耗尽
+            _QUOTA_STATE["last_check_ts"] = 0.0
+
+        # 仅 5h 恢复，weekly 仍耗尽
+        response = _make_api_response(
+            weekly_end_time=OLD_WEEKLY_END_TIME, weekly_status=2, interval_status=1,
+        )
+
+        with self._patch_api(response), \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}), \
+             patch("health_checker._clear_all_minimax_stickies") as mock_clear:
+            _quota_recovery_check()
+
+        mock_clear.assert_not_called()
+
+    def test_only_weekly_recovered_no_trigger(self):
+        """仅周窗口恢复，5h 仍耗尽 → 不可路由 → 不触发。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
+
+        with _QUOTA_STATE_LOCK:
+            _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
+            _QUOTA_STATE["last_weekly_status"] = 2   # 周耗尽
+            _QUOTA_STATE["last_interval_status"] = 2  # 5h 耗尽
+            _QUOTA_STATE["last_check_ts"] = 0.0
+
+        # 仅 weekly 恢复，5h 仍耗尽
+        response = _make_api_response(
+            weekly_end_time=OLD_WEEKLY_END_TIME, weekly_status=1, interval_status=2,
+        )
+
+        with self._patch_api(response), \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}), \
+             patch("health_checker._clear_all_minimax_stickies") as mock_clear:
+            _quota_recovery_check()
+
+        mock_clear.assert_not_called()
+
     def test_no_trigger_same_state(self):
-        """weekly_end_time 和 status 都不变 → 不触发。"""
+        """双窗口状态都不变 → 不触发。"""
         from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
 
         same_end_time = OLD_WEEKLY_END_TIME
         with _QUOTA_STATE_LOCK:
             _QUOTA_STATE["last_weekly_end_time"] = same_end_time
             _QUOTA_STATE["last_weekly_status"] = 1
+            _QUOTA_STATE["last_interval_status"] = 1
             _QUOTA_STATE["last_check_ts"] = 0.0
 
-        response = _make_api_response(weekly_end_time=same_end_time, weekly_status=1)
+        response = _make_api_response(
+            weekly_end_time=same_end_time, weekly_status=1, interval_status=1,
+        )
 
         with self._patch_api(response), \
              patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}), \
@@ -166,10 +266,10 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
         """首次启动（无历史基线）→ 仅记录基线，不触发。"""
         from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
 
-        # clear_quota_state 在 setUp 已调用
         with _QUOTA_STATE_LOCK:
             self.assertIsNone(_QUOTA_STATE["last_weekly_end_time"])
             self.assertIsNone(_QUOTA_STATE["last_weekly_status"])
+            self.assertIsNone(_QUOTA_STATE["last_interval_status"])
 
         response = _make_api_response()
 
@@ -179,10 +279,26 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
             _quota_recovery_check()
 
         mock_clear.assert_not_called()
-        # 基线已记录
         with _QUOTA_STATE_LOCK:
             self.assertIsNotNone(_QUOTA_STATE["last_weekly_end_time"])
             self.assertEqual(_QUOTA_STATE["last_weekly_status"], 1)
+            self.assertEqual(_QUOTA_STATE["last_interval_status"], 1)
+
+    def test_first_run_already_exhausted_no_trigger(self):
+        """首次启动且已耗尽（双窗口均为 2）→ 只记录基线，不触发。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
+
+        response = _make_api_response(weekly_status=2, interval_status=2)
+
+        with self._patch_api(response), \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}), \
+             patch("health_checker._clear_all_minimax_stickies") as mock_clear:
+            _quota_recovery_check()
+
+        mock_clear.assert_not_called()
+        with _QUOTA_STATE_LOCK:
+            self.assertEqual(_QUOTA_STATE["last_weekly_status"], 2)
+            self.assertEqual(_QUOTA_STATE["last_interval_status"], 2)
 
     def test_api_failure_silent_skip(self):
         """API 调用失败 → 静默跳过，不触发清除。"""
@@ -191,6 +307,7 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
         with _QUOTA_STATE_LOCK:
             _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
             _QUOTA_STATE["last_weekly_status"] = 2
+            _QUOTA_STATE["last_interval_status"] = 1
             _QUOTA_STATE["last_check_ts"] = 0.0
 
         with self._patch_api(None, fail_with=OSError("network unreachable")), \
@@ -199,7 +316,6 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
             _quota_recovery_check()
 
         mock_clear.assert_not_called()
-        # 状态不变
         with _QUOTA_STATE_LOCK:
             self.assertEqual(_QUOTA_STATE["last_weekly_end_time"], OLD_WEEKLY_END_TIME)
             self.assertEqual(_QUOTA_STATE["last_weekly_status"], 2)
@@ -219,16 +335,14 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
         """QUOTA_CHECK_INTERVAL 内不重复调 API。"""
         from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
 
-        # 设置刚检查完
         with _QUOTA_STATE_LOCK:
-            _QUOTA_STATE["last_check_ts"] = time.time() - 5  # 5s 前——小于 QUOTA_CHECK_INTERVAL=60
+            _QUOTA_STATE["last_check_ts"] = time.time() - 5
 
         response = _make_api_response()
         with self._patch_api(response) as mock_urlopen, \
              patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}):
             _quota_recovery_check()
 
-        # urlopen 不应被调用（频率节流拦截）
         mock_urlopen.assert_not_called()
 
     def test_disabled_by_env(self):
@@ -241,19 +355,22 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
 
         mock_clear.assert_not_called()
 
-    def test_status_3_to_1_no_recovery(self):
-        """status 从 3(saturated/unused) → 1 → 不触发恢复（饱和不是耗尽）。"""
-        from health_checker import _quota_recovery_check, clear_quota_state
-
-        clear_quota_state()
-        from health_checker import _QUOTA_STATE, _QUOTA_STATE_LOCK
+    def test_weekly_status_3_to_1_no_recovery(self):
+        """每周 status 从 3(unused) → 1：本就非耗尽（status≠2），不触发恢复。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
 
         with _QUOTA_STATE_LOCK:
             _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
-            _QUOTA_STATE["last_weekly_status"] = 3  # unused/saturated
+            _QUOTA_STATE["last_weekly_status"] = 3   # unused
+            _QUOTA_STATE["last_interval_status"] = 1  # 5h 正常
             _QUOTA_STATE["last_check_ts"] = 0.0
 
-        response = _make_api_response(weekly_end_time=OLD_WEEKLY_END_TIME, weekly_status=1)
+        # 3→1：之前 (interval=1,weekly=3) → routable (neither is 2)
+        # 现在 (interval=1,weekly=1) → routable
+        # was_routable=True → 不触发
+        response = _make_api_response(
+            weekly_end_time=OLD_WEEKLY_END_TIME, weekly_status=1, interval_status=1,
+        )
 
         with self._patch_api(response), \
              patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}), \
@@ -262,19 +379,40 @@ class QuotaRecoveryCheckTest(unittest.TestCase):
 
         mock_clear.assert_not_called()
 
-    def test_status_2_unchanged_no_recovery(self):
-        """status 保持 2（持续耗尽）→ 不触发恢复。"""
-        from health_checker import _quota_recovery_check, clear_quota_state
+    def test_interval_status_3_to_1_no_recovery(self):
+        """5h status 从 3(unused) → 1：本就非耗尽，不触发恢复。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
 
-        clear_quota_state()
-        from health_checker import _QUOTA_STATE, _QUOTA_STATE_LOCK
+        with _QUOTA_STATE_LOCK:
+            _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
+            _QUOTA_STATE["last_weekly_status"] = 1
+            _QUOTA_STATE["last_interval_status"] = 3  # unused
+            _QUOTA_STATE["last_check_ts"] = 0.0
+
+        response = _make_api_response(
+            weekly_end_time=OLD_WEEKLY_END_TIME, weekly_status=1, interval_status=1,
+        )
+
+        with self._patch_api(response), \
+             patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}), \
+             patch("health_checker._clear_all_minimax_stickies") as mock_clear:
+            _quota_recovery_check()
+
+        mock_clear.assert_not_called()
+
+    def test_both_unchanged_exhausted_no_recovery(self):
+        """双窗口均保持耗尽 → 不触发恢复。"""
+        from health_checker import _quota_recovery_check, _QUOTA_STATE, _QUOTA_STATE_LOCK
 
         with _QUOTA_STATE_LOCK:
             _QUOTA_STATE["last_weekly_end_time"] = OLD_WEEKLY_END_TIME
             _QUOTA_STATE["last_weekly_status"] = 2
+            _QUOTA_STATE["last_interval_status"] = 2
             _QUOTA_STATE["last_check_ts"] = 0.0
 
-        response = _make_api_response(weekly_end_time=OLD_WEEKLY_END_TIME, weekly_status=2)
+        response = _make_api_response(
+            weekly_end_time=OLD_WEEKLY_END_TIME, weekly_status=2, interval_status=2,
+        )
 
         with self._patch_api(response), \
              patch.dict(os.environ, {"MINIMAX_API_KEY": "sk-test"}), \
