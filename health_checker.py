@@ -1,11 +1,13 @@
 """
-health_checker.py — sticky fallback 自动恢复探测（2026-06-16 引入）
-====================================================================
+health_checker.py — sticky fallback 自动恢复探测 + minimax 配额恢复监控
+========================================================================
 
 职责：
   - 当某个 session 写入 sticky fallback 后，定期探测原 provider 是否恢复
   - 探测成功 → 自动清除该 provider 在所有 session 的 sticky fallback 文件
   - 探测失败 → 等待下一周期再试
+  - [2026-06-18] minimax 配额恢复监控：轮询 /v1/token_plan/remains API，
+    检测周窗口重置 → 自动清除所有 minimax sticky fallback，路由回到 minimax
 
 设计要点：
   - 跑在 proxy.py 守护线程里（proxy 是唯一常驻进程，状态 in-process 可读）
@@ -19,6 +21,8 @@ health_checker.py — sticky fallback 自动恢复探测（2026-06-16 引入）
   STAGE_ROUTER_PROBE_INITIAL_DELAY         (default 7200  = 2h)
   STAGE_ROUTER_PROBE_INTERVAL              (default 600   = 10min)
   STAGE_ROUTER_PROBE_TIMEOUT               (default 5     sec)
+  STAGE_ROUTER_QUOTA_RECOVERY_ENABLED      (default true)
+  STAGE_ROUTER_QUOTA_CHECK_INTERVAL        (default 60    sec)
 """
 
 from __future__ import annotations
@@ -30,7 +34,10 @@ import os
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
+from typing import Optional
 
 # 把 hook_dir 加到 sys.path 以便 import proxy 模块常量
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -53,6 +60,16 @@ PROBE_INITIAL_DELAY = int(os.environ.get("STAGE_ROUTER_PROBE_INITIAL_DELAY", "72
 PROBE_INTERVAL = int(os.environ.get("STAGE_ROUTER_PROBE_INTERVAL", "600"))            # 10min
 PROBE_TIMEOUT = float(os.environ.get("STAGE_ROUTER_PROBE_TIMEOUT", "5"))              # sec
 
+# ── minimax 配额恢复监控配置 ─────────────────────────────────
+QUOTA_RECOVERY_ENABLED = os.environ.get(
+    "STAGE_ROUTER_QUOTA_RECOVERY_ENABLED", "true"
+).lower() in ("1", "true", "yes")
+QUOTA_CHECK_INTERVAL = int(os.environ.get("STAGE_ROUTER_QUOTA_CHECK_INTERVAL", "60"))  # sec
+# API 超时（配额 API 一般几百 ms 返回，5s 足够）
+QUOTA_API_TIMEOUT_SECONDS = float(
+    os.environ.get("STAGE_ROUTER_QUOTA_API_TIMEOUT_SECONDS", "5")
+)
+
 # ── 模块状态 ──────────────────────────────────────────────────
 HEALTH_LOCK_PATH = HOOK_DIR / "health_check.lock"
 _HEALTH_STATUS: dict[str, dict] = {}
@@ -63,6 +80,17 @@ _LEADER_FD: list = [None]
 
 # 内置循环节奏：5s 短轮询（leader election + 探测调度都在这个粒度）
 _TICK_SECONDS = 5
+
+# ── minimax 配额恢复监控状态 ──────────────────────────────────
+# 追踪 minimax API 返回的 weekly_end_time 和 current_weekly_status，
+# 检测周窗口重置（end_time 变化）或状态恢复（exhausted→normal）。
+_QUOTA_STATE_LOCK = threading.Lock()
+_QUOTA_STATE: dict = {
+    "last_weekly_end_time": None,   # int|None: 上次的 weekly_end_time (ms unix)
+    "last_weekly_status": None,     # int|None: 上次的 current_weekly_status
+    "last_check_ts": 0.0,           # float: 上次 API 调用时间
+    "last_weekly_remains_time": None,  # int|None: 上次的 weekly_remains_time (ms)
+}
 
 
 # ── 对外 API ──────────────────────────────────────────────────
@@ -83,12 +111,35 @@ def start_health_checker() -> None:
         f"健康探测线程已启动: initial_delay={PROBE_INITIAL_DELAY}s, "
         f"interval={PROBE_INTERVAL}s, timeout={PROBE_TIMEOUT}s"
     )
+    if QUOTA_RECOVERY_ENABLED:
+        log.info(
+            f"minimax 配额恢复监控已启用: check_interval={QUOTA_CHECK_INTERVAL}s"
+        )
 
 
 def get_health_status() -> dict:
     """供 /health 端点调用，返回 shallow copy。"""
     with _HEALTH_STATUS_LOCK:
         return {k: dict(v) for k, v in _HEALTH_STATUS.items()}
+
+
+def get_quota_status() -> dict:
+    """供 /health 端点调用，返回配额监控状态 shallow copy。"""
+    with _QUOTA_STATE_LOCK:
+        return dict(_QUOTA_STATE)
+
+
+def clear_quota_state() -> None:
+    """重置配额监控状态（测试/手动重置用）。"""
+    global _QUOTA_STATE
+    with _QUOTA_STATE_LOCK:
+        _QUOTA_STATE = {
+            "last_weekly_end_time": None,
+            "last_weekly_status": None,
+            "last_check_ts": 0.0,
+            "last_weekly_remains_time": None,
+        }
+    log.info("配额监控状态已重置")
 
 
 # ── 守护线程主循环 ────────────────────────────────────────────
@@ -98,7 +149,8 @@ def _health_check_loop() -> None:
     每 _TICK_SECONDS 醒一次：
       1. 尝试非阻塞 flock（多 proxy 实例中只有一个执行本轮）
       2. leader 跑 _run_probe_round()：扫描所有 sticky 文件 → 去重 → 探测 → 恢复
-      3. 释放锁
+      3. leader 跑 _quota_recovery_check()：检测 minimax 配额恢复 → 清除 sticky
+      4. 释放锁
     """
     while True:
         if _STOP_EVENT is None or _STOP_EVENT.wait(timeout=_TICK_SECONDS):
@@ -108,6 +160,7 @@ def _health_check_loop() -> None:
                 continue
             try:
                 _run_probe_round()
+                _quota_recovery_check()
             finally:
                 _release_leader_lock()
         except Exception as e:
@@ -241,6 +294,261 @@ def _try_clear_sticky_for_session(
         )
     except OSError as e:
         log.error(f"auto-recovery 清除 sticky 失败: {e}")
+
+
+# ── minimax 配额恢复监控 ──────────────────────────────────────
+def _quota_recovery_check() -> None:
+    """检测 minimax 配额是否恢复（周窗口重置 / status 恢复 → 清除所有 minimax sticky）。
+
+    设计依据（2026-06-18）：
+      minimax 的 5h/周配额通过 /v1/token_plan/remains API 返回的
+      weekly_end_time（毫秒 unixtime）管理周窗口边界。当 weekly_end_time 变化时
+      → 新的一周开始 → quota 刷新 → 所有因"minimax 不可用"写入的 sticky 应自动清除。
+
+      同时，若 current_weekly_status 从非 1（exhausted/saturated）恢复为 1（normal），
+      → 额度恢复（如管理员充值/月初重置）→ 同样应清除 minimax sticky。
+
+    检测策略（双重触发，任一满足即清除）：
+      A. weekly_end_time 发生变化 → 周窗口重置
+      B. current_weekly_status 从非 1 变为 1 → 状态恢复
+
+    频率控制：受 QUOTA_CHECK_INTERVAL 节流（默认 60s），避免频繁调 API。
+    首次启动不触发（_QUOTA_STATE 无历史值，仅记录基线）。
+
+    安全性：
+      - API 调用失败 → 静默跳过（fail-safe：不误清 sticky）
+      - 仅清除 provider=="minimax" 的 sticky（不误删 deepseek 等）
+      - 复用 try_clear_sticky_for_session 的 grace period 校验
+    """
+    if not QUOTA_RECOVERY_ENABLED:
+        return
+
+    with _QUOTA_STATE_LOCK:
+        now = time.time()
+        if now - _QUOTA_STATE["last_check_ts"] < QUOTA_CHECK_INTERVAL:
+            return
+        _QUOTA_STATE["last_check_ts"] = now
+
+    # 调用 minimax token plan API（直接调，不依赖 token_plan 模块的缓存）
+    try:
+        api_key = os.environ.get("MINIMAX_API_KEY", "").strip()
+        if not api_key:
+            log.debug("配额恢复检查: MINIMAX_API_KEY 未设置，跳过")
+            return
+
+        api_url = os.environ.get(
+            "MINIMAX_TOKEN_PLAN_URL",
+            "https://www.minimaxi.com/v1/token_plan/remains",
+        )
+        req = urllib.request.Request(
+            api_url,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=QUOTA_API_TIMEOUT_SECONDS) as resp:
+            body = resp.read()
+        payload = json.loads(body)
+    except Exception as e:
+        log.debug(f"配额恢复检查 API 失败（已忽略）: {e}")
+        return
+
+    if not isinstance(payload, dict):
+        log.debug("配额恢复检查: API 响应非 dict，跳过")
+        return
+
+    # 提取 general 套餐数据（minimax LLM 路由只用 general 套餐）
+    model_remains = payload.get("model_remains")
+    if not isinstance(model_remains, list):
+        log.debug("配额恢复检查: model_remains 缺失或非 list，跳过")
+        return
+
+    plan = None
+    for entry in model_remains:
+        if isinstance(entry, dict) and entry.get("model_name") == "general":
+            plan = entry
+            break
+    if plan is None:
+        log.debug("配额恢复检查: 未找到 general 套餐，跳过")
+        return
+
+    weekly_end_time = plan.get("weekly_end_time")
+    weekly_status = plan.get("current_weekly_status")
+    weekly_remains_time = plan.get("weekly_remains_time")
+
+    # 读取旧状态，更新新状态
+    with _QUOTA_STATE_LOCK:
+        prev_end_time = _QUOTA_STATE["last_weekly_end_time"]
+        prev_status = _QUOTA_STATE["last_weekly_status"]
+
+        recovered = False
+        reasons: list[str] = []
+
+        # 触发 A：周窗口重置（weekly_end_time 变化）
+        if (
+            prev_end_time is not None
+            and weekly_end_time is not None
+            and weekly_end_time != prev_end_time
+        ):
+            recovered = True
+            reasons.append(
+                f"weekly_end_time changed: {prev_end_time} → {weekly_end_time}"
+            )
+
+        # 触发 B：状态从耗尽(2)恢复为正常(1)
+        # status=3 是 saturated/unused（饱和/未使用），不是耗尽，
+        # 从 3→1 不表示"恢复"，只是不再饱和。
+        if (
+            prev_status is not None
+            and prev_status == 2
+            and weekly_status == 1
+        ):
+            recovered = True
+            reasons.append(f"weekly_status recovered: {prev_status} → {weekly_status}")
+
+        # 更新跟踪状态
+        _QUOTA_STATE["last_weekly_end_time"] = weekly_end_time
+        _QUOTA_STATE["last_weekly_status"] = weekly_status
+        _QUOTA_STATE["last_weekly_remains_time"] = weekly_remains_time
+
+    if recovered:
+        log.warning(
+            f"minimax 配额已恢复 ({'; '.join(reasons)})，"
+            f"自动清除所有 minimax sticky fallback"
+        )
+        cleared = _clear_all_minimax_stickies()
+        log.info(f"配额恢复 auto-clean: 已清除 {cleared} 个 minimax sticky 文件")
+    elif weekly_status == 2:
+        # 配额耗尽状态——记录剩余时间便于运维
+        remaining_s = (weekly_remains_time or 0) / 1000.0
+        remaining_h = remaining_s / 3600.0
+        log.debug(
+            f"minimax 配额已耗尽 (weekly_status=2)，"
+            f"距周窗口重置约 {remaining_h:.1f}h"
+        )
+    elif prev_end_time is None:
+        # 首次启动，仅记录基线
+        log.debug(
+            f"配额恢复监控基线已记录: weekly_end_time={weekly_end_time}, "
+            f"weekly_status={weekly_status}"
+        )
+
+
+def _clear_all_minimax_stickies() -> int:
+    """扫描所有 session 的 sticky fallback 文件，仅清除 provider=="minimax" 的。
+
+    扫描路径（与 _collect_probe_targets 对齐）：
+      1. state_index.json → 所有活跃 session → fallback_<sid>
+      2. 兜底：globl HOOK_DIR/../*.claude/fallback_*
+
+    每个 sticky 清除前校验 grace period（AUTO_RECOVERY_GRACE_SECONDS），
+    避免删除刚写入的 sticky。
+
+    Returns:
+        int: 实际清除的 sticky 文件数。
+    """
+    cleared = 0
+    seen_claude_dirs: set[Path] = set()
+
+    # ── 主路径：state_index.json → 所有活跃 session ──
+    state_index_path = HOOK_DIR / "state_index.json"
+    try:
+        if state_index_path.exists():
+            data = json.loads(state_index_path.read_text(encoding="utf-8"))
+            for path_key, entry in data.items():
+                if not isinstance(entry, dict):
+                    continue
+                sid = entry.get("session_id")
+                if not sid:
+                    continue
+                try:
+                    claude_dir = Path(path_key) / ".claude"
+                except (TypeError, ValueError):
+                    continue
+                seen_claude_dirs.add(claude_dir)
+                fb_path = claude_dir / f"fallback_{sid}"
+                if not fb_path.exists():
+                    continue
+                if _is_minimax_sticky(fb_path):
+                    try:
+                        fb_path.unlink()
+                        cleared += 1
+                        log.info(
+                            f"配额恢复: 已清除 minimax sticky "
+                            f"session={sid} ({fb_path})"
+                        )
+                    except OSError as e:
+                        log.error(f"配额恢复: 清除 {fb_path} 失败: {e}")
+    except (OSError, json.JSONDecodeError) as e:
+        log.debug(f"配额恢复: 扫描 state_index.json 失败: {e}")
+
+    # ── 兜底：扫已知 .claude 目录里所有 fallback_* ──
+    for claude_dir in seen_claude_dirs:
+        if not claude_dir.is_dir():
+            continue
+        try:
+            for fb_path in claude_dir.glob("fallback_*"):
+                if not fb_path.is_file():
+                    continue
+                if _is_minimax_sticky(fb_path):
+                    try:
+                        fb_path.unlink()
+                        cleared += 1
+                        log.info(
+                            f"配额恢复(兜底): 已清除 minimax sticky ({fb_path})"
+                        )
+                    except OSError as e:
+                        log.error(f"配额恢复(兜底): 清除 {fb_path} 失败: {e}")
+        except OSError as e:
+            log.debug(f"配额恢复: 扫描 {claude_dir} 失败: {e}")
+
+    return cleared
+
+
+def _is_minimax_sticky(fb_path: Path) -> bool:
+    """判断 sticky 文件是否指向 minimax（且满足 grace period 要求）。
+
+    只清除确认是 minimax sticky 且超过 grace period 的文件，
+    避免误删 deepseek 等其他 provider 的 sticky。
+    """
+    try:
+        raw = fb_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    if not raw:
+        return False
+
+    provider = None
+    failed_at = 0
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+            provider = data.get("provider")
+            failed_at = int(data.get("failed_at", 0))
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return False
+    elif raw in KNOWN_PROVIDER_NAMES:
+        provider = raw
+        failed_at = int(fb_path.stat().st_mtime)
+    else:
+        return False
+
+    if provider != "minimax":
+        return False
+
+    # Grace period：仅 JSON 格式（有显式 failed_at 字段）做校验。
+    # v2 纯文本格式无 failed_at，用 st_mtime 代替，但旧格式文件本质已存在较久，
+    # 不应用 grace period（否则测试/首次扫描会误保留）。
+    if raw.startswith("{") and int(time.time()) - failed_at < AUTO_RECOVERY_GRACE_SECONDS:
+        log.debug(
+            f"minimax sticky {fb_path} 刚写 < "
+            f"{AUTO_RECOVERY_GRACE_SECONDS}s，跳过配额恢复清除"
+        )
+        return False
+
+    return True
 
 
 # ── Leader election（fcntl flock，非阻塞） ─────────────────────
