@@ -20,6 +20,8 @@ test_proxy_retry.py — 主模型重试 + fallback 触发测试
 import unittest
 from unittest.mock import patch
 
+# forward_request 返回 4-tuple: (status, headers, body, latency_dict)
+_LAT = {"ttfb_ms": 0, "total_ms": 0}
 
 # ── 测试 _call_with_retry 本身的语义 ────────────────────────────────────────
 
@@ -42,8 +44,8 @@ class TestCallWithRetry(unittest.TestCase):
         def fake_sleep(s):
             sleep_calls.append(s)
 
-        with patch("proxy.forward_request", return_value=(200, {"h": "v"}, b"ok")) as mock_fwd:
-            status, h, b, attempts = _call_with_retry(
+        with patch("proxy.forward_request", return_value=(200, {"h": "v"}, b"ok", _LAT)) as mock_fwd:
+            status, h, b, latency, attempts = _call_with_retry(
                 method="POST", path="/v1/messages", headers={}, body=b"{}",
                 target_base="https://api.x", target_model="MiniMax-M3",
                 api_key_env="KEY", protocol="anthropic", dry_run=False,
@@ -64,12 +66,12 @@ class TestCallWithRetry(unittest.TestCase):
             sleep_calls.append(s)
 
         side_effects = [
-            (502, {}, b"err1"),
-            (502, {}, b"err2"),
-            (200, {}, b"ok"),
+            (502, {}, b"err1", _LAT),
+            (502, {}, b"err2", _LAT),
+            (200, {}, b"ok", _LAT),
         ]
         with patch("proxy.forward_request", side_effect=side_effects) as mock_fwd:
-            status, _, b, attempts = _call_with_retry(
+            status, _, b, _, attempts = _call_with_retry(
                 method="POST", path="/v1/messages", headers={}, body=b"{}",
                 target_base="https://api.x", target_model="MiniMax-M3",
                 api_key_env="KEY", protocol="anthropic", dry_run=False,
@@ -91,12 +93,12 @@ class TestCallWithRetry(unittest.TestCase):
             sleep_calls.append(s)
 
         side_effects = [
-            (502, {}, b"err1"),
-            (502, {}, b"err2"),
-            (502, {}, b"err3"),
+            (502, {}, b"err1", _LAT),
+            (502, {}, b"err2", _LAT),
+            (502, {}, b"err3", _LAT),
         ]
         with patch("proxy.forward_request", side_effect=side_effects) as mock_fwd:
-            status, _, b, attempts = _call_with_retry(
+            status, _, b, _, attempts = _call_with_retry(
                 method="POST", path="/v1/messages", headers={}, body=b"{}",
                 target_base="https://api.x", target_model="MiniMax-M3",
                 api_key_env="KEY", protocol="anthropic", dry_run=False,
@@ -118,8 +120,8 @@ class TestCallWithRetry(unittest.TestCase):
         def fake_sleep(s):
             sleep_calls.append(s)
 
-        with patch("proxy.forward_request", return_value=(400, {}, b"bad")) as mock_fwd:
-            status, _, b, attempts = _call_with_retry(
+        with patch("proxy.forward_request", return_value=(400, {}, b"bad", _LAT)) as mock_fwd:
+            status, _, b, _, attempts = _call_with_retry(
                 method="POST", path="/v1/messages", headers={}, body=b"{}",
                 target_base="https://api.x", target_model="MiniMax-M3",
                 api_key_env="KEY", protocol="anthropic", dry_run=False,
@@ -136,8 +138,8 @@ class TestCallWithRetry(unittest.TestCase):
         from proxy import _is_retriable
         self.assertFalse(_is_retriable(404))
 
-        with patch("proxy.forward_request", return_value=(404, {}, b"nf")):
-            status, _, b, attempts = _call_with_retry(
+        with patch("proxy.forward_request", return_value=(404, {}, b"nf", _LAT)):
+            status, _, b, _, attempts = _call_with_retry(
                 method="POST", path="/v1/messages", headers={}, body=b"{}",
                 target_base="https://api.x", target_model="MiniMax-M3",
                 api_key_env="KEY", protocol="anthropic", dry_run=False,
@@ -152,8 +154,8 @@ class TestCallWithRetry(unittest.TestCase):
         from proxy import _is_retriable
         self.assertFalse(_is_retriable(422))
 
-        with patch("proxy.forward_request", return_value=(422, {}, b"bad")):
-            status, _, _, attempts = _call_with_retry(
+        with patch("proxy.forward_request", return_value=(422, {}, b"bad", _LAT)):
+            status, _, _, _, attempts = _call_with_retry(
                 method="POST", path="/v1/messages", headers={}, body=b"{}",
                 target_base="https://api.x", target_model="MiniMax-M3",
                 api_key_env="KEY", protocol="anthropic", dry_run=False,
@@ -167,9 +169,9 @@ class TestCallWithRetry(unittest.TestCase):
         from proxy import _is_retriable
         self.assertTrue(_is_retriable(429))
 
-        side_effects = [(429, {}, b"rl"), (200, {}, b"ok")]
+        side_effects = [(429, {}, b"rl", _LAT), (200, {}, b"ok", _LAT)]
         with patch("proxy.forward_request", side_effect=side_effects):
-            status, _, b, attempts = _call_with_retry(
+            status, _, b, _, attempts = _call_with_retry(
                 method="POST", path="/v1/messages", headers={}, body=b"{}",
                 target_base="https://api.x", target_model="MiniMax-M3",
                 api_key_env="KEY", protocol="anthropic", dry_run=False,
@@ -198,7 +200,7 @@ class TestCallWithRetryParams(unittest.TestCase):
     def test_forwards_all_params(self):
         from proxy import _call_with_retry
 
-        with patch("proxy.forward_request", return_value=(200, {}, b"")) as mock_fwd:
+        with patch("proxy.forward_request", return_value=(200, {}, b"", _LAT)) as mock_fwd:
             _call_with_retry(
                 method="POST",
                 path="/v1/messages",
