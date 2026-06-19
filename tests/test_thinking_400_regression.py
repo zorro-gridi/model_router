@@ -343,9 +343,9 @@ _BODY_THINKING_CONTENT_INTEGRITY = {
                     "先用经典比特对比引入，再讲量子比特（qubit）的特性。"
                     "避免深入数学，用物理直觉+图示思维来解释。",
                     signature="MmSig_quantum_detail_001",
-                    # MiniMax 可能带额外字段
-                    "index": 0,
-                    "citations": [],
+                    # MiniMax 可能带额外字段 — 通过 **extra 传入
+                    index=0,
+                    citations=[],
                 ),
                 _make_text_block(
                     "量子计算利用量子力学原理处理信息。与传统计算机用 0/1 的比特不同，"
@@ -367,8 +367,8 @@ _BODY_THINKING_CONTENT_INTEGRITY = {
                     "但要注意这个比喻有局限性（宏观vs微观）。"
                     "更准确的例子：电子的自旋，测量前可以同时是上旋和下旋。",
                     signature="MmSig_superposition_002",
-                    "index": 0,
-                    "citations": ["https://example.com/quantum-basics"],
+                    index=0,
+                    citations=["https://example.com/quantum-basics"],
                 ),
                 _make_text_block(
                     "想象薛定谔的猫：在你打开盒子之前，猫同时处于'活'和'死'两种状态。"
@@ -1217,8 +1217,10 @@ class S08_ClaudePassthroughNoModification(unittest.TestCase):
     """
 
     CLONED_BODY = json.loads(json.dumps(_BODY_MIXED_PROVIDER))
-    # 设 model 为 claude-*
+    # 设 model 为 claude-*，添加 claude 原生 thinking/betas 顶层字段
     CLONED_BODY["model"] = "claude-sonnet-4-6"
+    CLONED_BODY["thinking"] = {"type": "enabled", "budget_tokens": 16000}
+    CLONED_BODY["betas"] = ["interleaved-thinking-2025-05-08"]
 
     def test_claude_preserves_all_thinking_blocks(self):
         """claude-* 全透传：thinking + redacted_thinking 全部保留。"""
@@ -1245,18 +1247,18 @@ class S08_ClaudePassthroughNoModification(unittest.TestCase):
                            f"claude 路径应保留 signature，实际签名={len(sigs)}")
 
     def test_claude_preserves_betas_and_thinking_param(self):
-        """claude 路径保留 betas + thinking 顶层参数。"""
+        """claude 路径保留 betas + thinking 顶层参数（passthrough）。"""
         cap = _capture_forward(
             "claude-sonnet-4-6",
             body_override=self.CLONED_BODY,
             env_override={"ANTHROPIC_API_KEY": "sk-ant-test"},
             target_base="https://api.anthropic.com",
         )
-        # 原始 body 带 betas + thinking
-        self.assertIn("thinking", self.CLONED_BODY,
-                      "原 body 应含 thinking 参数")
-        self.assertIn("betas", self.CLONED_BODY,
-                      "原 body 应含 betas 参数")
+        # 截获的转发 body 应含 thinking + betas（未被 pop）
+        self.assertIn("thinking", cap.json,
+                      "claude 路径应保留顶层 thinking 参数")
+        self.assertIn("betas", cap.json,
+                      "claude 路径应保留顶层 betas 参数")
 
 
 if __name__ == "__main__":
