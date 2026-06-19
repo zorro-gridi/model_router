@@ -1005,9 +1005,10 @@ def _clear_provider_state_on_reset(*, reset_kind: str) -> None:
     磁盘侧 `fallback_<sid>` 已被 clear_fallback_all() 删掉，但还有 3 处
     in-process 状态仍把 provider 视为「不可用」：
 
-      1. token_plan._cache：60s in-process 缓存，下一次 precheck_and_fallback
-         仍会命中「minimax 已耗尽」→ 立刻 try_write_fallback("minimax")，
-         sticky 被重新写回磁盘——statusline 第三行 model 又被覆盖。
+      1. token_plan._cache：300s in-process 缓存（[2026-06-19] 由 60s 调大），
+         下一次 health_checker 后台 tick 会重新喂新数据；cache 清空期间
+         peek_cached_status() 返回 None（fail-safe：请求路径不会触发 sticky
+         重写），等 health_checker 下一次 API 拿到新数据后即恢复。
       2. health_checker._QUOTA_STATE：one-shot timer 把 next_check_after
          钉在 remains_time，且 last_weekly_status 仍为 2（已耗尽），
          即使 cache 清了，监控线程的状态机仍判定 minimax 不可路由。
@@ -1016,7 +1017,7 @@ def _clear_provider_state_on_reset(*, reset_kind: str) -> None:
 
     重置这三处后，provider 真正回到「可用状态」，下次请求按 stage 路由
     走主模型。同时不触碰写入侧接口（try_write_fallback /
-    precheck_and_fallback）——其它模块仍可正常修改 provider/model 状态。
+    token_plan.set_external_payload）——其它模块仍可正常修改 provider 状态。
 
     异常隔离：任何一步失败都用 try/except 单独吞掉（仅记 warning），不阻塞
     reset 主流程（清 fallback 文件才是用户预期的主要动作）。
@@ -2892,26 +2893,28 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
         # 用于 /metrics 的 used_fallback 严格判定（区分 4xx 非可重试错误）。
         fallback_invoked = False
 
-        # ── Token Plan 预检（2026-06-17 引入）──────────────────────────────────
-        # 在 read_fallback() 之前触发：minimax 账户的 5h / 周配额 > 98% 时主动写
-        # sticky fallback（"minimax" → "deepseek"）。下面 read_fallback() 拿到刚写
-        # 入的 sticky，本请求立即命中 sticky_provider 分支完成 swap —— 不再等下一回合。
-        #
-        # 不影响错误码 fallback 链路：_is_retriable 触发的 sticky 仍走原逻辑。
+        # ── Token Plan 预检（2026-06-19 重构为纯 cache 读）───────────────────
+        # 历史：2026-06-17 引入时在 do_POST 同步调 precheck_and_fallback()，
+        #       cache miss 时打 5s 同步 urllib，导致 60s 一波的请求阻塞。
+        # 修复（2026-06-19）：让 health_checker 后台线程成为单一事实源——每
+        #       60s（预恢复窗口）调一次 minimax API，喂 token_plan 缓存 + 主
+        #       动写 sticky。本路径只读缓存，**绝不打 API**。
+        # 失败兜底：cache miss → peek 返回 None → 不写 sticky → 走主路由 →
+        #       实际 429 时仍由 _is_retriable 链路触发 fallback（fail-safe）。
         # 跳过条件（与 sticky_provider 对齐）：
         #   - model_override: 用户已显式指定模型，token 余量与用户意图无关
         #   - internal_req:   内部服务请求不应被代理级 fallback 污染
         if not model_override and not internal_req:
             try:
-                from token_plan import precheck_and_fallback
-                precheck_result = precheck_and_fallback(reason="proxy-do_post")
-                if precheck_result.get("triggered"):
-                    # 把触发原因记到 routing_source 便于排错
-                    reasons = precheck_result.get("judgment", {}).get("reasons", [])
+                from token_plan import peek_cached_status
+                cached_status = peek_cached_status()
+                if cached_status is not None and cached_status.get("judgment", {}).get("triggered"):
+                    # 把触发原因记到 routing_source 便于排错（不影响主链路）
+                    reasons = cached_status.get("judgment", {}).get("reasons", [])
                     routing_source += f" [token-plan-triggered={','.join(reasons)}]"
             except Exception as _tp_exc:
-                # 预检失败不阻塞正常代理（fail-safe：探测异常 → 按主 provider 路由）
-                log.warning(f"token_plan 预检异常（已忽略）: {_tp_exc}")
+                # peek 失败不阻塞正常代理（fail-safe：异常 → 按主 provider 路由）
+                log.warning(f"token_plan cache peek 异常（已忽略）: {_tp_exc}")
 
         sticky_provider = (
             read_fallback()

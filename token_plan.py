@@ -87,9 +87,16 @@ THRESHOLD_PERCENT = float(
     os.environ.get("STAGE_ROUTER_TOKEN_PLAN_THRESHOLD_PERCENT", "98")
 )
 
-# 缓存 TTL（秒）。in-process 内存缓存，避免每个 CC 请求都打一次 minimax API。
+# 缓存 TTL（秒）。in-process 内存缓存。
+#
+# 注意（2026-06-19）：在「请求路径同步 precheck」架构下，这个 TTL 直接决定了
+# 请求线程多久撞一次 cache miss（撞上就要打 5s 同步 urllib）。修复后请求路径
+# 改为纯 cache 读（不发起 API），cache miss 仅意味着"暂时没有 token-plan
+# 注释"，不影响功能；后台 health_checker 仍按 QUOTA_CHECK_INTERVAL=60s 节奏
+# 主动喂缓存。因此这里 TTL 调大到 300s：避免请求线程撞 miss 后看到陈旧数据，
+# 同时也减少后台写盘频次（refresh 频率由 health_checker 主导）。
 CACHE_TTL_SECONDS = int(
-    os.environ.get("STAGE_ROUTER_TOKEN_PLAN_CACHE_TTL_SECONDS", "60")
+    os.environ.get("STAGE_ROUTER_TOKEN_PLAN_CACHE_TTL_SECONDS", "300")
 )
 
 # 单次 API 请求超时。minimax API 一般几百 ms 返回，5s 足够；超时就放弃不阻塞。
@@ -143,6 +150,65 @@ def _cache_clear() -> None:
         _cache_fetched_at = 0.0
         _cache_payload = None
         _cache_error = None
+
+
+def set_external_payload(payload: Optional[dict], error: Optional[str] = None) -> None:
+    """外部喂缓存（health_checker 后台线程调用）。
+
+    用途：让 health_checker._quota_recovery_check() 在每次成功打 minimax API
+    后把结果直接写入本进程的 in-process cache，请求路径上的 peek_cached_status()
+    就能零 IO 命中。这是「单一事实源」架构的关键一环：请求线程不直接打 API，
+    只读后台线程喂好的数据。
+
+    设计约束：
+      - 不修改 fetched_at（用 time.time()），保证与正常 cache_set 行为一致
+      - 失败时也可写入（error 字段），peek 时返回 judgment.triggered=False
+        （不会误触发 sticky）
+      - 调用方负责「不要把过期 / 错乱数据写入」——本函数只负责原子写
+
+    Args:
+        payload: minimax API 返回的完整 JSON dict（包含 model_remains 列表）；
+                 传 None 表示 API 调用失败但要缓存「错误状态」。
+        error: 错误信息字符串（仅日志用）。
+    """
+    _cache_set(payload, error=error)
+    if payload is not None:
+        log.debug(f"token_plan 缓存已被外部刷新（payload 含 {len(payload.get('model_remains', []))} 个套餐）")
+    elif error:
+        log.debug(f"token_plan 缓存已被外部标记为失败: {error}")
+
+
+def peek_cached_status(
+    *,
+    threshold: float = THRESHOLD_PERCENT,
+) -> Optional[dict]:
+    """只读缓存，**绝不发起 API 请求**。给请求路径（proxy do_POST）专用。
+
+    与 get_token_plan_status 的关键区别：
+      - get_token_plan_status: cache miss → 同步 urllib（5s 阻塞）
+      - peek_cached_status:    cache miss → 直接返回 None（调用方走默认路由）
+
+    返回值语义：
+      - None: 缓存为空 / 已过期 / 异常。调用方应继续走主路由链路，不写 sticky。
+      - dict: 含 "ok" / "judgment" / "error" 字段，与 get_token_plan_status 返回
+              结构一致；调用方可读取 judgment["triggered"] 决定是否附加
+              routing_source 注释。
+
+    注意：返回 None 不代表"配额正常"，仅代表"无数据可参考"。
+    请求路径应保持 fail-safe：peek miss 时不要主动 fallback；后台线程
+    health_checker 会持续喂缓存，且实际 429 仍由 _is_retriable 兜底。
+    """
+    cached = _cache_get()
+    if cached is None:
+        return None
+    try:
+        plan = _extract_plan_data(cached)
+    except (KeyError, TypeError):
+        # 缓存结构异常（schema 变化 / 损坏）→ 当作 miss
+        return None
+    triggered, judgment = _should_trigger_fallback(plan, threshold)
+    judgment["cache_hit"] = True
+    return {"ok": True, "error": None, "plan": plan, "judgment": judgment}
 
 
 # ── API 调用 ───────────────────────────────────────────────────────────────────
@@ -441,6 +507,8 @@ def clear_cache() -> None:
 __all__ = [
     "get_token_plan_status",
     "precheck_and_fallback",
+    "peek_cached_status",
+    "set_external_payload",
     "clear_cache",
     "THRESHOLD_PERCENT",
     "CACHE_TTL_SECONDS",
