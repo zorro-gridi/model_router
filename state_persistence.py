@@ -180,7 +180,7 @@ class SessionStateStore:
         updates: Dict[str, Any],
         *,
         remove_keys: Optional[list[str]] = None,
-    ) -> None:
+    ) -> bool:
         """合并更新任意顶层字段，作为非 decision 写路径的统一入口。
 
         适用场景：
@@ -193,6 +193,9 @@ class SessionStateStore:
             project_root: 项目根目录。
             updates: 需要写入/覆盖的顶层字段。
             remove_keys: 需要显式删除的字段名列表。
+
+        Returns:
+            True 表示实际发生了写盘，False 表示字段无变化而跳过写盘。
         """
         claude_dir = self._ensure_claude_dir(project_root)
         path = claude_dir / f"model_router_state_{sid}.json"
@@ -204,24 +207,36 @@ class SessionStateStore:
             except (json.JSONDecodeError, OSError):
                 existing = {}
 
-        merged: Dict[str, Any] = {
-            "version": existing.get("version", self.VERSION),
-            "session_id": existing.get("session_id", sid),
-            "decision": existing.get("decision", {}) or {},
-            "last_update": int(time.time()),
-        }
+        merged: Dict[str, Any] = dict(existing)
+        changed = False
 
-        for key, value in existing.items():
-            if key not in merged:
-                merged[key] = value
+        if merged.get("version") != self.VERSION:
+            merged["version"] = self.VERSION
+            changed = True
+        if merged.get("session_id") != sid:
+            merged["session_id"] = sid
+            changed = True
+        if "decision" not in merged or not isinstance(merged.get("decision"), dict):
+            merged["decision"] = merged.get("decision", {}) or {}
+            changed = True
 
         for key, value in updates.items():
-            merged[key] = value
+            if merged.get(key) != value or key not in merged:
+                merged[key] = value
+                changed = True
 
         for key in remove_keys or []:
-            merged.pop(key, None)
+            if key in merged:
+                merged.pop(key, None)
+                changed = True
+
+        if not changed and path.exists():
+            return False
+
+        merged["last_update"] = int(time.time())
 
         self._atomic_write(path, json.dumps(merged, ensure_ascii=False, indent=2))
+        return True
 
     # ── Read ──────────────────────────────────────────────────────────────
 

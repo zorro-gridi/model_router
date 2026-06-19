@@ -191,6 +191,8 @@ _routing_state = threading.local()
 # _routing_state.stage_path  — 本请求绑定的 stage_<sid> 绝对路径
 # _routing_state.sid         — 本请求绑定的 session_id（UUID），用于响应注入
 
+_STATE_STORE_SINGLETON = None
+
 _SID_SUFFIX_RE = re.compile(
     r'_s([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$'
 )
@@ -219,11 +221,9 @@ def _v13_resolve_decision(sid: str, project_root: str) -> dict | None:
     """
     # 延迟导入：state_persistence 启动期不可用时不影响 proxy 启动
     try:
-        from state_persistence import SessionStateStore
+        store = _state_store()
     except Exception:
         return None
-
-    store = SessionStateStore()
 
     new_state = store.read_new(sid, project_root)
     if isinstance(new_state, dict):
@@ -236,6 +236,15 @@ def _v13_resolve_decision(sid: str, project_root: str) -> dict | None:
         # 决策字段类型异常 → 回退到 legacy
     # 新文件不存在或损坏 → fallback 到 legacy
     return store.read_legacy(sid, project_root)
+
+
+def _state_store():
+    """懒加载 SessionStateStore，避免 proxy 启动期硬依赖。"""
+    global _STATE_STORE_SINGLETON
+    if _STATE_STORE_SINGLETON is None:
+        from state_persistence import SessionStateStore
+        _STATE_STORE_SINGLETON = SessionStateStore()
+    return _STATE_STORE_SINGLETON
 
 
 # ── V1.3 决策反推 v1.2 stage（Stage 6.2 渐进期兜底）─────────────────────────
@@ -2718,13 +2727,14 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                     _rst_sid = _extract_session_id_from_stage_path(_rst_ap)
                     _rst_root = str(_find_project_root_for_stage_path(_rst_ap))
                     if _rst_sid and _rst_root:
-                        from state_persistence import SessionStateStore
-                        SessionStateStore().write(
+                        _state_store().update_fields(
                             sid=_rst_sid,
                             project_root=_rst_root,
-                            model_override=None,
-                            override_degraded=False,
-                            pre_fallback_route_model=None,
+                            updates={
+                                "model_override": None,
+                                "override_degraded": False,
+                                "pre_fallback_route_model": None,
+                            },
                         )
                         log.info("~model reset: 清 state JSON 的 model_override 字段")
             except Exception as _rst_e:
@@ -3229,26 +3239,26 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             # sid / project_root 已在 _ap_path 解析后缓存为 metric_* 变量。
             if metric_session_id and metric_project_root:
                 try:
-                    from state_persistence import SessionStateStore
-
                     # ── 计算 model tier（供 statusline.sh upgrade/downgrade 显示）──
                     # 从 model_tiers.yaml 读取能力等级，避免 statusline.sh 硬编码。
                     _route_tier = get_model_tier(actual_route_model)
                     # session_model 是 stage 默认或 model_override 解析后的原始模型
                     _stage_tier = get_model_tier(session_model) if session_model else 1
 
-                    SessionStateStore().write(
+                    _state_store().update_fields(
                         sid=metric_session_id,
                         project_root=metric_project_root,
-                        route_model=actual_route_model,
-                        task_complexity=complexity_label,
-                        fallback=read_fallback(),
-                        # 2026-06-18 statusline v2：override→fallback 冲突显示
-                        pre_fallback_route_model=pre_fallback_route_model,
-                        override_degraded=override_degraded,
-                        # model_tiers.yaml: 模型能力等级（供 statusline.sh L3 显示）
-                        route_model_tier=_route_tier,
-                        stage_model_tier=_stage_tier,
+                        updates={
+                            "route_model": actual_route_model,
+                            "task_complexity": complexity_label,
+                            "fallback": read_fallback(),
+                            # 2026-06-18 statusline v2：override→fallback 冲突显示
+                            "pre_fallback_route_model": pre_fallback_route_model,
+                            "override_degraded": override_degraded,
+                            # model_tiers.yaml: 模型能力等级（供 statusline.sh L3 显示）
+                            "route_model_tier": _route_tier,
+                            "stage_model_tier": _stage_tier,
+                        },
                     )
                 except Exception as _state_exc:
                     log.warning(

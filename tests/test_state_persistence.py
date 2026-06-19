@@ -513,3 +513,76 @@ class FallbackFieldClearTest(unittest.TestCase):
             state["fallback"], "deepseek",
             "未显式传 fallback → 应从 existing 继承（避免漏传关键字时误清）",
         )
+
+
+class UpdateFieldsEfficiencyTest(unittest.TestCase):
+    """update_fields() 的 no-op 跳过写盘与 decision 保留语义。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_root = Path(self.tmp.name)
+        self.claude_dir = self.project_root / ".claude"
+        self.claude_dir.mkdir()
+        self.sid = "upd-fields-3a0c6299"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _store(self):
+        from state_persistence import SessionStateStore
+        return SessionStateStore()
+
+    def _state_path(self):
+        return self.claude_dir / f"model_router_state_{self.sid}.json"
+
+    def test_update_fields_preserves_existing_decision(self):
+        store = self._store()
+        decision = {
+            "session_id": self.sid,
+            "prompt_id": "p-1",
+            "task_pattern": "feature",
+            "task_complexity": "medium",
+            "prompt_confidence": 0.9,
+            "runtime_score": 0,
+            "todo_score": 0,
+            "final_model": "MiniMax-M3",
+            "locked": False,
+            "decision_source": "prompt",
+            "last_update": 1700000000,
+        }
+        store.write(self.sid, str(self.project_root), decision=decision)
+
+        wrote = store.update_fields(
+            self.sid,
+            str(self.project_root),
+            updates={"route_model": "MiniMax-M3", "task_complexity": "medium"},
+        )
+        self.assertTrue(wrote, "首次写入路由元数据应发生实际写盘")
+
+        state = json.loads(self._state_path().read_text(encoding="utf-8"))
+        self.assertEqual(
+            state["decision"]["final_model"], "MiniMax-M3",
+            "update_fields 写路由元数据时不得覆盖既有 decision",
+        )
+
+    def test_update_fields_noop_skips_rewrite(self):
+        store = self._store()
+        store.update_fields(
+            self.sid,
+            str(self.project_root),
+            updates={"route_model": "MiniMax-M3", "task_complexity": "medium"},
+        )
+        path = self._state_path()
+        before = path.read_text(encoding="utf-8")
+
+        # 睡眠确保若发生重写，last_update 文本几乎必然不同。
+        time.sleep(1.05)
+        wrote = store.update_fields(
+            self.sid,
+            str(self.project_root),
+            updates={"route_model": "MiniMax-M3", "task_complexity": "medium"},
+        )
+        after = path.read_text(encoding="utf-8")
+
+        self.assertFalse(wrote, "字段无变化时应跳过写盘")
+        self.assertEqual(before, after, "no-op update_fields 不应改写文件内容")
