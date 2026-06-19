@@ -137,7 +137,11 @@ class TestDeepSeekKeepThinking(unittest.TestCase):
     """keep_thinking=True（DeepSeek 策略）：保留 thinking 块，仅剥 redacted_thinking。"""
 
     def test_preserves_thinking_blocks(self):
-        """keep_thinking=True：type='thinking' 块原样保留（DeepSeek 支持）。"""
+        """keep_thinking=True：type='thinking' 块保留 + signature 字段被剥除（路线 C 加固）。
+
+        thinking 内容保留（让 deepseek 复用 reasoning context），但去掉
+        signature 避免 deepseek 校验陌生 provider 的 signature → 400。
+        """
         from proxy import _strip_thinking_blocks
         body = {
             "messages": [
@@ -156,10 +160,141 @@ class TestDeepSeekKeepThinking(unittest.TestCase):
             ]
         }
         stripped, redacted = _strip_thinking_blocks(body, keep_thinking=True)
-        self.assertEqual(stripped, 0)  # thinking 保留
+        self.assertEqual(stripped, 0)  # thinking 块保留（剥离的是 signature 字段而非块本身）
         self.assertEqual(redacted, 1)  # redacted 剥离
-        # assistant 剩 thinking + text 两个
+        # assistant 剩 thinking(去 sig) + text 两个
         self.assertEqual(len(body["messages"][1]["content"]), 2)
+        # 关键断言：thinking 块保留，但 signature 字段被剥除
+        thinking_block = body["messages"][1]["content"][0]
+        self.assertEqual(thinking_block["type"], "thinking")
+        self.assertEqual(thinking_block["thinking"], "内部推理")
+        self.assertNotIn("signature", thinking_block)
+
+    def test_strips_signature_on_deepseek_path(self):
+        """路线 C：keep_thinking=True 时，thinking 块内的 signature 字段被无条件剥除。
+
+        根因（2026-06-19 复盘）：Claude / MiniMax 生成的 thinking 块带有
+        provider-specific signature。sticky swap 转发到 deepseek 后，deepseek
+        Anthropic 兼容层校验 signature 不匹配 → 400 "content[].thinking must
+        be passed back"。
+
+        修复：剥除 signature 字段但保留 thinking 内容，让 deepseek 当作
+        "未签名 thinking content"，下次轮到自己生成 thinking 时用新 signature。
+        """
+        from proxy import _strip_thinking_blocks
+        body = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": "推理内容 A",
+                            "signature": "anthropic_sig_abc123",
+                        },
+                        {
+                            "type": "thinking",
+                            "thinking": "推理内容 B",
+                            "signature": "minimax_sig_def456",
+                            # 模拟 MiniMax 额外字段
+                            "extra_field": "ignored",
+                        },
+                    ],
+                },
+            ]
+        }
+        stripped, redacted = _strip_thinking_blocks(body, keep_thinking=True)
+        # 两个 thinking 块都保留（stripped=0，因为剥的是 signature 不是块）
+        self.assertEqual(stripped, 0)
+        self.assertEqual(redacted, 0)
+        self.assertEqual(len(body["messages"][0]["content"]), 2)
+        # 第一个：signature 剥除，thinking 内容保留
+        b0 = body["messages"][0]["content"][0]
+        self.assertEqual(b0["type"], "thinking")
+        self.assertEqual(b0["thinking"], "推理内容 A")
+        self.assertNotIn("signature", b0)
+        # 第二个：signature 剥除，其他字段保留（不应误伤）
+        b1 = body["messages"][0]["content"][1]
+        self.assertEqual(b1["type"], "thinking")
+        self.assertEqual(b1["thinking"], "推理内容 B")
+        self.assertNotIn("signature", b1)
+        self.assertEqual(b1.get("extra_field"), "ignored")
+
+    def test_signature_not_stripped_when_keep_thinking_false(self):
+        """默认 keep_thinking=False（MiniMax 保守策略）：thinking 块本身被剥，signature 字段无意义。
+
+        此场景 thinking 块整块都被剥掉，无须单独断言 signature——只要验证
+        块不残留即可。
+        """
+        from proxy import _strip_thinking_blocks
+        body = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "x", "signature": "sig"},
+                    ],
+                },
+            ]
+        }
+        stripped, redacted = _strip_thinking_blocks(body)  # keep_thinking=False
+        self.assertEqual(stripped, 1)
+        self.assertEqual(redacted, 0)
+        # thinking 块整块被剥，不残留
+        self.assertEqual(body["messages"][0]["content"], [])
+
+    def test_signature_stripped_in_tool_result_nested_thinking(self):
+        """路线 C：递归到 tool_result 内嵌的 thinking 块也要剥 signature。"""
+        from proxy import _strip_thinking_blocks
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_001",
+                            "content": [
+                                {"type": "text", "text": "ok"},
+                                {
+                                    "type": "thinking",
+                                    "thinking": "工具调用后推理",
+                                    "signature": "foreign_sig",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        stripped, redacted = _strip_thinking_blocks(body, keep_thinking=True)
+        self.assertEqual(stripped, 0)
+        self.assertEqual(redacted, 0)
+        tc_content = body["messages"][0]["content"][0]["content"]
+        self.assertEqual(len(tc_content), 2)
+        thinking_block = tc_content[1]
+        self.assertEqual(thinking_block["type"], "thinking")
+        self.assertEqual(thinking_block["thinking"], "工具调用后推理")
+        self.assertNotIn("signature", thinking_block)
+
+    def test_signature_stripped_in_system_blocks(self):
+        """路线 C：system[] 内的 thinking 块也要剥 signature（保持与 messages 对称）。"""
+        from proxy import _strip_thinking_blocks
+        body = {
+            "system": [
+                {"type": "text", "text": "you are helpful"},
+                {"type": "thinking", "thinking": "system reasoning", "signature": "sys_sig"},
+            ],
+            "messages": [],
+        }
+        stripped, redacted = _strip_thinking_blocks(body, keep_thinking=True)
+        self.assertEqual(stripped, 0)
+        self.assertEqual(redacted, 0)
+        # text + thinking(去 sig) 两个
+        self.assertEqual(len(body["system"]), 2)
+        sys_thinking = body["system"][1]
+        self.assertEqual(sys_thinking["type"], "thinking")
+        self.assertNotIn("signature", sys_thinking)
 
     def test_strips_redacted_thinking_only(self):
         """keep_thinking=True：redacted_thinking 仍被剥离。"""

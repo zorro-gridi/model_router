@@ -1686,26 +1686,42 @@ def _strip_thinking_blocks(body: dict, *, keep_thinking: bool = False) -> tuple[
     """
     从请求体的所有 messages[].content[] 里删除 thinking / redacted_thinking block。
 
-    策略（2026-06-18 按模型个性化）：
+    策略（2026-06-18 按模型个性化，2026-06-19 路线 B 修订，2026-06-19 signature 剥离加固）：
       - MiniMax 等：不认识 type: "thinking"，收到直接 400 → 两者全剥
       - DeepSeek：文档明确支持 type='thinking'，但不支持 type='redacted_thinking'
         → keep_thinking=True 时仅剥 redacted_thinking，保留 thinking 块原样透传。
         记忆记录：DeepSeek 对 thinking block 格式敏感，将 type=thinking 转为 text
         会破坏内部校验，正确做法是保留 thinking block、只清理顶层 thinking 参数。
 
-    同时递归清理 tool_result 内嵌 content[] 中可能存在的目标类型块。
+      2026-06-19 加固（路线 C）：keep_thinking=True（deepseek 路径）时
+        **额外剥除 thinking 块中的 signature 字段**。
 
-    content 为字符串时跳过（无 block 可剥）;
-    content 为列表时过滤掉目标 type 的 dict;
-    过滤后保留空列表（避免删整条 message 破坏 tool_result 顺序）。
+        根因：Claude / MiniMax 生成的 thinking 块带有 provider-specific signature
+        （Anthropic signature、MiniMax adaptive signature 等）。当 sticky swap
+        把请求从原 provider 转发到 deepseek 时，deepseek 的 Anthropic 兼容层会校验
+        signature 是否为自己生成——陌生 signature → 400 "content[].thinking must
+        be passed back"（deepseek 文档不披露此校验细节，但 thinking mode 启用 + 收到
+        带陌生 signature 的 thinking 块时，这是唯一相关错误文案）。
+
+        修复策略：thinking 内容保留（让 deepseek 复用 reasoning context），但去掉
+        signature 让 deepseek 把它当作"未签名 thinking content"——下次轮到自己生成
+        thinking 时会用新的 signature。
+
+      同时递归清理 tool_result 内嵌 content[] 中可能存在的目标类型块。
+
+      content 为字符串时跳过（无 block 可剥）;
+      content 为列表时过滤掉目标 type 的 dict;
+      过滤后保留空列表（避免删整条 message 破坏 tool_result 顺序）。
 
     Args:
         body: 请求体 dict，原地修改。
-        keep_thinking: True 时保留 type='thinking' 块，仅剥 redacted_thinking
-                       （DeepSeek 策略）；默认 False 两者全剥（MiniMax 策略）。
+        keep_thinking: True 时保留 type='thinking' 块，仅剥 redacted_thinking；
+                       额外剥除 thinking 块内的 signature 字段（路线 C 加固）。
+                       默认 False 两者全剥（MiniMax 保守策略）。
 
     Returns:
         (thinking_stripped, redacted_stripped) — 计数供日志使用。
+        signature 字段剥离**不计入**返回计数（仅信息性事件，不算作 thinking 剥离）。
     """
     _stripped = _redacted = 0
 
@@ -1730,6 +1746,12 @@ def _strip_thinking_blocks(body: dict, *, keep_thinking: bool = False) -> tuple[
                 else:
                     r += 1
             else:
+                # 2026-06-19 路线 C：keep_thinking=True（deepseek 路径）时，
+                # 剥除 thinking 块内的 signature 字段，避免 deepseek 校验陌生
+                # provider 的 signature → 400。thinking 内容保留（让 deepseek
+                # 复用 reasoning context）。
+                if keep_thinking and bt == "thinking" and "signature" in block:
+                    block = {k: v for k, v in block.items() if k != "signature"}
                 # tool_result 内部 content[] 可能嵌套目标类型块 → 递归清理
                 if bt == "tool_result" and isinstance(block.get("content"), list):
                     nested_content, ns, nr = _filter_blocks(block["content"])
@@ -1748,7 +1770,9 @@ def _strip_thinking_blocks(body: dict, *, keep_thinking: bool = False) -> tuple[
         _stripped += s
         _redacted += r
         # 若有任何目标类型被剥（含递归修改 tool_result 内嵌）→ 落回 filtered
-        if s or r:
+        # 2026-06-19 路线 C：keep_thinking=True 时即使 s=0/r=0 也可能因 signature
+        # 剥离产生新 filtered（dict copy），需同样回写才能让剥除生效。
+        if s or r or (keep_thinking and filtered is not content):
             msg["content"] = filtered
 
     # 2) system 字段（Anthropic Messages API 允许 system 为 array of blocks，
@@ -1759,7 +1783,7 @@ def _strip_thinking_blocks(body: dict, *, keep_thinking: bool = False) -> tuple[
         filtered_sys, s, r = _filter_blocks(system)
         _stripped += s
         _redacted += r
-        if s or r:
+        if s or r or (keep_thinking and filtered_sys is not system):
             body["system"] = filtered_sys
 
     return _stripped, _redacted
