@@ -16,6 +16,8 @@
     - fallback 是 model router 因为原 provider/model 不可用时自适应被动调整的结果
     - override 是用户的主动选择
     - fallback 可以覆盖 override。当用户指定的 override model 也变得不可用时，此时也必须发生 fallback，同时，需要显示 override -> fallback 相关提示信息，用于提示用户 override model 不可达，系统自动执行了 fallback 机制
+* upgrade 与 downgrade 的判定
+    - 参考不同 model 能力等级排序 YAML 配置文件
 
 ## 显示样式设计
 1. statusline 第三行保证按序显示信息

@@ -35,6 +35,11 @@ stage_config.py — 阶段 × 复杂度 × 模式 统一配置
 ────────────────────────────────────────────────────────────────────
 """
 
+from __future__ import annotations
+
+import copy
+from pathlib import Path
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Stage 配置（设计文档第 7 章）
 #
@@ -45,7 +50,7 @@ stage_config.py — 阶段 × 复杂度 × 模式 统一配置
 # 降级模型：deepseek-v4-flash（成本敏感或主模型不可用时）
 # ═══════════════════════════════════════════════════════════════════════════
 
-STAGE_CONFIG: dict[str, dict] = {
+_PLACEHOLDER_STAGE_CONFIG: dict[str, dict] = {
     "explore": {
         "emoji":       "🔎",
         "label":       "探索理解",
@@ -353,7 +358,7 @@ STAGE_CONFIG: dict[str, dict] = {
 #   explore / architecture / feature / audit / implement / debug /
 #   refactor / test / research / migration / docs / ops
 # V1 旧名 bugfix → V1.3 debug（保留为兼容别名，不影响路由决策）。
-PATTERN_CONFIG: dict[str, dict] = {
+_PLACEHOLDER_PATTERN_CONFIG: dict[str, dict] = {
     "explore": {
         "label":        "探索与调研",
         "default_flow": ["plan", "design"],
@@ -536,7 +541,7 @@ COMPLEXITY_THRESHOLDS: dict[str, int] = {
 # 调用方优先级：传入 config > 本配置 > llm_classifier.DEFAULT_CLASSIFIER_CONFIG
 # ═══════════════════════════════════════════════════════════════════════════
 
-LLM_CLASSIFIER_CONFIG: dict[str, object] = {
+_PLACEHOLDER_LLM_CLASSIFIER_CONFIG: dict[str, object] = {
     "model":       "deepseek-v4-flash",
     "base_url":    "https://api.deepseek.com/anthropic",
     "api_key_env": "DEEPSEEK_API_KEY",
@@ -545,6 +550,263 @@ LLM_CLASSIFIER_CONFIG: dict[str, object] = {
     "temperature": 0.0,
     "timeout":     15,
 }
+
+_PLACEHOLDER_MODEL_REGISTRY: dict[str, dict[str, str]] = {
+    "MiniMax-M3": {
+        "provider": "minimax",
+        "base_url": "https://api.minimaxi.com/anthropic",
+        "api_key_env": "MINIMAX_API_KEY",
+        "protocol": "anthropic",
+    },
+    "deepseek-v4-flash": {
+        "provider": "deepseek",
+        "base_url": "https://api.deepseek.com/anthropic",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "protocol": "anthropic",
+    },
+    "deepseek-v4-pro": {
+        "provider": "deepseek",
+        "base_url": "https://api.deepseek.com/anthropic",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "protocol": "anthropic",
+    },
+    "GPT-5.4": {
+        "provider": "openai",
+        "base_url": "https://api.openai.com",
+        "api_key_env": "OPENAI_API_KEY",
+        "protocol": "openai",
+    },
+    "GPT-5.4-Mini": {
+        "provider": "openai",
+        "base_url": "https://api.openai.com",
+        "api_key_env": "OPENAI_API_KEY",
+        "protocol": "openai",
+    },
+}
+
+_PLACEHOLDER_DEFAULT_FALLBACK_PROVIDER: dict[str, str] = {
+    "minimax": "deepseek",
+    "deepseek": "minimax",
+    "openai": "minimax",
+}
+
+_PLACEHOLDER_PROVIDER_COMPLEXITY_MODELS: dict[str, dict[str, str]] = {
+    "minimax": {
+        "simple": "MiniMax-M3",
+        "medium": "MiniMax-M3",
+        "complex": "MiniMax-M3",
+    },
+    "deepseek": {
+        "simple": "deepseek-v4-flash",
+        "medium": "deepseek-v4-pro",
+        "complex": "deepseek-v4-pro",
+    },
+    "openai": {
+        "simple": "GPT-5.4-Mini",
+        "medium": "GPT-5.4",
+        "complex": "GPT-5.4",
+    },
+}
+
+_CONFIG_DIR = Path(__file__).resolve().parent / "config"
+_MODELS_YAML_PATH = _CONFIG_DIR / "models.yaml"
+_STAGES_YAML_PATH = _CONFIG_DIR / "stages.yaml"
+_PATTERNS_YAML_PATH = _CONFIG_DIR / "patterns.yaml"
+_LLM_CLASSIFIER_YAML_PATH = _CONFIG_DIR / "llm_classifier.yaml"
+
+
+def _safe_load_yaml(path: Path) -> dict | None:
+    try:
+        import yaml
+    except ImportError:
+        return None
+    if not path.exists():
+        return None
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _normalize_weighted_keywords(items) -> list[tuple[str, int]]:
+    normalized: list[tuple[str, int]] = []
+    if not isinstance(items, list):
+        return normalized
+    for item in items:
+        if (
+            isinstance(item, (list, tuple))
+            and len(item) == 2
+            and isinstance(item[0], str)
+        ):
+            normalized.append((item[0], int(item[1])))
+    return normalized
+
+
+def load_model_registry_bundle() -> tuple[
+    dict[str, dict[str, str]],
+    dict[str, str],
+    dict[str, dict[str, str]],
+]:
+    data = _safe_load_yaml(_MODELS_YAML_PATH)
+    if not data:
+        return (
+            copy.deepcopy(_PLACEHOLDER_MODEL_REGISTRY),
+            dict(_PLACEHOLDER_DEFAULT_FALLBACK_PROVIDER),
+            copy.deepcopy(_PLACEHOLDER_PROVIDER_COMPLEXITY_MODELS),
+        )
+
+    models = data.get("models")
+    fallback_provider = data.get("default_fallback_provider")
+    complexity_models = data.get("provider_complexity_models")
+    if not isinstance(models, dict):
+        models = copy.deepcopy(_PLACEHOLDER_MODEL_REGISTRY)
+    if not isinstance(fallback_provider, dict):
+        fallback_provider = dict(_PLACEHOLDER_DEFAULT_FALLBACK_PROVIDER)
+    if not isinstance(complexity_models, dict):
+        complexity_models = copy.deepcopy(_PLACEHOLDER_PROVIDER_COMPLEXITY_MODELS)
+
+    normalized_models: dict[str, dict[str, str]] = {}
+    for model_name, cfg in models.items():
+        if not isinstance(model_name, str) or not isinstance(cfg, dict):
+            continue
+        provider = str(cfg.get("provider", "")).strip()
+        base_url = str(cfg.get("base_url", "")).strip()
+        api_key_env = str(cfg.get("api_key_env", "")).strip()
+        protocol = str(cfg.get("protocol", "anthropic")).strip()
+        if not (provider and base_url and api_key_env):
+            continue
+        if protocol not in {"anthropic", "openai"}:
+            continue
+        normalized_models[model_name] = {
+            "provider": provider,
+            "base_url": base_url,
+            "api_key_env": api_key_env,
+            "protocol": protocol,
+        }
+    if not normalized_models:
+        normalized_models = copy.deepcopy(_PLACEHOLDER_MODEL_REGISTRY)
+
+    normalized_complexity: dict[str, dict[str, str]] = {}
+    for provider, mapping in complexity_models.items():
+        if not isinstance(provider, str) or not isinstance(mapping, dict):
+            continue
+        simple = mapping.get("simple")
+        medium = mapping.get("medium")
+        complex_model = mapping.get("complex")
+        if not all(isinstance(v, str) for v in (simple, medium, complex_model)):
+            continue
+        if not all(v in normalized_models for v in (simple, medium, complex_model)):
+            continue
+        normalized_complexity[provider] = {
+            "simple": simple,
+            "medium": medium,
+            "complex": complex_model,
+        }
+    if not normalized_complexity:
+        normalized_complexity = copy.deepcopy(_PLACEHOLDER_PROVIDER_COMPLEXITY_MODELS)
+
+    normalized_fallback: dict[str, str] = {}
+    for provider, alt in fallback_provider.items():
+        if not isinstance(provider, str) or not isinstance(alt, str):
+            continue
+        normalized_fallback[provider] = alt
+    if not normalized_fallback:
+        normalized_fallback = dict(_PLACEHOLDER_DEFAULT_FALLBACK_PROVIDER)
+
+    return normalized_models, normalized_fallback, normalized_complexity
+
+
+def load_stage_config(model_registry: dict[str, dict[str, str]]) -> dict[str, dict]:
+    data = _safe_load_yaml(_STAGES_YAML_PATH)
+    stages = data.get("stages") if data else None
+    if not isinstance(stages, dict):
+        return copy.deepcopy(_PLACEHOLDER_STAGE_CONFIG)
+
+    loaded: dict[str, dict] = {}
+    for stage_name, cfg in stages.items():
+        if not isinstance(stage_name, str) or not isinstance(cfg, dict):
+            continue
+        model = cfg.get("model")
+        fallback_model = cfg.get("fallback_model")
+        if model not in model_registry or fallback_model not in model_registry:
+            continue
+        primary = model_registry[model]
+        fallback = model_registry[fallback_model]
+        keywords = cfg.get("keywords", [])
+        if not isinstance(keywords, list):
+            keywords = []
+        loaded[stage_name] = {
+            "emoji": str(cfg.get("emoji", "")),
+            "label": str(cfg.get("label", stage_name)),
+            "desc": str(cfg.get("desc", "")),
+            "model": model,
+            "base_url": primary["base_url"],
+            "api_key_env": primary["api_key_env"],
+            "protocol": primary["protocol"],
+            "fb_model": fallback_model,
+            "fb_base_url": fallback["base_url"],
+            "fb_api_key_env": fallback["api_key_env"],
+            "fb_protocol": fallback["protocol"],
+            "keywords": [str(k) for k in keywords if isinstance(k, str)],
+        }
+    if "default" not in loaded:
+        return copy.deepcopy(_PLACEHOLDER_STAGE_CONFIG)
+    return loaded
+
+
+def load_pattern_config() -> dict[str, dict]:
+    data = _safe_load_yaml(_PATTERNS_YAML_PATH)
+    patterns = data.get("patterns") if data else None
+    if not isinstance(patterns, dict):
+        return copy.deepcopy(_PLACEHOLDER_PATTERN_CONFIG)
+
+    loaded: dict[str, dict] = {}
+    for pattern_name, cfg in patterns.items():
+        if not isinstance(pattern_name, str) or not isinstance(cfg, dict):
+            continue
+        flow = cfg.get("default_flow", [])
+        if not isinstance(flow, list) or not all(isinstance(x, str) for x in flow):
+            continue
+        primary_model = cfg.get("primary_model")
+        if not isinstance(primary_model, str):
+            continue
+        loaded[pattern_name] = {
+            "label": str(cfg.get("label", pattern_name)),
+            "default_flow": flow,
+            "default_complexity": str(cfg.get("default_complexity", "medium")),
+            "primary_model": primary_model,
+            "keywords": _normalize_weighted_keywords(cfg.get("keywords", [])),
+        }
+    return loaded or copy.deepcopy(_PLACEHOLDER_PATTERN_CONFIG)
+
+
+def load_llm_classifier_config(model_registry: dict[str, dict[str, str]]) -> dict[str, object]:
+    data = _safe_load_yaml(_LLM_CLASSIFIER_YAML_PATH)
+    classifier = data.get("classifier") if data else None
+    if not isinstance(classifier, dict):
+        return copy.deepcopy(_PLACEHOLDER_LLM_CLASSIFIER_CONFIG)
+    model = classifier.get("model")
+    if model not in model_registry:
+        return copy.deepcopy(_PLACEHOLDER_LLM_CLASSIFIER_CONFIG)
+    route = model_registry[model]
+    return {
+        "model": model,
+        "base_url": route["base_url"],
+        "api_key_env": route["api_key_env"],
+        "protocol": route["protocol"],
+        "max_tokens": int(classifier.get("max_tokens", 512)),
+        "temperature": float(classifier.get("temperature", 0.0)),
+        "timeout": int(classifier.get("timeout", 15)),
+    }
+
+
+MODEL_REGISTRY, _YAML_DEFAULT_FALLBACK_PROVIDER, _YAML_PROVIDER_COMPLEXITY_MODELS = (
+    load_model_registry_bundle()
+)
+STAGE_CONFIG: dict[str, dict] = load_stage_config(MODEL_REGISTRY)
+PATTERN_CONFIG: dict[str, dict] = load_pattern_config()
+LLM_CLASSIFIER_CONFIG: dict[str, object] = load_llm_classifier_config(MODEL_REGISTRY)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Workflow 角色模型（设计文档第 10 章算法 D10-5 修复 2026-06-14）
@@ -680,10 +942,15 @@ def get_pattern_label_v13(pattern: str) -> str:
 # 反查出完整的路由配置（不再需要知道原 stage），也用于 model_override 路由。
 # ═══════════════════════════════════════════════════════════════════════════
 
-MODEL_TO_CONFIG: dict[str, tuple[str, str, str, str]] = {}
-for c in STAGE_CONFIG.values():
-    MODEL_TO_CONFIG[c["model"]] = (c["base_url"], c["model"], c["api_key_env"], c["protocol"])
-    MODEL_TO_CONFIG[c["fb_model"]] = (c["fb_base_url"], c["fb_model"], c["fb_api_key_env"], c["fb_protocol"])
+MODEL_TO_CONFIG: dict[str, tuple[str, str, str, str]] = {
+    model_name: (
+        cfg["base_url"],
+        model_name,
+        cfg["api_key_env"],
+        cfg["protocol"],
+    )
+    for model_name, cfg in MODEL_REGISTRY.items()
+}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Provider 级 fallback 定义（2026-06-16）
@@ -703,42 +970,28 @@ for c in STAGE_CONFIG.values():
 
 
 def _build_model_to_provider() -> dict[str, str]:
-    """从 STAGE_CONFIG 的 base_url 推导 model→provider 映射。"""
-    result: dict[str, str] = {}
-    for c in STAGE_CONFIG.values():
-        for field_prefix in ("", "fb_"):
-            model = c.get(f"{field_prefix}model")
-            url = c.get(f"{field_prefix}base_url", "")
-            if not model or not url:
-                continue
-            if "minimaxi" in url or "minimax" in url:
-                result[model] = "minimax"
-            elif "deepseek" in url:
-                result[model] = "deepseek"
-    return result
+    """从模型注册表推导 model→provider 映射。"""
+    return {
+        model_name: cfg["provider"]
+        for model_name, cfg in MODEL_REGISTRY.items()
+        if cfg.get("provider")
+    }
 
 
 MODEL_TO_PROVIDER: dict[str, str] = _build_model_to_provider()
 
-DEFAULT_FALLBACK_PROVIDER: dict[str, str] = {
-    "minimax":  "deepseek",
-    "deepseek": "minimax",
-}
+DEFAULT_FALLBACK_PROVIDER: dict[str, str] = dict(_YAML_DEFAULT_FALLBACK_PROVIDER)
 
-PROVIDER_COMPLEXITY_MODELS: dict[str, dict[str, str]] = {
-    "minimax": {
-        "simple":  "MiniMax-M3",
-        "medium":  "MiniMax-M3",
-        "complex": "MiniMax-M3",
-    },
-    "deepseek": {
-        "simple":  "deepseek-v4-flash",
-        "medium":  "deepseek-v4-pro",
-        "complex": "deepseek-v4-pro",
-    },
-}
+PROVIDER_COMPLEXITY_MODELS: dict[str, dict[str, str]] = copy.deepcopy(
+    _YAML_PROVIDER_COMPLEXITY_MODELS
+)
 
-KNOWN_PROVIDER_NAMES: frozenset[str] = frozenset({"minimax", "deepseek"})
+KNOWN_PROVIDER_NAMES: frozenset[str] = frozenset(
+    set(MODEL_TO_PROVIDER.values())
+    | set(DEFAULT_FALLBACK_PROVIDER.keys())
+    | set(DEFAULT_FALLBACK_PROVIDER.values())
+    | set(PROVIDER_COMPLEXITY_MODELS.keys())
+)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # §17 架构简化（2026-06-17）：STAGE_KEYWORDS / PATTERN_KEYWORDS 派生视图已移除。
@@ -883,6 +1136,8 @@ _PLACEHOLDER_MODEL_TIERS: dict[str, int] = {
     "deepseek-v4-flash": 0,
     "MiniMax-M3":        1,
     "deepseek-v4-pro":   2,
+    "GPT-5.4-Mini":      3,
+    "GPT-5.4":           4,
 }
 
 _MODEL_TIERS_YAML_PATH = _Path(__file__).resolve().parent / "config" / "model_tiers.yaml"

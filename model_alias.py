@@ -45,6 +45,13 @@ MODEL_ALIASES: dict[str, str] = {
     "claude-opus":      "claude-opus-4-8",
     "haiku":            "claude-haiku-4-5-20251001",
     "claude-haiku":     "claude-haiku-4-5-20251001",
+
+    # OpenAI GPT 系列
+    "gpt54":            "GPT-5.4",
+    "gpt-5.4":          "GPT-5.4",
+    "gpt54-mini":       "GPT-5.4-Mini",
+    "gpt-5.4-mini":     "GPT-5.4-Mini",
+    "gpt-mini":         "GPT-5.4-Mini",
 }
 
 
@@ -56,10 +63,8 @@ def _collect_known_models() -> set[str]:
     """
     models: set[str] = set()
     try:
-        from stage_config import STAGE_CONFIG
-        for c in STAGE_CONFIG.values():
-            models.add(c["model"])
-            models.add(c["fb_model"])
+        from stage_config import MODEL_TO_CONFIG
+        models.update(MODEL_TO_CONFIG.keys())
     except ImportError:
         pass
     # Claude 原生模型（即使没在 stage_config 中出现也要认）

@@ -10,6 +10,8 @@
 #   - statusline.sh 的 _model_tier() 函数 MUST 与此文件保持同步
 #
 # 等级排序：
+#   GPT-5.4           (tier 4) — OpenAI 系列最强模型，最高能力等级
+#   GPT-5.4-Mini      (tier 3) — OpenAI 轻量模型，仍高于现有非 OpenAI 路由模型
 #   deepseek-v4-pro  (tier 2) — 最强推理模型，复杂任务首选
 #   MiniMax-M3       (tier 1) — 主力编码模型，大多数任务的基线
 #   deepseek-v4-flash (tier 0) — 低成本快速模型，简单/发散任务
@@ -25,3 +27,5 @@ models:
   deepseek-v4-flash: 0
   MiniMax-M3: 1
   deepseek-v4-pro: 2
+  GPT-5.4-Mini: 3
+  GPT-5.4: 4

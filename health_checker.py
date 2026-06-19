@@ -726,8 +726,8 @@ def _find_provider_config(provider: str):
     for model, mc in MODEL_TO_CONFIG.items():
         if MODEL_TO_PROVIDER.get(model) == provider:
             return (
-                mc.get("base_url"), model,
-                mc.get("api_key_env"), mc.get("protocol", "anthropic"),
+                mc[0], model,
+                mc[2], mc[3],
             )
     return None
 

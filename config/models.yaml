@@ -1,0 +1,51 @@
+models:
+  MiniMax-M3:
+    provider: minimax
+    base_url: https://api.minimaxi.com/anthropic
+    api_key_env: MINIMAX_API_KEY
+    protocol: anthropic
+
+  deepseek-v4-flash:
+    provider: deepseek
+    base_url: https://api.deepseek.com/anthropic
+    api_key_env: DEEPSEEK_API_KEY
+    protocol: anthropic
+
+  deepseek-v4-pro:
+    provider: deepseek
+    base_url: https://api.deepseek.com/anthropic
+    api_key_env: DEEPSEEK_API_KEY
+    protocol: anthropic
+
+  GPT-5.4:
+    provider: openai
+    base_url: https://api.openai.com
+    api_key_env: OPENAI_API_KEY
+    protocol: openai
+
+  GPT-5.4-Mini:
+    provider: openai
+    base_url: https://api.openai.com
+    api_key_env: OPENAI_API_KEY
+    protocol: openai
+
+default_fallback_provider:
+  minimax: deepseek
+  deepseek: minimax
+  openai: minimax
+
+provider_complexity_models:
+  minimax:
+    simple: MiniMax-M3
+    medium: MiniMax-M3
+    complex: MiniMax-M3
+
+  deepseek:
+    simple: deepseek-v4-flash
+    medium: deepseek-v4-pro
+    complex: deepseek-v4-pro
+
+  openai:
+    simple: GPT-5.4-Mini
+    medium: GPT-5.4
+    complex: GPT-5.4

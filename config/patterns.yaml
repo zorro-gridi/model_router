@@ -1,0 +1,218 @@
+patterns:
+  explore:
+    label: "探索与调研"
+    default_flow: ["plan", "design"]
+    default_complexity: "simple"
+    primary_model: "MiniMax-M3"
+    keywords:
+      - ["explore", 3]
+      - ["调研", 3]
+      - ["了解一下", 2]
+      - ["搞清楚", 2]
+      - ["read code", 2]
+      - ["understand", 2]
+      - ["trace", 2]
+      - ["investigate", 2]
+      - ["看看", 1]
+      - ["分析现状", 2]
+      - ["梳理", 1]
+
+  architecture:
+    label: "架构设计"
+    default_flow: ["explore", "plan", "design", "audit"]
+    default_complexity: "complex"
+    primary_model: "MiniMax-M3"
+    keywords:
+      - ["架构", 3]
+      - ["architecture", 3]
+      - ["系统设计", 3]
+      - ["顶层设计", 3]
+      - ["整体方案", 2]
+      - ["技术选型", 2]
+      - ["模块划分", 3]
+
+  feature:
+    label: "新功能需求"
+    default_flow: ["plan", "design", "implement", "test", "audit"]
+    default_complexity: "medium"
+    primary_model: "MiniMax-M3"
+    keywords:
+      - ["新增功能", 3]
+      - ["添加功能", 3]
+      - ["加个功能", 2]
+      - ["新增字段", 2]
+      - ["新功能", 2]
+      - ["做一个", 1]
+      - ["实现一个", 1]
+      - ["new feature", 3]
+      - ["add feature", 3]
+      - ["implement feature", 3]
+      - ["support ", 1]
+      - ["支持 ", 1]
+      - ["加", 1]
+
+  implement:
+    label: "功能实现"
+    default_flow: ["plan", "design", "implement", "test"]
+    default_complexity: "medium"
+    primary_model: "MiniMax-M3"
+    keywords:
+      - ["实现", 3]
+      - ["实施", 3]
+      - ["写代码", 2]
+      - ["开发", 3]
+      - ["develop", 3]
+      - ["build", 2]
+      - ["create", 2]
+      - ["coding", 2]
+      - ["代码实现", 3]
+      - ["implement", 1]
+
+  debug:
+    label: "调试异常"
+    default_flow: ["explore", "implement", "test"]
+    default_complexity: "medium"
+    primary_model: "MiniMax-M3"
+    keywords:
+      - ["bug", 3]
+      - ["fix", 3]
+      - ["修复", 3]
+      - ["defect", 3]
+      - ["崩溃", 3]
+      - ["crash", 3]
+      - ["异常", 2]
+      - ["报错", 2]
+      - ["error", 2]
+      - ["故障", 3]
+      - ["debug", 3]
+      - ["修", 1]
+
+  refactor:
+    label: "模块重构"
+    default_flow: ["explore", "design", "implement", "test", "audit"]
+    default_complexity: "medium"
+    primary_model: "MiniMax-M3"
+    keywords:
+      - ["refactor", 3]
+      - ["重构", 3]
+      - ["整理", 2]
+      - ["优化结构", 3]
+      - ["restructure", 3]
+      - ["reorganize", 2]
+      - ["改结构", 3]
+      - ["清理", 1]
+
+  test:
+    label: "测试相关"
+    default_flow: ["explore", "test", "audit"]
+    default_complexity: "medium"
+    primary_model: "MiniMax-M3"
+    keywords:
+      - ["写测试", 3]
+      - ["补测试", 3]
+      - ["单元测试", 3]
+      - ["unit test", 3]
+      - ["integration test", 3]
+      - ["test case", 2]
+      - ["测试", 1]
+
+  research:
+    label: "调查研究"
+    default_flow: ["explore", "plan", "design"]
+    default_complexity: "medium"
+    primary_model: "deepseek-v4-flash"
+    keywords:
+      - ["调研", 3]
+      - ["research", 3]
+      - ["比较方案", 2]
+      - ["对比", 1]
+      - ["evaluate", 2]
+      - ["哪个好", 1]
+      - ["选哪个", 1]
+      - ["查一下", 1]
+
+  migration:
+    label: "模块迁移"
+    default_flow: ["plan", "design", "implement", "test", "audit"]
+    default_complexity: "complex"
+    primary_model: "MiniMax-M3"
+    keywords:
+      - ["migration", 3]
+      - ["migrate", 3]
+      - ["迁移", 3]
+      - ["迁到", 2]
+      - ["迁过去", 2]
+      - ["升级", 2]
+      - ["upgrade", 2]
+      - ["迁移到", 3]
+      - ["升级到", 2]
+      - ["无损迁移", 3]
+
+  docs:
+    label: "文档处理"
+    default_flow: ["explore", "implement"]
+    default_complexity: "simple"
+    primary_model: "deepseek-v4-flash"
+    keywords:
+      - ["写文档", 3]
+      - ["写说明", 3]
+      - ["readme", 3]
+      - ["comment", 2]
+      - ["注释", 1]
+      - ["注释一下", 2]
+      - ["documentation", 3]
+      - ["docs", 2]
+
+  audit:
+    label: "审计系统功能"
+    default_flow: ["explore", "audit"]
+    default_complexity: "complex"
+    primary_model: "MiniMax-M3"
+    keywords:
+      - ["code review", 3]
+      - ["安全审查", 3]
+      - ["安全审计", 3]
+      - ["security review", 3]
+      - ["审计", 3]
+      - ["漏洞", 2]
+      - ["vulnerability", 3]
+      - ["性能审查", 2]
+
+  ops:
+    label: "运维、脚本、配置类任务"
+    default_flow: ["explore", "implement", "test"]
+    default_complexity: "medium"
+    primary_model: "MiniMax-M3"
+    keywords:
+      - ["ci/cd", 3]
+      - ["pipeline", 3]
+      - ["workflow", 2]
+      - ["deploy", 3]
+      - ["部署", 3]
+      - ["发布", 2]
+      - ["script", 2]
+      - ["脚本", 2]
+      - ["cron", 3]
+      - ["config", 2]
+      - ["配置", 2]
+      - ["yaml", 2]
+      - ["toml", 2]
+      - ["env", 1]
+      - ["环境变量", 2]
+
+  bugfix:
+    label: "缺陷修复"
+    default_flow: ["explore", "implement", "test"]
+    default_complexity: "medium"
+    primary_model: "MiniMax-M3"
+    keywords:
+      - ["bug", 3]
+      - ["fix", 3]
+      - ["修复", 3]
+      - ["defect", 3]
+      - ["崩溃", 3]
+      - ["crash", 3]
+      - ["异常", 2]
+      - ["报错", 2]
+      - ["error", 2]
+      - ["修", 1]

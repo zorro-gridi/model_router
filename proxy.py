@@ -32,6 +32,8 @@ Model-override 路由（2026-06-13 引入，最高优先级）：
 端口配置优先级：--port 命令行参数 > STAGE_ROUTER_PORT 环境变量 > 默认 7878
 """
 
+from __future__ import annotations
+
 import argparse
 import http.server
 import json
@@ -163,6 +165,8 @@ from hooks.compact.utils import _find_project_root  # noqa: E402
 NATIVE_ANTHROPIC_DOMAINS: tuple[str, ...] = (
     "api.anthropic.com",
 )
+
+OPENAI_LOCAL_HTTPS_PROXY = "http://127.0.0.1:7890"
 
 
 def _is_native_anthropic(target_base: str) -> bool:
@@ -770,6 +774,24 @@ def resolve_model_routing(model_name: str) -> tuple[str, str, str, str, str, str
                 cfg["fb_base_url"], cfg["fb_model"], cfg["fb_api_key_env"], cfg["fb_protocol"],
                 cfg["base_url"], cfg["model"], cfg["api_key_env"], cfg["protocol"],
             )
+    cfg = MODEL_TO_CONFIG.get(model_name)
+    if cfg:
+        base_url, model, api_key_env, protocol = cfg
+        provider = MODEL_TO_PROVIDER.get(model)
+        fallback_provider = DEFAULT_FALLBACK_PROVIDER.get(provider or "")
+        fallback_cfg = None
+        if fallback_provider:
+            fallback_model = PROVIDER_COMPLEXITY_MODELS.get(fallback_provider, {}).get("medium")
+            if fallback_model:
+                fallback_cfg = MODEL_TO_CONFIG.get(fallback_model)
+        if fallback_cfg:
+            fb_base, fb_model, fb_key_env, fb_protocol = fallback_cfg
+        else:
+            fb_base, fb_model, fb_key_env, fb_protocol = base_url, model, api_key_env, protocol
+        return (
+            base_url, model, api_key_env, protocol,
+            fb_base, fb_model, fb_key_env, fb_protocol,
+        )
     return None
 
 # ── Sticky Fallback（per-session 主模型降级记忆）───────────────────────────────
@@ -2264,11 +2286,21 @@ def forward_request(
             fwd_headers["anthropic-beta"] = src_headers["anthropic-beta"]
 
     req = urllib.request.Request(url, data=new_body, headers=fwd_headers, method=method)
+    request_opener = None
+    if MODEL_TO_PROVIDER.get(target_model) == "openai":
+        request_opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"https": OPENAI_LOCAL_HTTPS_PROXY})
+        )
+        log.info(
+            f"OpenAI 路由启用本地 https_proxy: model={target_model} "
+            f"proxy={OPENAI_LOCAL_HTTPS_PROXY}"
+        )
     try:
         # 2026-06-17：埋点首字节耗时。urlopen 返回即视为响应对象可用
         # （chunked 编码下 status line 已收到，等同首字节）。
         _urlopen_t0 = time.time()
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        open_fn = request_opener.open if request_opener is not None else urllib.request.urlopen
+        with open_fn(req, timeout=timeout) as resp:
             _latency["ttfb_ms"] = int((time.time() - _urlopen_t0) * 1000)
             resp_body = resp.read()
             resp_headers = dict(resp.headers)
