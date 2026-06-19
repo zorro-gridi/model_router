@@ -1,0 +1,1784 @@
+{
+  "/Users/zorro/.claude": {
+    "session_id": "58952dcb-56a0-497f-b106-25bade95f034",
+    "stage": "implement",
+    "last_active": 1781835694
+  },
+  "/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-5p01a1ra": {
+    "session_id": "e2e-35d924daae35",
+    "stage": "default",
+    "last_active": 1781532023
+  },
+  "/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-97hazvra": {
+    "session_id": "e2e-e58589b62526",
+    "stage": "default",
+    "last_active": 1781532029
+  },
+  "/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-nblrlxnt": {
+    "session_id": "e2e-a5b48e39ce56",
+    "stage": "default",
+    "last_active": 1781532033
+  },
+  "/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-0md5llfk": {
+    "session_id": "e2e-b8a864eea8cf",
+    "stage": "default",
+    "last_active": 1781532040
+  },
+  "/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-pqjs6q5h": {
+    "session_id": "e2e-8a26361c2a6d",
+    "stage": "default",
+    "last_active": 1781532043
+  },
+  "/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ra16mk4u": {
+    "session_id": "e2e-7c492ea4c115",
+    "stage": "default",
+    "last_active": 1781532046
+  },
+  "/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-gjh2grmi": {
+    "session_id": "e2e-c631d5cc137c",
+    "stage": "default",
+    "last_active": 1781532050
+  },
+  "/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-w_7bpebq": {
+    "session_id": "e2e-0cb44f2324c0",
+    "stage": "default",
+    "last_active": 1781532053
+  },
+  "/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-g0tyo9ct": {
+    "session_id": "e2e-8890bef7c817",
+    "stage": "default",
+    "last_active": 1781532057
+  },
+  "/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-lmkq3jbw": {
+    "session_id": "e2e-b55e1eddd304",
+    "stage": "implement",
+    "last_active": 1781532069
+  },
+  "/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-45kbkgjp": {
+    "session_id": "e2e-a62e75866042",
+    "stage": "default",
+    "last_active": 1781532073
+  },
+  "/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-5ye4vzam": {
+    "session_id": "e2e-8172a538ed9e",
+    "stage": "default",
+    "last_active": 1781532075
+  },
+  "/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-pgoib8zo": {
+    "session_id": "e2e-9262f46ec31d",
+    "stage": "implement",
+    "last_active": 1781532083
+  },
+  "/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-x59q2e27": {
+    "session_id": "e2e-83ac5eb2ca58",
+    "stage": "implement",
+    "last_active": 1781532090
+  },
+  "_by_session": {
+    "81c5ac33-7ca5-4088-b870-a6c3c8895c41": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "explore",
+      "last_active": 1781708591
+    },
+    "e2e-autoticket-2026-06-17-aaaa": {
+      "project_root": "/Users/zorro/project/auto_ticket",
+      "stage": "default",
+      "last_active": 1781706338
+    },
+    "e2e-autoticket-2026-06-17-bbbb": {
+      "project_root": "/Users/zorro/project/auto_ticket",
+      "stage": "default",
+      "last_active": 1781706370
+    },
+    "e2e-statusline-2026-06-17-cccc": {
+      "project_root": "/Users/zorro/project/auto_ticket",
+      "stage": "default",
+      "last_active": 1781706611
+    },
+    "b0560ea9-5ed7-4bce-8597-78fd692195e1": {
+      "project_root": "/Users/zorro/project/auto_ticket",
+      "stage": "explore",
+      "last_active": 1781709216
+    },
+    "02ff79c7-test": {
+      "project_root": "/Users/zorro/project/auto_ticket",
+      "stage": "default",
+      "last_active": 1781708510
+    },
+    "fce07bc5-eb4c-452d-8a7c-2973a1780f9d": {
+      "project_root": "/Users/zorro/project/auto_ticket",
+      "stage": "explore",
+      "last_active": 1781744661
+    },
+    "0a71fa8e-41f5-49b0-9b80-010fe1275a00": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "default",
+      "last_active": 1781743036
+    },
+    "1b34cb23-ba01-4c49-85a1-e12a790ec2b8": {
+      "project_root": "/Users/zorro/project/auto_ticket",
+      "stage": "explore",
+      "last_active": 1781754860
+    },
+    "ce8a69ff-f667-405f-bfb1-5d8ac4b256ae": {
+      "project_root": "/Users/zorro/project/auto_ticket",
+      "stage": "explore",
+      "last_active": 1781760438
+    },
+    "450dc28b-0ab7-4506-8c8b-b83b25592363": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "default",
+      "last_active": 1781754520
+    },
+    "6db9ef13-1d10-4f88-8096-2378e372afde": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "default",
+      "last_active": 1781755040
+    },
+    "42bc727b-0277-4680-8415-e269f74806a9": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "default",
+      "last_active": 1781757592
+    },
+    "72f146ce-6969-4515-83d6-460f3834998e": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "default",
+      "last_active": 1781758818
+    },
+    "cbd9540c-e2d8-42b9-8af0-0f90cd0ec638": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "implement",
+      "last_active": 1781774325
+    },
+    "d99a6eef-9143-4683-b8e3-c963eb43d235": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "default",
+      "last_active": 1781767139
+    },
+    "8b8d9e20-cf91-4370-b054-83603a2044af": {
+      "project_root": "/Users/zorro/project/auto_ticket",
+      "stage": "default",
+      "last_active": 1781768766
+    },
+    "867263e4-8749-4b5e-95a7-304ad7f84d44": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "implement",
+      "last_active": 1781784930
+    },
+    "test-hooksim-002": {
+      "project_root": "/private/tmp/hook_test_project_2",
+      "stage": "implement",
+      "last_active": 1781771716
+    },
+    "571cc6bc-6112-4063-b119-274646b01c3f": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "decide",
+      "last_active": 1781778855
+    },
+    "e2e-7fdbaae4696c": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-bf_xjd_n",
+      "stage": "default",
+      "last_active": 1781775369
+    },
+    "e2e-c72b50b5cb3d": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-y50dsuhe",
+      "stage": "default",
+      "last_active": 1781775372
+    },
+    "e2e-9f95a22dfbd2": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-syhsjdbh",
+      "stage": "default",
+      "last_active": 1781775375
+    },
+    "e2e-a307c3e66217": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-nq_ihzdn",
+      "stage": "default",
+      "last_active": 1781775379
+    },
+    "e2e-e891bf6b892a": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-tpdhjm_p",
+      "stage": "default",
+      "last_active": 1781775382
+    },
+    "e2e-3d0941c1d884": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-e0lit8na",
+      "stage": "default",
+      "last_active": 1781775385
+    },
+    "e2e-0b496b50d44c": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-k2med2xl",
+      "stage": "default",
+      "last_active": 1781775388
+    },
+    "e2e-d8a3aec937e3": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-de1aiye4",
+      "stage": "default",
+      "last_active": 1781775392
+    },
+    "e2e-7d6529f3c5db": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-wkqoa7md",
+      "stage": "default",
+      "last_active": 1781775395
+    },
+    "e2e-be637dc69d65": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-fpuqvf5c",
+      "stage": "default",
+      "last_active": 1781775402
+    },
+    "e2e-274e17f4f01c": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-r3y_1pk_",
+      "stage": "default",
+      "last_active": 1781775406
+    },
+    "e2e-af946d5c3eae": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-q60rlufu",
+      "stage": "default",
+      "last_active": 1781775409
+    },
+    "e2e-19bd8ee16356": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-5wbxwl9n",
+      "stage": "implement",
+      "last_active": 1781775417
+    },
+    "e2e-ab1aec720db4": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ro94ng75",
+      "stage": "implement",
+      "last_active": 1781775425
+    },
+    "e2e-8ad8bbef01e2": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-05vzoszl",
+      "stage": "default",
+      "last_active": 1781776139
+    },
+    "e2e-44feb1bc6001": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-7nzfjn89",
+      "stage": "default",
+      "last_active": 1781776144
+    },
+    "e2e-cf0fb572dc93": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-n0ftzbyv",
+      "stage": "default",
+      "last_active": 1781776148
+    },
+    "e2e-d353a7953e85": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-cdklzb91",
+      "stage": "default",
+      "last_active": 1781776154
+    },
+    "e2e-31a660515e2a": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-kraoh16s",
+      "stage": "default",
+      "last_active": 1781776157
+    },
+    "e2e-2d6469ddbb53": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_2sm3qiv",
+      "stage": "default",
+      "last_active": 1781776160
+    },
+    "e2e-0c474812d761": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-cv6hbzx6",
+      "stage": "default",
+      "last_active": 1781776164
+    },
+    "e2e-f9fdc810038b": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-vz1okpm6",
+      "stage": "default",
+      "last_active": 1781776169
+    },
+    "e2e-2fcd7ebde0f0": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-m4ncjz83",
+      "stage": "default",
+      "last_active": 1781776172
+    },
+    "e2e-e41ff6bfd502": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-thdmqnqi",
+      "stage": "implement",
+      "last_active": 1781776180
+    },
+    "e2e-625f3b2bf0b8": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-8831i4oz",
+      "stage": "default",
+      "last_active": 1781776184
+    },
+    "e2e-752ec8e5d83c": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ovn6b9_2",
+      "stage": "default",
+      "last_active": 1781776186
+    },
+    "e2e-94750bb7b9eb": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-xz61ouiy",
+      "stage": "implement",
+      "last_active": 1781776195
+    },
+    "e2e-dd24414c9f68": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-wm5ntys5",
+      "stage": "implement",
+      "last_active": 1781776201
+    },
+    "e4847510-ea58-439e-8940-5bbc4a93895e": {
+      "project_root": "/Users/zorro/project/auto_ticket",
+      "stage": "audit",
+      "last_active": 1781783612
+    },
+    "d8f6929f-22dc-4a42-a534-667bc068afff": {
+      "project_root": "/Users/zorro/project/auto_ticket",
+      "stage": "implement",
+      "last_active": 1781782880
+    },
+    "580faf30-8a1e-41ba-ae8a-426d01dfe1ea": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "explore",
+      "last_active": 1781827083
+    },
+    "e2e-06e95a01af72": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ijwzuqwn",
+      "stage": "default",
+      "last_active": 1781786970
+    },
+    "e2e-5d6d05e08cce": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-qtte8__e",
+      "stage": "default",
+      "last_active": 1781786976
+    },
+    "e2e-fd7e719f28ae": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-aswlpor8",
+      "stage": "default",
+      "last_active": 1781786980
+    },
+    "e2e-cf4e8d94b077": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-nkfniphz",
+      "stage": "default",
+      "last_active": 1781786987
+    },
+    "e2e-63aded013b66": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-xmlwh2uz",
+      "stage": "default",
+      "last_active": 1781786990
+    },
+    "e2e-ed7a734539f5": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_gp537qc",
+      "stage": "default",
+      "last_active": 1781786994
+    },
+    "e2e-7fa6e036a306": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-tysss0nm",
+      "stage": "default",
+      "last_active": 1781786997
+    },
+    "e2e-8de44afa38ef": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-l19d7lbx",
+      "stage": "default",
+      "last_active": 1781787001
+    },
+    "e2e-1e906670cbf0": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-i2nttao9",
+      "stage": "default",
+      "last_active": 1781787004
+    },
+    "e2e-e680b95b2ba5": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-3bgexy3n",
+      "stage": "implement",
+      "last_active": 1781787015
+    },
+    "e2e-320cf567b681": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-s3pg59g1",
+      "stage": "default",
+      "last_active": 1781787018
+    },
+    "e2e-68090baff493": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-86ke41xy",
+      "stage": "default",
+      "last_active": 1781787021
+    },
+    "e2e-8c04a4bc1730": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-usnqd9sn",
+      "stage": "implement",
+      "last_active": 1781787028
+    },
+    "e2e-e2059eabb129": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-xbzm7b6s",
+      "stage": "implement",
+      "last_active": 1781787036
+    },
+    "e2e-9d77c4d6c4cf": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-s3z7ra7o",
+      "stage": "default",
+      "last_active": 1781787054
+    },
+    "e2e-c038f7449a58": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-hop2ycwl",
+      "stage": "default",
+      "last_active": 1781787058
+    },
+    "e2e-d652629d41e3": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-3f63f0fk",
+      "stage": "default",
+      "last_active": 1781787063
+    },
+    "e2e-51618179aca1": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-kmn4kk6f",
+      "stage": "default",
+      "last_active": 1781787068
+    },
+    "e2e-5e074006f2f7": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-xqqng1vd",
+      "stage": "default",
+      "last_active": 1781787071
+    },
+    "e2e-2a4949ed5d10": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_1jm6pui",
+      "stage": "default",
+      "last_active": 1781787074
+    },
+    "e2e-f9c4ea0a27ec": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_84insg7",
+      "stage": "default",
+      "last_active": 1781787079
+    },
+    "e2e-667e82d71b00": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-i77zxtzn",
+      "stage": "default",
+      "last_active": 1781787083
+    },
+    "e2e-84cf12a88a7d": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-egt72ram",
+      "stage": "default",
+      "last_active": 1781787086
+    },
+    "e2e-d9cef9201c13": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-y02z1mvz",
+      "stage": "implement",
+      "last_active": 1781787095
+    },
+    "e2e-66ca1d5123a7": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_3s74id6",
+      "stage": "default",
+      "last_active": 1781787098
+    },
+    "e2e-4a7ae0cb3912": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ayt_jdey",
+      "stage": "default",
+      "last_active": 1781787101
+    },
+    "e2e-339be89fc39d": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-bi2l6lr7",
+      "stage": "implement",
+      "last_active": 1781787111
+    },
+    "e2e-7d0c34886750": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-5jcwwrme",
+      "stage": "implement",
+      "last_active": 1781787121
+    },
+    "e2e-96848dd5b980": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-bxoxco0j",
+      "stage": "default",
+      "last_active": 1781787166
+    },
+    "e2e-be2ebac45b70": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-rlum526f",
+      "stage": "default",
+      "last_active": 1781787183
+    },
+    "e2e-d45a6a8007f3": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ahfns3ji",
+      "stage": "default",
+      "last_active": 1781787187
+    },
+    "e2e-bec6b2a1ebf6": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-7ft5jgbo",
+      "stage": "default",
+      "last_active": 1781787192
+    },
+    "e2e-a8177175608b": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-q9iw4p93",
+      "stage": "default",
+      "last_active": 1781787200
+    },
+    "e2e-7402a464926e": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-psk9_65q",
+      "stage": "default",
+      "last_active": 1781787202
+    },
+    "e2e-78881193c03e": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-bqpz9j1o",
+      "stage": "default",
+      "last_active": 1781787206
+    },
+    "e2e-bacce2494d44": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-rl0xabuo",
+      "stage": "default",
+      "last_active": 1781787210
+    },
+    "e2e-9baba827a770": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-wyzx1gp5",
+      "stage": "default",
+      "last_active": 1781787215
+    },
+    "e2e-764e2bcb77b3": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-r4xlhl37",
+      "stage": "default",
+      "last_active": 1781787223
+    },
+    "e2e-c1a9f53b19ea": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-m145q_am",
+      "stage": "implement",
+      "last_active": 1781787232
+    },
+    "e2e-62040a069c62": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-1mrkk9pv",
+      "stage": "default",
+      "last_active": 1781787238
+    },
+    "e2e-256174a5968e": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-3dnqwzqz",
+      "stage": "default",
+      "last_active": 1781787241
+    },
+    "e2e-5cb513dde7d9": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-5axawpnk",
+      "stage": "implement",
+      "last_active": 1781787248
+    },
+    "e2e-2c981b83ec16": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-abi0g8ac",
+      "stage": "implement",
+      "last_active": 1781787257
+    },
+    "e2e-036724cb20dc": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-eshgk40k",
+      "stage": "default",
+      "last_active": 1781787297
+    },
+    "e2e-2d55c80e2140": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-90dk96k2",
+      "stage": "default",
+      "last_active": 1781787300
+    },
+    "e2e-b013eeecc0b8": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-54apl2qz",
+      "stage": "default",
+      "last_active": 1781787306
+    },
+    "e2e-7a7552d5210c": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-7ml2bj9u",
+      "stage": "default",
+      "last_active": 1781787312
+    },
+    "e2e-34609ad74f98": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-8okr7zig",
+      "stage": "default",
+      "last_active": 1781787315
+    },
+    "e2e-fc6c707479a2": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-k1y7t81c",
+      "stage": "default",
+      "last_active": 1781787320
+    },
+    "e2e-9ee62a1a6f42": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-2c6a1v47",
+      "stage": "default",
+      "last_active": 1781787326
+    },
+    "e2e-2ef5c87adb9f": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-0zo7k7vm",
+      "stage": "default",
+      "last_active": 1781787330
+    },
+    "e2e-92c8a7a098de": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-26w8owi4",
+      "stage": "default",
+      "last_active": 1781787334
+    },
+    "e2e-5f81f88a096c": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ahf7o55p",
+      "stage": "default",
+      "last_active": 1781787339
+    },
+    "e2e-e8124dc1ce33": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-v1avj6vs",
+      "stage": "default",
+      "last_active": 1781787342
+    },
+    "e2e-00f6b3149131": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-m4hdz35z",
+      "stage": "default",
+      "last_active": 1781787345
+    },
+    "e2e-2110f02b7eb5": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-1e4chskn",
+      "stage": "implement",
+      "last_active": 1781787353
+    },
+    "e2e-94d2b29ef51b": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-0l5nc4v6",
+      "stage": "implement",
+      "last_active": 1781787362
+    },
+    "e2e-5380b0890ad2": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-cd1y1kwc",
+      "stage": "implement",
+      "last_active": 1781787482
+    },
+    "e2e-40347e60f527": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-fuk7ym78",
+      "stage": "default",
+      "last_active": 1781787504
+    },
+    "e2e-e77010adb7f2": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-wf8d2_63",
+      "stage": "default",
+      "last_active": 1781787508
+    },
+    "e2e-72f49a74ea9a": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-qjw2y6lu",
+      "stage": "default",
+      "last_active": 1781787512
+    },
+    "e2e-1f8708e7be7e": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-6c8sggfn",
+      "stage": "default",
+      "last_active": 1781787521
+    },
+    "e2e-51c69f4c8c98": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-cd7kyoqu",
+      "stage": "default",
+      "last_active": 1781787524
+    },
+    "e2e-1b86bf249870": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-5yzlu02v",
+      "stage": "default",
+      "last_active": 1781787529
+    },
+    "e2e-193291de95bb": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_d930n9_",
+      "stage": "default",
+      "last_active": 1781787534
+    },
+    "e2e-febbe1004241": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-0kudxdip",
+      "stage": "default",
+      "last_active": 1781787538
+    },
+    "e2e-7873ddaf4110": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_geuntui",
+      "stage": "default",
+      "last_active": 1781787542
+    },
+    "e2e-d23cd61dafeb": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-qxmvyyd8",
+      "stage": "implement",
+      "last_active": 1781787550
+    },
+    "e2e-909154c5941f": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-2mol_rqp",
+      "stage": "default",
+      "last_active": 1781787553
+    },
+    "e2e-3ef3371e9e7b": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ypi2_tqe",
+      "stage": "default",
+      "last_active": 1781787556
+    },
+    "e2e-7413c540204d": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-qexfpqmy",
+      "stage": "implement",
+      "last_active": 1781787566
+    },
+    "e2e-c3460d95b2a3": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-epedy376",
+      "stage": "implement",
+      "last_active": 1781787575
+    },
+    "c14887c4-2468-4516-83d1-e59c2f28fb26": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "implement",
+      "last_active": 1781796444
+    },
+    "e2e-1501fe602599": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-7cb553ts",
+      "stage": "default",
+      "last_active": 1781787783
+    },
+    "e2e-90523ed6774f": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-qkfjt4ao",
+      "stage": "default",
+      "last_active": 1781787788
+    },
+    "e2e-bf94624fa74f": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-re96gwcf",
+      "stage": "implement",
+      "last_active": 1781787796
+    },
+    "e2e-c5e89aee1362": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-8sk7tfah",
+      "stage": "default",
+      "last_active": 1781787801
+    },
+    "e2e-50e7044c7f78": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-rxl4aexc",
+      "stage": "default",
+      "last_active": 1781787804
+    },
+    "e2e-dd85853cc97b": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-yz7h3j4a",
+      "stage": "default",
+      "last_active": 1781787849
+    },
+    "e2e-e529e8a49919": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-v0bl542r",
+      "stage": "default",
+      "last_active": 1781787852
+    },
+    "e2e-3989ee22b63f": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-x1v1_zos",
+      "stage": "default",
+      "last_active": 1781787856
+    },
+    "e2e-63b12bc36c5c": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-f9_se_ny",
+      "stage": "default",
+      "last_active": 1781787863
+    },
+    "e2e-ba1e602c1014": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-9tp99_q7",
+      "stage": "default",
+      "last_active": 1781787866
+    },
+    "e2e-3c47a8ae4fd4": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-qeerjfcx",
+      "stage": "default",
+      "last_active": 1781787870
+    },
+    "e2e-399e74b8061f": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_mi_dzjy",
+      "stage": "default",
+      "last_active": 1781787878
+    },
+    "e2e-a55380c3c6af": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-8aaqdmgu",
+      "stage": "default",
+      "last_active": 1781787885
+    },
+    "e2e-822ed6188ba1": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-gwcnq64e",
+      "stage": "default",
+      "last_active": 1781787888
+    },
+    "e2e-b5f9de3625d9": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-r04q13k_",
+      "stage": "implement",
+      "last_active": 1781787896
+    },
+    "e2e-77fe39de7408": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-wdtco52e",
+      "stage": "default",
+      "last_active": 1781787899
+    },
+    "e2e-cb9fcc1f67fb": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-qh0z4pr1",
+      "stage": "default",
+      "last_active": 1781787902
+    },
+    "e2e-adfb998fc7dd": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-jwqpqbrk",
+      "stage": "implement",
+      "last_active": 1781787912
+    },
+    "e2e-2647511a455d": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-rafvlm2x",
+      "stage": "implement",
+      "last_active": 1781787920
+    },
+    "16ae7291-8238-4299-9436-1cd5210a48af": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "default",
+      "last_active": 1781788303
+    },
+    "e2e-7bffec95b7ce": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ls4y24ly",
+      "stage": "default",
+      "last_active": 1781788540
+    },
+    "e2e-56aa7d394488": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-8zx6kjgt",
+      "stage": "default",
+      "last_active": 1781788542
+    },
+    "e2e-3a00d30b3bb7": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-o6y9cp0a",
+      "stage": "default",
+      "last_active": 1781788543
+    },
+    "e2e-a66aaaeb64d1": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-70dz_urv",
+      "stage": "default",
+      "last_active": 1781788545
+    },
+    "e2e-714295719d7f": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-40hdjfj_",
+      "stage": "default",
+      "last_active": 1781788547
+    },
+    "e2e-0eba0b90c61f": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ulegv59g",
+      "stage": "default",
+      "last_active": 1781788548
+    },
+    "e2e-1e7ab90bd589": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-5i22pva5",
+      "stage": "default",
+      "last_active": 1781788549
+    },
+    "e2e-7b2e1ddb5cab": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-zygpg9ap",
+      "stage": "default",
+      "last_active": 1781788551
+    },
+    "e2e-c8ef2e2d8f4c": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-gtui9qy5",
+      "stage": "default",
+      "last_active": 1781788552
+    },
+    "e2e-67ee0e005433": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-o6fnys_f",
+      "stage": "default",
+      "last_active": 1781788554
+    },
+    "e2e-f0a5f54d0fa7": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-1qcfwcra",
+      "stage": "default",
+      "last_active": 1781788555
+    },
+    "e2e-ad9279af86fa": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-0yfjfaxj",
+      "stage": "default",
+      "last_active": 1781788556
+    },
+    "e2e-d643e406bec6": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-xsen1vrx",
+      "stage": "default",
+      "last_active": 1781788559
+    },
+    "e2e-784b10e7e691": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-eiepm74n",
+      "stage": "default",
+      "last_active": 1781788561
+    },
+    "c29839f9-fef7-4726-b360-7d43b6d2d03d": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "default",
+      "last_active": 1781793675
+    },
+    "1e207cd9-73f3-4f70-a572-6fbd8279f5c3": {
+      "project_root": "/Users/zorro/project/auto_ticket",
+      "stage": "default",
+      "last_active": 1781796542
+    },
+    "e6006e55-a256-44a5-bd9b-1f3ceecaae22": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "implement",
+      "last_active": 1781797014
+    },
+    "b8ba92fa-bfca-4e92-898e-0894085468a3": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "explore",
+      "last_active": 1781797305
+    },
+    "e2e-ddfce96ffb40": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ase93mlv",
+      "stage": "default",
+      "last_active": 1781796350
+    },
+    "e2e-2f34ed860a9a": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-wlogj_v9",
+      "stage": "default",
+      "last_active": 1781796354
+    },
+    "e2e-5d795ef0c645": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-5gvk_dot",
+      "stage": "default",
+      "last_active": 1781796359
+    },
+    "e2e-f63ee6870d54": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-0rugchii",
+      "stage": "default",
+      "last_active": 1781796364
+    },
+    "e2e-4bcbc870b8e7": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-gnb8xb2a",
+      "stage": "default",
+      "last_active": 1781796369
+    },
+    "e2e-28ad31487c7c": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-xby24nld",
+      "stage": "default",
+      "last_active": 1781796372
+    },
+    "e2e-6617fa0f74b2": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-m9z7n9s6",
+      "stage": "default",
+      "last_active": 1781796377
+    },
+    "e2e-ec87ad42f6ac": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-zuw5kt3q",
+      "stage": "default",
+      "last_active": 1781796384
+    },
+    "e2e-b5ab3c2593a1": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-btmzro_n",
+      "stage": "default",
+      "last_active": 1781796386
+    },
+    "e2e-21777cffbf43": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-nquem6gw",
+      "stage": "implement",
+      "last_active": 1781796396
+    },
+    "e2e-d1ebb38c4b23": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-upejgv9n",
+      "stage": "default",
+      "last_active": 1781796402
+    },
+    "e2e-b9c45751de06": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-4sst6sv6",
+      "stage": "default",
+      "last_active": 1781796405
+    },
+    "e2e-d770e10d1688": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-g38sdx8g",
+      "stage": "implement",
+      "last_active": 1781796413
+    },
+    "e2e-5ededfdf623a": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_4e5fqn9",
+      "stage": "implement",
+      "last_active": 1781796424
+    },
+    "bd997689-36ea-4878-a6e6-dd9d218dff47": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "implement",
+      "last_active": 1781832442
+    },
+    "e2e-de6714fe4d7d": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-lebp26dp",
+      "stage": "default",
+      "last_active": 1781825172
+    },
+    "e2e-87f84a54d40d": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-lhi_3hk2",
+      "stage": "default",
+      "last_active": 1781825176
+    },
+    "e2e-6a78a05f0ed8": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-tkng59e9",
+      "stage": "implement",
+      "last_active": 1781825186
+    },
+    "e2e-50cfa6e87f52": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-7tsz26m3",
+      "stage": "default",
+      "last_active": 1781825191
+    },
+    "e2e-928a5169ae39": {
+      "project_root": "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-b0bzht7t",
+      "stage": "default",
+      "last_active": 1781825195
+    },
+    "083dc092-346a-40e5-b925-ff0b13328e8f": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "default",
+      "last_active": 1781828506
+    },
+    "1777d340-0d5d-4235-abd7-98e42716f7af": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "audit",
+      "last_active": 1781832530
+    },
+    "6039cf44-ec24-4400-aa2a-60dfa90ac27c": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "default",
+      "last_active": 1781830718
+    },
+    "58952dcb-56a0-497f-b106-25bade95f034": {
+      "project_root": "/Users/zorro/.claude",
+      "stage": "implement",
+      "last_active": 1781835694
+    }
+  },
+  "/Users/zorro/project/auto_ticket": {
+    "session_id": "1e207cd9-73f3-4f70-a572-6fbd8279f5c3",
+    "stage": "default",
+    "last_active": 1781796542
+  },
+  "/Users/zorro": {
+    "session_id": "cbd9540c-e2d8-42b9-8af0-0f90cd0ec638",
+    "stage": "implement",
+    "last_active": 1781769854
+  },
+  "/private/tmp/hook_test_project_2": {
+    "session_id": "test-hooksim-002",
+    "stage": "implement",
+    "last_active": 1781771716
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-bf_xjd_n": {
+    "session_id": "e2e-7fdbaae4696c",
+    "stage": "default",
+    "last_active": 1781775369
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-y50dsuhe": {
+    "session_id": "e2e-c72b50b5cb3d",
+    "stage": "default",
+    "last_active": 1781775372
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-syhsjdbh": {
+    "session_id": "e2e-9f95a22dfbd2",
+    "stage": "default",
+    "last_active": 1781775375
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-nq_ihzdn": {
+    "session_id": "e2e-a307c3e66217",
+    "stage": "default",
+    "last_active": 1781775379
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-tpdhjm_p": {
+    "session_id": "e2e-e891bf6b892a",
+    "stage": "default",
+    "last_active": 1781775382
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-e0lit8na": {
+    "session_id": "e2e-3d0941c1d884",
+    "stage": "default",
+    "last_active": 1781775385
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-k2med2xl": {
+    "session_id": "e2e-0b496b50d44c",
+    "stage": "default",
+    "last_active": 1781775388
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-de1aiye4": {
+    "session_id": "e2e-d8a3aec937e3",
+    "stage": "default",
+    "last_active": 1781775392
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-wkqoa7md": {
+    "session_id": "e2e-7d6529f3c5db",
+    "stage": "default",
+    "last_active": 1781775395
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-fpuqvf5c": {
+    "session_id": "e2e-be637dc69d65",
+    "stage": "default",
+    "last_active": 1781775402
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-r3y_1pk_": {
+    "session_id": "e2e-274e17f4f01c",
+    "stage": "default",
+    "last_active": 1781775406
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-q60rlufu": {
+    "session_id": "e2e-af946d5c3eae",
+    "stage": "default",
+    "last_active": 1781775409
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-5wbxwl9n": {
+    "session_id": "e2e-19bd8ee16356",
+    "stage": "implement",
+    "last_active": 1781775417
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ro94ng75": {
+    "session_id": "e2e-ab1aec720db4",
+    "stage": "implement",
+    "last_active": 1781775425
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-05vzoszl": {
+    "session_id": "e2e-8ad8bbef01e2",
+    "stage": "default",
+    "last_active": 1781776139
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-7nzfjn89": {
+    "session_id": "e2e-44feb1bc6001",
+    "stage": "default",
+    "last_active": 1781776144
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-n0ftzbyv": {
+    "session_id": "e2e-cf0fb572dc93",
+    "stage": "default",
+    "last_active": 1781776148
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-cdklzb91": {
+    "session_id": "e2e-d353a7953e85",
+    "stage": "default",
+    "last_active": 1781776154
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-kraoh16s": {
+    "session_id": "e2e-31a660515e2a",
+    "stage": "default",
+    "last_active": 1781776157
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_2sm3qiv": {
+    "session_id": "e2e-2d6469ddbb53",
+    "stage": "default",
+    "last_active": 1781776160
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-cv6hbzx6": {
+    "session_id": "e2e-0c474812d761",
+    "stage": "default",
+    "last_active": 1781776164
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-vz1okpm6": {
+    "session_id": "e2e-f9fdc810038b",
+    "stage": "default",
+    "last_active": 1781776169
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-m4ncjz83": {
+    "session_id": "e2e-2fcd7ebde0f0",
+    "stage": "default",
+    "last_active": 1781776172
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-thdmqnqi": {
+    "session_id": "e2e-e41ff6bfd502",
+    "stage": "implement",
+    "last_active": 1781776180
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-8831i4oz": {
+    "session_id": "e2e-625f3b2bf0b8",
+    "stage": "default",
+    "last_active": 1781776184
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ovn6b9_2": {
+    "session_id": "e2e-752ec8e5d83c",
+    "stage": "default",
+    "last_active": 1781776186
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-xz61ouiy": {
+    "session_id": "e2e-94750bb7b9eb",
+    "stage": "implement",
+    "last_active": 1781776195
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-wm5ntys5": {
+    "session_id": "e2e-dd24414c9f68",
+    "stage": "implement",
+    "last_active": 1781776201
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ijwzuqwn": {
+    "session_id": "e2e-06e95a01af72",
+    "stage": "default",
+    "last_active": 1781786970
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-qtte8__e": {
+    "session_id": "e2e-5d6d05e08cce",
+    "stage": "default",
+    "last_active": 1781786976
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-aswlpor8": {
+    "session_id": "e2e-fd7e719f28ae",
+    "stage": "default",
+    "last_active": 1781786980
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-nkfniphz": {
+    "session_id": "e2e-cf4e8d94b077",
+    "stage": "default",
+    "last_active": 1781786987
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-xmlwh2uz": {
+    "session_id": "e2e-63aded013b66",
+    "stage": "default",
+    "last_active": 1781786990
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_gp537qc": {
+    "session_id": "e2e-ed7a734539f5",
+    "stage": "default",
+    "last_active": 1781786994
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-tysss0nm": {
+    "session_id": "e2e-7fa6e036a306",
+    "stage": "default",
+    "last_active": 1781786997
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-l19d7lbx": {
+    "session_id": "e2e-8de44afa38ef",
+    "stage": "default",
+    "last_active": 1781787001
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-i2nttao9": {
+    "session_id": "e2e-1e906670cbf0",
+    "stage": "default",
+    "last_active": 1781787004
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-3bgexy3n": {
+    "session_id": "e2e-e680b95b2ba5",
+    "stage": "implement",
+    "last_active": 1781787015
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-s3pg59g1": {
+    "session_id": "e2e-320cf567b681",
+    "stage": "default",
+    "last_active": 1781787018
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-86ke41xy": {
+    "session_id": "e2e-68090baff493",
+    "stage": "default",
+    "last_active": 1781787021
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-usnqd9sn": {
+    "session_id": "e2e-8c04a4bc1730",
+    "stage": "implement",
+    "last_active": 1781787028
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-xbzm7b6s": {
+    "session_id": "e2e-e2059eabb129",
+    "stage": "implement",
+    "last_active": 1781787036
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-s3z7ra7o": {
+    "session_id": "e2e-9d77c4d6c4cf",
+    "stage": "default",
+    "last_active": 1781787054
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-hop2ycwl": {
+    "session_id": "e2e-c038f7449a58",
+    "stage": "default",
+    "last_active": 1781787058
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-3f63f0fk": {
+    "session_id": "e2e-d652629d41e3",
+    "stage": "default",
+    "last_active": 1781787063
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-kmn4kk6f": {
+    "session_id": "e2e-51618179aca1",
+    "stage": "default",
+    "last_active": 1781787068
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-xqqng1vd": {
+    "session_id": "e2e-5e074006f2f7",
+    "stage": "default",
+    "last_active": 1781787071
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_1jm6pui": {
+    "session_id": "e2e-2a4949ed5d10",
+    "stage": "default",
+    "last_active": 1781787074
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_84insg7": {
+    "session_id": "e2e-f9c4ea0a27ec",
+    "stage": "default",
+    "last_active": 1781787079
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-i77zxtzn": {
+    "session_id": "e2e-667e82d71b00",
+    "stage": "default",
+    "last_active": 1781787083
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-egt72ram": {
+    "session_id": "e2e-84cf12a88a7d",
+    "stage": "default",
+    "last_active": 1781787086
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-y02z1mvz": {
+    "session_id": "e2e-d9cef9201c13",
+    "stage": "implement",
+    "last_active": 1781787095
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_3s74id6": {
+    "session_id": "e2e-66ca1d5123a7",
+    "stage": "default",
+    "last_active": 1781787098
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ayt_jdey": {
+    "session_id": "e2e-4a7ae0cb3912",
+    "stage": "default",
+    "last_active": 1781787101
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-bi2l6lr7": {
+    "session_id": "e2e-339be89fc39d",
+    "stage": "implement",
+    "last_active": 1781787111
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-5jcwwrme": {
+    "session_id": "e2e-7d0c34886750",
+    "stage": "implement",
+    "last_active": 1781787121
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-bxoxco0j": {
+    "session_id": "e2e-96848dd5b980",
+    "stage": "default",
+    "last_active": 1781787166
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-rlum526f": {
+    "session_id": "e2e-be2ebac45b70",
+    "stage": "default",
+    "last_active": 1781787183
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ahfns3ji": {
+    "session_id": "e2e-d45a6a8007f3",
+    "stage": "default",
+    "last_active": 1781787187
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-7ft5jgbo": {
+    "session_id": "e2e-bec6b2a1ebf6",
+    "stage": "default",
+    "last_active": 1781787192
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-q9iw4p93": {
+    "session_id": "e2e-a8177175608b",
+    "stage": "default",
+    "last_active": 1781787200
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-psk9_65q": {
+    "session_id": "e2e-7402a464926e",
+    "stage": "default",
+    "last_active": 1781787202
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-bqpz9j1o": {
+    "session_id": "e2e-78881193c03e",
+    "stage": "default",
+    "last_active": 1781787206
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-rl0xabuo": {
+    "session_id": "e2e-bacce2494d44",
+    "stage": "default",
+    "last_active": 1781787210
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-wyzx1gp5": {
+    "session_id": "e2e-9baba827a770",
+    "stage": "default",
+    "last_active": 1781787215
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-r4xlhl37": {
+    "session_id": "e2e-764e2bcb77b3",
+    "stage": "default",
+    "last_active": 1781787223
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-m145q_am": {
+    "session_id": "e2e-c1a9f53b19ea",
+    "stage": "implement",
+    "last_active": 1781787232
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-1mrkk9pv": {
+    "session_id": "e2e-62040a069c62",
+    "stage": "default",
+    "last_active": 1781787238
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-3dnqwzqz": {
+    "session_id": "e2e-256174a5968e",
+    "stage": "default",
+    "last_active": 1781787241
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-5axawpnk": {
+    "session_id": "e2e-5cb513dde7d9",
+    "stage": "implement",
+    "last_active": 1781787248
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-abi0g8ac": {
+    "session_id": "e2e-2c981b83ec16",
+    "stage": "implement",
+    "last_active": 1781787257
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-eshgk40k": {
+    "session_id": "e2e-036724cb20dc",
+    "stage": "default",
+    "last_active": 1781787297
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-90dk96k2": {
+    "session_id": "e2e-2d55c80e2140",
+    "stage": "default",
+    "last_active": 1781787300
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-54apl2qz": {
+    "session_id": "e2e-b013eeecc0b8",
+    "stage": "default",
+    "last_active": 1781787306
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-7ml2bj9u": {
+    "session_id": "e2e-7a7552d5210c",
+    "stage": "default",
+    "last_active": 1781787312
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-8okr7zig": {
+    "session_id": "e2e-34609ad74f98",
+    "stage": "default",
+    "last_active": 1781787315
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-k1y7t81c": {
+    "session_id": "e2e-fc6c707479a2",
+    "stage": "default",
+    "last_active": 1781787320
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-2c6a1v47": {
+    "session_id": "e2e-9ee62a1a6f42",
+    "stage": "default",
+    "last_active": 1781787326
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-0zo7k7vm": {
+    "session_id": "e2e-2ef5c87adb9f",
+    "stage": "default",
+    "last_active": 1781787330
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-26w8owi4": {
+    "session_id": "e2e-92c8a7a098de",
+    "stage": "default",
+    "last_active": 1781787334
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ahf7o55p": {
+    "session_id": "e2e-5f81f88a096c",
+    "stage": "default",
+    "last_active": 1781787339
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-v1avj6vs": {
+    "session_id": "e2e-e8124dc1ce33",
+    "stage": "default",
+    "last_active": 1781787342
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-m4hdz35z": {
+    "session_id": "e2e-00f6b3149131",
+    "stage": "default",
+    "last_active": 1781787345
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-1e4chskn": {
+    "session_id": "e2e-2110f02b7eb5",
+    "stage": "implement",
+    "last_active": 1781787353
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-0l5nc4v6": {
+    "session_id": "e2e-94d2b29ef51b",
+    "stage": "implement",
+    "last_active": 1781787362
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-cd1y1kwc": {
+    "session_id": "e2e-5380b0890ad2",
+    "stage": "implement",
+    "last_active": 1781787482
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-fuk7ym78": {
+    "session_id": "e2e-40347e60f527",
+    "stage": "default",
+    "last_active": 1781787504
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-wf8d2_63": {
+    "session_id": "e2e-e77010adb7f2",
+    "stage": "default",
+    "last_active": 1781787508
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-qjw2y6lu": {
+    "session_id": "e2e-72f49a74ea9a",
+    "stage": "default",
+    "last_active": 1781787512
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-6c8sggfn": {
+    "session_id": "e2e-1f8708e7be7e",
+    "stage": "default",
+    "last_active": 1781787521
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-cd7kyoqu": {
+    "session_id": "e2e-51c69f4c8c98",
+    "stage": "default",
+    "last_active": 1781787524
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-5yzlu02v": {
+    "session_id": "e2e-1b86bf249870",
+    "stage": "default",
+    "last_active": 1781787529
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_d930n9_": {
+    "session_id": "e2e-193291de95bb",
+    "stage": "default",
+    "last_active": 1781787534
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-0kudxdip": {
+    "session_id": "e2e-febbe1004241",
+    "stage": "default",
+    "last_active": 1781787538
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_geuntui": {
+    "session_id": "e2e-7873ddaf4110",
+    "stage": "default",
+    "last_active": 1781787542
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-qxmvyyd8": {
+    "session_id": "e2e-d23cd61dafeb",
+    "stage": "implement",
+    "last_active": 1781787550
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-2mol_rqp": {
+    "session_id": "e2e-909154c5941f",
+    "stage": "default",
+    "last_active": 1781787553
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ypi2_tqe": {
+    "session_id": "e2e-3ef3371e9e7b",
+    "stage": "default",
+    "last_active": 1781787556
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-qexfpqmy": {
+    "session_id": "e2e-7413c540204d",
+    "stage": "implement",
+    "last_active": 1781787566
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-epedy376": {
+    "session_id": "e2e-c3460d95b2a3",
+    "stage": "implement",
+    "last_active": 1781787575
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-7cb553ts": {
+    "session_id": "e2e-1501fe602599",
+    "stage": "default",
+    "last_active": 1781787783
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-qkfjt4ao": {
+    "session_id": "e2e-90523ed6774f",
+    "stage": "default",
+    "last_active": 1781787788
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-re96gwcf": {
+    "session_id": "e2e-bf94624fa74f",
+    "stage": "implement",
+    "last_active": 1781787796
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-8sk7tfah": {
+    "session_id": "e2e-c5e89aee1362",
+    "stage": "default",
+    "last_active": 1781787801
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-rxl4aexc": {
+    "session_id": "e2e-50e7044c7f78",
+    "stage": "default",
+    "last_active": 1781787804
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-yz7h3j4a": {
+    "session_id": "e2e-dd85853cc97b",
+    "stage": "default",
+    "last_active": 1781787849
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-v0bl542r": {
+    "session_id": "e2e-e529e8a49919",
+    "stage": "default",
+    "last_active": 1781787852
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-x1v1_zos": {
+    "session_id": "e2e-3989ee22b63f",
+    "stage": "default",
+    "last_active": 1781787856
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-f9_se_ny": {
+    "session_id": "e2e-63b12bc36c5c",
+    "stage": "default",
+    "last_active": 1781787863
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-9tp99_q7": {
+    "session_id": "e2e-ba1e602c1014",
+    "stage": "default",
+    "last_active": 1781787866
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-qeerjfcx": {
+    "session_id": "e2e-3c47a8ae4fd4",
+    "stage": "default",
+    "last_active": 1781787870
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_mi_dzjy": {
+    "session_id": "e2e-399e74b8061f",
+    "stage": "default",
+    "last_active": 1781787878
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-8aaqdmgu": {
+    "session_id": "e2e-a55380c3c6af",
+    "stage": "default",
+    "last_active": 1781787885
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-gwcnq64e": {
+    "session_id": "e2e-822ed6188ba1",
+    "stage": "default",
+    "last_active": 1781787888
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-r04q13k_": {
+    "session_id": "e2e-b5f9de3625d9",
+    "stage": "implement",
+    "last_active": 1781787896
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-wdtco52e": {
+    "session_id": "e2e-77fe39de7408",
+    "stage": "default",
+    "last_active": 1781787899
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-qh0z4pr1": {
+    "session_id": "e2e-cb9fcc1f67fb",
+    "stage": "default",
+    "last_active": 1781787902
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-jwqpqbrk": {
+    "session_id": "e2e-adfb998fc7dd",
+    "stage": "implement",
+    "last_active": 1781787912
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-rafvlm2x": {
+    "session_id": "e2e-2647511a455d",
+    "stage": "implement",
+    "last_active": 1781787920
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ls4y24ly": {
+    "session_id": "e2e-7bffec95b7ce",
+    "stage": "default",
+    "last_active": 1781788540
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-8zx6kjgt": {
+    "session_id": "e2e-56aa7d394488",
+    "stage": "default",
+    "last_active": 1781788542
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-o6y9cp0a": {
+    "session_id": "e2e-3a00d30b3bb7",
+    "stage": "default",
+    "last_active": 1781788543
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-70dz_urv": {
+    "session_id": "e2e-a66aaaeb64d1",
+    "stage": "default",
+    "last_active": 1781788545
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-40hdjfj_": {
+    "session_id": "e2e-714295719d7f",
+    "stage": "default",
+    "last_active": 1781788547
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ulegv59g": {
+    "session_id": "e2e-0eba0b90c61f",
+    "stage": "default",
+    "last_active": 1781788548
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-5i22pva5": {
+    "session_id": "e2e-1e7ab90bd589",
+    "stage": "default",
+    "last_active": 1781788549
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-zygpg9ap": {
+    "session_id": "e2e-7b2e1ddb5cab",
+    "stage": "default",
+    "last_active": 1781788551
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-gtui9qy5": {
+    "session_id": "e2e-c8ef2e2d8f4c",
+    "stage": "default",
+    "last_active": 1781788552
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-o6fnys_f": {
+    "session_id": "e2e-67ee0e005433",
+    "stage": "default",
+    "last_active": 1781788554
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-1qcfwcra": {
+    "session_id": "e2e-f0a5f54d0fa7",
+    "stage": "default",
+    "last_active": 1781788555
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-0yfjfaxj": {
+    "session_id": "e2e-ad9279af86fa",
+    "stage": "default",
+    "last_active": 1781788556
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-xsen1vrx": {
+    "session_id": "e2e-d643e406bec6",
+    "stage": "default",
+    "last_active": 1781788559
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-eiepm74n": {
+    "session_id": "e2e-784b10e7e691",
+    "stage": "default",
+    "last_active": 1781788561
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-ase93mlv": {
+    "session_id": "e2e-ddfce96ffb40",
+    "stage": "default",
+    "last_active": 1781796350
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-wlogj_v9": {
+    "session_id": "e2e-2f34ed860a9a",
+    "stage": "default",
+    "last_active": 1781796354
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-5gvk_dot": {
+    "session_id": "e2e-5d795ef0c645",
+    "stage": "default",
+    "last_active": 1781796359
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-0rugchii": {
+    "session_id": "e2e-f63ee6870d54",
+    "stage": "default",
+    "last_active": 1781796364
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-gnb8xb2a": {
+    "session_id": "e2e-4bcbc870b8e7",
+    "stage": "default",
+    "last_active": 1781796369
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-xby24nld": {
+    "session_id": "e2e-28ad31487c7c",
+    "stage": "default",
+    "last_active": 1781796372
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-m9z7n9s6": {
+    "session_id": "e2e-6617fa0f74b2",
+    "stage": "default",
+    "last_active": 1781796377
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-zuw5kt3q": {
+    "session_id": "e2e-ec87ad42f6ac",
+    "stage": "default",
+    "last_active": 1781796384
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-btmzro_n": {
+    "session_id": "e2e-b5ab3c2593a1",
+    "stage": "default",
+    "last_active": 1781796386
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-nquem6gw": {
+    "session_id": "e2e-21777cffbf43",
+    "stage": "implement",
+    "last_active": 1781796396
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-upejgv9n": {
+    "session_id": "e2e-d1ebb38c4b23",
+    "stage": "default",
+    "last_active": 1781796402
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-4sst6sv6": {
+    "session_id": "e2e-b9c45751de06",
+    "stage": "default",
+    "last_active": 1781796405
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-g38sdx8g": {
+    "session_id": "e2e-d770e10d1688",
+    "stage": "implement",
+    "last_active": 1781796413
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-_4e5fqn9": {
+    "session_id": "e2e-5ededfdf623a",
+    "stage": "implement",
+    "last_active": 1781796424
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-lebp26dp": {
+    "session_id": "e2e-de6714fe4d7d",
+    "stage": "default",
+    "last_active": 1781825172
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-lhi_3hk2": {
+    "session_id": "e2e-87f84a54d40d",
+    "stage": "default",
+    "last_active": 1781825176
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-tkng59e9": {
+    "session_id": "e2e-6a78a05f0ed8",
+    "stage": "implement",
+    "last_active": 1781825186
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-7tsz26m3": {
+    "session_id": "e2e-50cfa6e87f52",
+    "stage": "default",
+    "last_active": 1781825191
+  },
+  "/private/var/folders/h5/_y45zdxn7md3dryndkqy0_2m0000gn/T/mr-e2e-b0bzht7t": {
+    "session_id": "e2e-928a5169ae39",
+    "stage": "default",
+    "last_active": 1781825195
+  }
+}

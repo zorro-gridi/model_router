@@ -1,0 +1,920 @@
+#!/usr/bin/env python3
+"""
+stage — 阶段管理 CLI
+=====================
+用法：
+  stage              # 查看当前阶段
+  stage brainstorm   # 手动设置阶段
+  stage reset        # 重置为 default
+  stage proxy        # 启动代理服务器（默认 :7878，默认带 watch）
+  stage proxy --port 7879          # 自定义端口启动代理
+  stage proxy --no-watch           # 前台启动，崩溃不自动重启
+  stage proxy --watch --port 7879  # 自定义端口 + watch 守护
+  stage stop [--port <port>]       # 停止 watcher（默认 7878）
+  stage restart [--port <port>]    # 重启 watcher
+  stage status       # 查询代理健康状态
+  stage log          # 实时查看路由日志
+
+任务模式子命令（第三维度，2026-06-14 引入，Shadow Mode）：
+  stage pattern              # 查看当前 session 的 pattern 标注
+  stage pattern <name>       # 手动设置 pattern（写入 JSON）
+  stage pattern reset        # 清除 pattern 标注
+  stage pattern list         # 列出所有有效 pattern 名称
+
+所有阶段：brainstorm | decide | design | plan | implement | audit | default
+所有 pattern：feature | bugfix | refactor | test | research | migration |
+              architecture | docs | audit
+
+阶段文件位置：
+  分 session 阶段文件：<project_root>/.claude/stage_<session_id>
+  分 session pattern： <project_root>/.claude/pattern_<session_id>（JSON）
+  active_session 指针：~/.claude/hooks/model_router/active_session → 完整路径
+  全局后备：          ~/.claude/hooks/model_router/current_stage（仅 stage，pattern 无全局后备）
+
+Watch 守护（端口监控）：
+  PID 文件:   /tmp/stage_router_<port>.pid
+  日志文件:   /tmp/stage_router_<port>.log
+  行为：      proxy 崩溃（非 0 退出）→ 3s 后自动重启
+  用户停止:  stage stop → SIGTERM → 3s 后 SIGKILL（兜底）→ 不再重启
+  重启上限:  连续 20 次崩溃后放弃（防止无限循环）
+  退避策略:  min(3 × 第N次, 60)s
+"""
+
+import http.client
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+# ── 分 session 阶段管理 ──
+HOME_CLAUDE         = Path.home() / ".claude"
+HOOK_DIR            = HOME_CLAUDE / "hooks" / "model_router"
+ACTIVE_SESSION_FILE = HOOK_DIR / "active_session"
+GLOBAL_STAGE_FILE   = HOOK_DIR / "current_stage"
+LOG_FILE            = HOME_CLAUDE / "stage-router.log"
+# 注：stage CLI 装在 ~/.local/bin/，但 proxy.py 在 ~/.claude/hooks/model_router/。
+# 不能用 Path(__file__).parent（取到的是 ~/.local/bin/，proxy.py 不在那）。
+PROXY_SCRIPT        = HOOK_DIR / "proxy.py"
+PROXY_PORT          = 7878
+
+# ── Watch 守护（端口监控） ──
+# 实际实现：hooks/model_router/stage_watch.sh（nohup 后台）
+# PID / 日志路径由该脚本管理，按端口隔离。
+WATCH_SCRIPT        = HOOK_DIR / "stage_watch.sh"
+WATCH_PID_FILE      = lambda port: Path(f"/tmp/stage_router_{port}.pid")
+WATCH_LOG_FILE      = lambda port: Path(f"/tmp/stage_router_{port}.log")
+
+# ── .env 自动加载（共享双层 loader）──
+# Claude Code hook 子进程不会继承 shell export 的 env，必须从 .env 读 key
+# 并注入 os.environ。统一用 _load_env.load_plugin_env：先读共享层
+# hooks/.env，再读 plugin-private 层 hooks/model_router/.env。已设置的
+# env 变量优先级更高（不覆盖）。
+# __file__ 会被 Python 自动 symlink 解析，所以即使 stage 是 ~/.local/bin/
+# 的符号链接，load_plugin_env 仍能正确定位到 hooks/model_router/。
+sys.path.insert(0, os.path.expanduser("~/.claude/hooks"))
+from _load_env import load_plugin_env  # noqa: E402
+load_plugin_env(__file__)  # noqa: E402
+
+# stage / pattern 有效值：与 stage_config 同源（避免重复硬编码）
+sys.path.insert(0, str(HOOK_DIR))
+from stage_config import (                          # noqa: E402
+    STAGE_CONFIG, PATTERN_CONFIG,
+    COMPLEXITY_LEVELS, shift_complexity,
+)
+VALID_STAGES    = set(STAGE_CONFIG.keys())
+VALID_PATTERNS  = set(PATTERN_CONFIG.keys())
+
+
+COLORS = {
+    "brainstorm": "\033[36m",   # cyan
+    "decide":     "\033[35m",   # magenta
+    "design":     "\033[34m",   # blue
+    "plan":       "\033[33m",   # yellow
+    "implement":  "\033[32m",   # green
+    "audit":      "\033[31m",   # red
+    "default":    "\033[37m",   # white
+    "reset":      "\033[0m",
+}
+
+# 从统一配置文件导入（需先将 HOOK_DIR 加入 sys.path）
+sys.path.insert(0, str(HOOK_DIR))
+from stage_config import STAGE_DESC
+
+
+# ── 项目根目录查找（参照 compact/utils.py，但无 stdin——从 Path.cwd() 出发）──
+
+def _find_project_root(start: Path, session_id: str | None = None) -> Path:
+    """Walk up from ``start`` looking for a project boundary marker.
+
+    Anchor strategy:
+      1. If session_id is known, walk up looking for stage_<sid> or
+         session_state_<sid>.json under .claude/ — its parent IS the project root.
+      2. Walk up looking for .claude/ (skip global ~/.claude unless started there).
+      3. Walk up looking for .git/ as fallback.
+      4. Fall back to ~/.claude.
+    """
+    p = start
+
+    if session_id:
+        anchor_p = start
+        for _ in range(20):
+            claude_dir = anchor_p / ".claude"
+            if (claude_dir / f"stage_{session_id}").exists() or \
+               (claude_dir / f"session_state_{session_id}.json").exists():
+                return anchor_p
+            parent = anchor_p.parent
+            if parent == anchor_p:
+                break
+            anchor_p = parent
+
+    git_root = None
+    for _ in range(20):
+        cand = p / ".claude"
+        if cand.is_dir():
+            if cand != HOME_CLAUDE or str(start).startswith(str(HOME_CLAUDE) + os.sep):
+                return p
+        if git_root is None and (p / ".git").exists():
+            git_root = p
+        parent = p.parent
+        if parent == p:
+            break
+        p = parent
+
+    if git_root is not None:
+        return git_root
+    return HOME_CLAUDE if HOME_CLAUDE.is_dir() else start
+
+
+def _get_active_session_id() -> str | None:
+    """从 active_session 指针提取 session_id。
+
+    active_session 存储的是完整路径如 /path/to/.claude/stage_<sid>，
+    从中提取 <sid> 部分。若指针是老格式（仅 session_id），直接返回。
+    """
+    try:
+        raw = ACTIVE_SESSION_FILE.read_text().strip()
+        if not raw:
+            return None
+    except FileNotFoundError:
+        return None
+
+    # 新格式：完整路径 → 提取 stage_<sid> 文件名
+    # 也可兼容老格式：纯 session_id
+    if "/" in str(raw) or raw.endswith(".json"):
+        # 完整路径 → 提取文件名
+        name = Path(raw).name
+        if name.startswith("stage_"):
+            return name[len("stage_"):]
+        # 也可能是 session_state_<sid>.json（极端情况）
+        if name.startswith("session_state_") and name.endswith(".json"):
+            return name[len("session_state_"):-len(".json")]
+        return None
+    # 老格式：纯 session_id
+    return raw
+
+
+def _get_active_stage_path() -> Path | None:
+    """读取 active_session 指针中存储的完整路径。"""
+    try:
+        raw = ACTIVE_SESSION_FILE.read_text().strip()
+        if not raw:
+            return None
+    except FileNotFoundError:
+        return None
+
+    # 新格式：完整绝对路径
+    if raw.startswith("/"):
+        return Path(raw)
+    # 老格式：纯 session_id → 用 cwd 解析
+    session_id = raw
+    project_root = _find_project_root(Path.cwd(), session_id)
+    claude_dir = project_root / ".claude"
+    if not claude_dir.is_dir():
+        claude_dir.mkdir(parents=True, exist_ok=True)
+    return claude_dir / f"stage_{session_id}"
+
+
+def read_stage() -> str:
+    """
+    读取当前阶段：
+      1. active_session 指针 → 读取其存储的完整路径文件
+      2. default（无全局后备，每个 session 独立维护 stage_<sid>）
+    """
+    # 1. active_session → 完整路径
+    stage_path = _get_active_stage_path()
+    if stage_path:
+        try:
+            content = stage_path.read_text().strip()
+            if content:
+                return content
+        except FileNotFoundError:
+            pass
+
+    return "default"
+
+
+def write_stage(stage: str) -> None:
+    """
+    写入阶段。
+    若存在 active_session 指针 → 写入 <project_root>/.claude/stage_<sid>；
+    否则写入全局后备文件 current_stage。
+    """
+    session_id = _get_active_session_id()
+    if session_id:
+        project_root = _find_project_root(Path.cwd(), session_id)
+        claude_dir = project_root / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        stage_path = claude_dir / f"stage_{session_id}"
+        stage_path.write_text(stage)
+        # 同步更新 active_session 指针（完整路径）
+        HOOK_DIR.mkdir(parents=True, exist_ok=True)
+        ACTIVE_SESSION_FILE.write_text(str(stage_path))
+    else:
+        GLOBAL_STAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        GLOBAL_STAGE_FILE.write_text(stage)
+
+
+# ── Pattern 读 / 写 / 清（Shadow Mode，2026-06-14 引入）──
+
+def _pattern_file_path(stage_path: Path) -> Path:
+    """从 stage_<sid> 派生 pattern_<sid> 路径（同目录、仅前缀替换）。"""
+    return stage_path.with_name(stage_path.name.replace("stage_", "pattern_", 1))
+
+
+def read_pattern() -> dict | None:
+    """读取当前 session 的 pattern 标注（JSON 格式）。
+    返回 None 或 `{"prediction": str, "confidence": float, "ts": str}`。
+    """
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return None
+    pattern_file = _pattern_file_path(stage_path)
+    try:
+        content = pattern_file.read_text().strip()
+        if not content:
+            return None
+        return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def write_pattern(prediction: str, confidence: float = 1.0) -> bool:
+    """写入 pattern 标注到 pattern_<sid>（JSON 格式）。"""
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return False
+    pattern_file = _pattern_file_path(stage_path)
+    pattern_file.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "prediction": prediction,
+        "confidence": round(float(confidence), 2),
+        "ts":         datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    pattern_file.write_text(json.dumps(payload, ensure_ascii=False))
+    return True
+
+
+def clear_pattern() -> bool:
+    """清除 pattern_<sid> 标注。"""
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return False
+    try:
+        _pattern_file_path(stage_path).unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def show_current():
+    stage = read_stage()
+    color = COLORS.get(stage, COLORS["reset"])
+    desc  = STAGE_DESC.get(stage, "")
+    print(f"当前阶段: {color}{stage}\033[0m")
+    print(f"  {desc}")
+    # ── Pattern（Shadow Mode，仅标注不影响路由）──
+    pat = read_pattern()
+    if pat and pat.get("prediction"):
+        from stage_config import PATTERN_INFO
+        p = pat["prediction"]
+        c = pat.get("confidence", 0.0)
+        info = PATTERN_INFO.get(p, p)
+        print(f"当前模式: \033[1;36m{p}\033[0m (conf={c}, [shadow])")
+        print(f"  {info}")
+    else:
+        print(f"当前模式: \033[90mnone\033[0m (shadow mode, 不影响路由)")
+
+    # ── Complexity（设计文档 §6.4，2026-06-14 引入）──
+    cdata = read_complexity()
+    if cdata and cdata.get("label"):
+        c_label = cdata["label"]
+        c_score = cdata.get("score", 0)
+        c_src = cdata.get("source", "auto")
+        c_conf = cdata.get("confidence", 0.0)
+        c_emoji = {"simple": "🟢", "medium": "🟡", "complex": "🔴"}.get(
+            c_label, "⚪"
+        )
+        print(
+            f"当前复杂度: {c_emoji} \033[1m{c_label}\033[0m "
+            f"(score={c_score}, conf={c_conf}, src={c_src})"
+        )
+    else:
+        print(f"当前复杂度: \033[90mnone\033[0m (未评估)")
+
+    # ── Batch（~batch 模板，2026-06-14 引入）──
+    bdata = read_batch()
+    if bdata and bdata.get("template"):
+        b_t = bdata["template"]
+        b_flow = bdata.get("flow", [])
+        print(f"当前 batch: \033[1;36m{b_t}\033[0m ({'→'.join(b_flow)})")
+    else:
+        print(f"当前 batch: \033[90mnone\033[0m")
+
+    print(f"\n代理地址: http://127.0.0.1:{PROXY_PORT}")
+    print(f"设置方式: export ANTHROPIC_BASE_URL=http://127.0.0.1:{PROXY_PORT}")
+
+
+def set_stage(stage: str):
+    if stage not in VALID_STAGES:
+        print(f"❌ 未知阶段: {stage}")
+        print(f"   有效值: {' | '.join(sorted(VALID_STAGES))}")
+        sys.exit(1)
+    old = read_stage()
+    write_stage(stage)
+    color = COLORS.get(stage, COLORS["reset"])
+    print(f"阶段切换: {old} → {color}{stage}\033[0m")
+    print(f"  {STAGE_DESC.get(stage, '')}")
+
+
+
+def set_pattern(pattern: str):
+    if pattern not in VALID_PATTERNS:
+        print(f"❌ 未知 pattern: {pattern}")
+        print(f"   有效值: {' | '.join(sorted(VALID_PATTERNS))}")
+        sys.exit(1)
+    if not write_pattern(pattern, 1.0):
+        print("❌ 无法写入 pattern：无活跃 session（active_session 指针不存在）")
+        print("   先发起一次 Claude Code 会话触发 UserPromptSubmit hook 创建 session")
+        sys.exit(1)
+    from stage_config import PATTERN_INFO
+    print(f"模式标注: \033[1;36m{pattern}\033[0m (conf=1.0) [shadow]")
+    print(f"  {PATTERN_INFO.get(pattern, pattern)}")
+
+
+def reset_pattern():
+    if not clear_pattern():
+        print("ℹ️  当前没有 pattern 标注（文件不存在或无 session）")
+        return
+    print("✅ pattern 标注已清除")
+
+
+def list_patterns():
+    print("可用 pattern 名称（第三维度，Shadow Mode 标注，不影响路由）：")
+    for p in sorted(VALID_PATTERNS):
+        from stage_config import PATTERN_INFO
+        print(f"  {PATTERN_INFO.get(p, p)}")
+
+
+# ── Complexity 读 / 写 / 清（设计文档 §6.4）──
+
+def _complexity_file_path(stage_path: Path) -> Path:
+    return stage_path.with_name(stage_path.name.replace("stage_", "complexity_", 1))
+
+
+def _batch_file_path(stage_path: Path) -> Path:
+    return stage_path.with_name(stage_path.name.replace("stage_", "batch_", 1))
+
+
+def read_complexity() -> dict | None:
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return None
+    try:
+        content = _complexity_file_path(stage_path).read_text().strip()
+        if not content:
+            return None
+        return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def write_complexity(score: int, label: str, confidence: float,
+                     source: str) -> bool:
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return False
+    f = _complexity_file_path(stage_path)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "score":      int(score),
+        "label":      label,
+        "confidence": round(float(confidence), 2),
+        "source":     source,
+        "ts":         datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    f.write_text(json.dumps(payload, ensure_ascii=False))
+    return True
+
+
+def clear_complexity() -> bool:
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return False
+    try:
+        _complexity_file_path(stage_path).unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def read_batch() -> dict | None:
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return None
+    try:
+        content = _batch_file_path(stage_path).read_text().strip()
+        if not content:
+            return None
+        return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def write_batch(template: str, flow: list[str]) -> bool:
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return False
+    f = _batch_file_path(stage_path)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "template": template,
+        "flow":     list(flow),
+        "ts":       datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    f.write_text(json.dumps(payload, ensure_ascii=False))
+    return True
+
+
+def clear_batch() -> bool:
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return False
+    try:
+        _batch_file_path(stage_path).unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def clear_all_overrides() -> int:
+    """~reset 等价：清 model/pattern/fallback/complexity/batch（stage 保留）。"""
+    stage_path = _get_active_stage_path()
+    if not stage_path:
+        return 0
+    paths = [
+        stage_path.with_name(stage_path.name.replace("stage_", "model_", 1)),
+        stage_path.with_name(stage_path.name.replace("stage_", "pattern_", 1)),
+        stage_path.with_name(stage_path.name.replace("stage_", "fallback_", 1)),
+        _complexity_file_path(stage_path),
+        _batch_file_path(stage_path),
+    ]
+    removed = 0
+    for p in paths:
+        try:
+            p.unlink(missing_ok=True)
+            removed += 1
+        except Exception:
+            pass
+    return removed
+
+
+def show_complexity():
+    c = read_complexity()
+    if not c or not c.get("label"):
+        print("ℹ️  当前没有 complexity 评估")
+        return
+    label = c["label"]
+    score = c.get("score", 0)
+    conf = c.get("confidence", 0.0)
+    src = c.get("source", "auto")
+    ts = c.get("ts", "?")
+    emoji = {"simple": "🟢", "medium": "🟡", "complex": "🔴"}.get(label, "⚪")
+    print(f"当前复杂度: {emoji} {label}（score={score}, conf={conf}, src={src}）")
+    print(f"  评估时间: {ts}")
+
+
+def set_complexity(action: str):
+    """~careful / ~quick 显式调档。"""
+    delta = 1 if action == "careful" else -1
+    cur = read_complexity()
+    if cur is None:
+        cur_label = "medium"
+    else:
+        cur_label = cur.get("label", "medium")
+    new_label = shift_complexity(cur_label, delta)
+    new_score = {"simple": 20, "medium": 50, "complex": 80}[new_label]
+    if not write_complexity(new_score, new_label, 0.95, action):
+        print("❌ 无法写入 complexity：无活跃 session")
+        sys.exit(1)
+    print(f"复杂度调档: {cur_label} → \033[1;33m{new_label}\033[0m (~{action})")
+
+
+def set_batch(template: str):
+    if template not in VALID_PATTERNS:
+        print(f"❌ 未知 template: {template}")
+        print(f"   有效值: {' | '.join(sorted(VALID_PATTERNS))}")
+        sys.exit(1)
+    flow = PATTERN_CONFIG[template].get("default_flow", [])
+    if not write_batch(template, flow):
+        print("❌ 无法写入 batch：无活跃 session")
+        sys.exit(1)
+    print(f"~batch: 已载入 \033[1;36m{template}\033[0m 流程 {'→'.join(flow)}")
+
+
+def show_batch():
+    b = read_batch()
+    if not b or not b.get("template"):
+        print("ℹ️  当前没有 batch 模板")
+        return
+    print(f"当前 batch: \033[1;36m{b['template']}\033[0m")
+    print(f"  流程: {' → '.join(b.get('flow', []))}")
+    print(f"  载入: {b.get('ts', '?')}")
+
+
+def show_pattern():
+    pat = read_pattern()
+    if not pat or not pat.get("prediction"):
+        print("ℹ️  当前没有 pattern 标注（文件不存在或无 session）")
+        return
+    from stage_config import PATTERN_INFO
+    p = pat["prediction"]
+    c = pat.get("confidence", 0.0)
+    ts = pat.get("ts", "?")
+    print(f"当前 pattern: \033[1;36m{p}\033[0m (conf={c}, [shadow])")
+    print(f"  标注时间: {ts}")
+    print(f"  详情:     {PATTERN_INFO.get(p, p)}")
+
+
+def start_proxy(port: int | None = None):
+    port = port or PROXY_PORT
+    print(f"启动 Stage Router 代理（端口 {port}）...")
+    print(f"设置环境变量: export ANTHROPIC_BASE_URL=http://127.0.0.1:{port}")
+    print("按 Ctrl+C 停止\n")
+    subprocess.run([sys.executable, str(PROXY_SCRIPT), "--port", str(port)])
+
+
+# ── Watch 守护（端口监控 + 崩溃自动重启） ──
+# 实际逻辑在 stage_watch.sh 里，本文件只做封装与生命周期管理。
+import errno as _errno
+import signal as _signal
+import time as _time
+
+
+def _pid_alive(pid: int) -> bool:
+    """检查 PID 是否存活（不发送信号，仅查 proc 表）。"""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError as e:
+        if e.errno == _errno.ESRCH:
+            return False
+        if e.errno == _errno.EPERM:
+            return True
+        return False
+
+
+def _port_in_use(port: int) -> bool:
+    """检测端口是否已被占用（尝试 connect 一次）。"""
+    import socket as _socket
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+        s.settimeout(0.3)
+        try:
+            s.connect(("127.0.0.1", port))
+            return True
+        except (ConnectionRefusedError, _socket.timeout, OSError):
+            return False
+
+
+def start_proxy_watch(port: int | None = None) -> None:
+    """后台启动 watcher（委托 stage_watch.sh 跑，shell 内部 nohup 脱离父进程）。
+
+    错误处理：
+      - 端口已被占用 → 报错并 sys.exit(1)
+      - watcher PID 已存在且存活 → 不重复启动
+      - 僵尸 PID 文件 → 自动清理后启动
+    """
+    port = port or PROXY_PORT
+    pid_path = WATCH_PID_FILE(port)
+    log_path = WATCH_LOG_FILE(port)
+
+    if _port_in_use(port):
+        print(f"❌ 端口 {port} 已被占用（先 stage stop 或换端口）")
+        sys.exit(1)
+
+    if pid_path.exists():
+        try:
+            old_pid = int(pid_path.read_text().strip())
+        except (ValueError, FileNotFoundError):
+            old_pid = 0
+        if _pid_alive(old_pid):
+            print(f"❌ Watcher 已在运行（PID={old_pid}，端口 {port}）")
+            print(f"   重启用: stage restart --port {port}")
+            sys.exit(1)
+        pid_path.unlink(missing_ok=True)
+
+    if not WATCH_SCRIPT.exists():
+        print(f"❌ Watch 脚本不存在: {WATCH_SCRIPT}")
+        sys.exit(1)
+
+    # 启动 watcher：start_new_session=True 等价于 setsid，shell 内部已经 nohup + &
+    # 但因为 stage_watch.sh 自身用 `python3 ... &` 跑 proxy，watcher 自己其实是
+    # 同步执行的——所以这里用 Popen 但**不等它退出**（detach）
+    log_fp = open(log_path, "a")
+    log_fp.close()  # 触摸文件（创建空日志，便于 tail -f）
+    try:
+        subprocess.Popen(
+            [str(WATCH_SCRIPT), str(port), "run"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,  # 关键：脱离父进程 session/terminal
+        )
+    except OSError as e:
+        print(f"❌ 启动 watcher 失败: {e}")
+        sys.exit(1)
+
+    # 等 PID 文件出现（最多 5s）
+    for _ in range(50):
+        if pid_path.exists():
+            break
+        _time.sleep(0.1)
+    if pid_path.exists():
+        try:
+            wp = int(pid_path.read_text().strip())
+            print(f"✅ Watcher 已启动（PID={wp}，端口 {port}）")
+            print(f"   日志: {log_path}")
+            print(f"   停止: stage stop --port {port}")
+        except (ValueError, FileNotFoundError):
+            print(f"✅ Watcher 已启动（端口 {port}）")
+    else:
+        print(f"⚠️  Watcher 启动中，等待 PID 文件...")
+
+
+def stop_proxy(port: int | None = None, force: bool = False) -> None:
+    """停止 watcher（委托 stage_watch.sh stop 子命令）。"""
+    port = port or PROXY_PORT
+    pid_path = WATCH_PID_FILE(port)
+    if not pid_path.exists():
+        print(f"ℹ️  没有 watcher 在运行（端口 {port}）")
+        return
+    if not WATCH_SCRIPT.exists():
+        print(f"❌ Watch 脚本不存在: {WATCH_SCRIPT}")
+        sys.exit(1)
+    # 直接调 stage_watch.sh stop，让它做 SIGTERM/SIGKILL 兜底
+    args = [str(WATCH_SCRIPT), str(port), "stop"]
+    if force:
+        # 强制模式：直接 SIGKILL watcher
+        try:
+            pid = int(pid_path.read_text().strip())
+        except (ValueError, FileNotFoundError):
+            print(f"❌ PID 文件损坏: {pid_path}")
+            pid_path.unlink(missing_ok=True)
+            return
+        if _pid_alive(pid):
+            print(f"强制 SIGKILL Watcher（PID={pid}）...")
+            try:
+                os.kill(pid, _signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        pid_path.unlink(missing_ok=True)
+        print(f"✅ Watcher 已强制停止（端口 {port}）")
+        return
+    subprocess.run(args)
+
+
+def restart_proxy(port: int | None = None) -> None:
+    port = port or PROXY_PORT
+    print(f"重启 Watcher（端口 {port}）...")
+    if WATCH_PID_FILE(port).exists():
+        stop_proxy(port)
+        _time.sleep(0.5)
+    start_proxy_watch(port)
+
+
+def proxy_status():
+    # 先查 watcher
+    pid_path = WATCH_PID_FILE(PROXY_PORT)
+    watcher_running = False
+    watcher_pid = None
+    if pid_path.exists():
+        try:
+            watcher_pid = int(pid_path.read_text().strip())
+            watcher_running = _pid_alive(watcher_pid)
+        except (ValueError, FileNotFoundError):
+            pass
+
+    if watcher_running:
+        print(f"✅ Stage Router Watcher 运行中（PID={watcher_pid}，端口 {PROXY_PORT}）")
+        log_path = WATCH_LOG_FILE(PROXY_PORT)
+        print(f"   日志: {log_path}")
+        print(f"   停止: stage stop")
+
+    # 再查实际 proxy 是否在响应
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", PROXY_PORT, timeout=2)
+        conn.request("GET", "/health")
+        resp = conn.getresponse()
+        data = json.loads(resp.read())
+        stage = data.get("stage", "unknown")
+        model = data.get("model", "unknown")
+        color = COLORS.get(stage, COLORS["reset"])
+        print(f"✅ Proxy 端口 {PROXY_PORT} 正常响应")
+        print(f"   阶段: {color}{stage}\033[0m → {model}")
+    except Exception:
+        if not watcher_running:
+            print(f"❌ Stage Router 未运行（端口 {PROXY_PORT}）")
+            print(f"   启动命令: stage proxy")
+        else:
+            print(f"⚠️  Watcher 在跑但 Proxy 还没起来（崩溃重启中？）")
+            print(f"   查看日志: tail -f {WATCH_LOG_FILE(PROXY_PORT)}")
+
+
+def tail_log():
+    subprocess.run(["tail", "-f", str(LOG_FILE)])
+
+
+def print_help():
+    print(__doc__)
+    print("当前阶段:", read_stage())
+
+
+def main():
+    # .env 已在模块导入时通过 load_plugin_env(__file__) 加载完成（共享层 +
+    # plugin-private 层）。这里无需重复加载。
+
+    args = sys.argv[1:]
+
+    if not args:
+        show_current()
+    elif args[0] == "proxy":
+        port = None
+        watch = True   # 默认带 watch（崩溃自动重启）
+        i = 1
+        while i < len(args):
+            if args[i] == "--port":
+                if i + 1 < len(args):
+                    try:
+                        port = int(args[i + 1])
+                    except ValueError:
+                        print(f"❌ 无效端口号: {args[i + 1]}")
+                        sys.exit(1)
+                    i += 2
+                else:
+                    print("❌ --port 需要一个端口号参数")
+                    sys.exit(1)
+            elif args[i] == "--watch":
+                watch = True
+                i += 1
+            elif args[i] == "--no-watch":
+                watch = False
+                i += 1
+            elif args[i] in ("-h", "--help"):
+                print_help()
+                sys.exit(0)
+            else:
+                print(f"❌ 未知选项: {args[i]}")
+                print("   用法: stage proxy [--port <端口号>] [--watch|--no-watch]")
+                sys.exit(1)
+        if watch:
+            start_proxy_watch(port)
+        else:
+            start_proxy(port)
+    elif args[0] == "stop":
+        port = None
+        force = False
+        i = 1
+        while i < len(args):
+            if args[i] == "--port":
+                if i + 1 < len(args):
+                    try:
+                        port = int(args[i + 1])
+                    except ValueError:
+                        print(f"❌ 无效端口号: {args[i + 1]}")
+                        sys.exit(1)
+                    i += 2
+                else:
+                    print("❌ --port 需要一个端口号参数")
+                    sys.exit(1)
+            elif args[i] in ("--force", "-f"):
+                force = True
+                i += 1
+            elif args[i] in ("-h", "--help"):
+                print_help()
+                sys.exit(0)
+            else:
+                print(f"❌ 未知选项: {args[i]}")
+                print("   用法: stage stop [--port <端口号>] [--force]")
+                sys.exit(1)
+        stop_proxy(port, force=force)
+    elif args[0] == "restart":
+        port = None
+        i = 1
+        while i < len(args):
+            if args[i] == "--port":
+                if i + 1 < len(args):
+                    try:
+                        port = int(args[i + 1])
+                    except ValueError:
+                        print(f"❌ 无效端口号: {args[i + 1]}")
+                        sys.exit(1)
+                    i += 2
+                else:
+                    print("❌ --port 需要一个端口号参数")
+                    sys.exit(1)
+            elif args[i] in ("-h", "--help"):
+                print_help()
+                sys.exit(0)
+            else:
+                print(f"❌ 未知选项: {args[i]}")
+                print("   用法: stage restart [--port <端口号>]")
+                sys.exit(1)
+        restart_proxy(port)
+    elif args[0] == "status":
+        proxy_status()
+    elif args[0] == "log":
+        tail_log()
+    elif args[0] == "reset":
+        # ~reset 全量清除：清 model/pattern/fallback/complexity/batch
+        # stage 保留不动（用户仍可手动 stage <name> 切换）
+        removed = clear_all_overrides()
+        if removed:
+            print(f"✅ ~reset: 已清除 {removed} 个 override 文件")
+            print("   (model/pattern/fallback/complexity/batch 均已清除)")
+        else:
+            print("ℹ️  ~reset: 当前没有 override 文件需要清除")
+    elif args[0] == "pattern":
+        # stage pattern [<name> | reset | list]
+        if len(args) < 2:
+            show_pattern()
+            sys.exit(0)
+        sub = args[1]
+        if sub == "reset":
+            reset_pattern()
+        elif sub == "list":
+            list_patterns()
+        elif sub in VALID_PATTERNS:
+            set_pattern(sub)
+        else:
+            print(f"❌ 未知 pattern 子命令: {sub}")
+            print(f"   有效值: {' | '.join(sorted(VALID_PATTERNS))} | reset | list")
+            sys.exit(1)
+    elif args[0] == "complexity":
+        # stage complexity [<careful|quick|reset>] | show
+        if len(args) < 2:
+            show_complexity()
+            sys.exit(0)
+        sub = args[1].lower()
+        if sub in ("careful", "quick"):
+            set_complexity(sub)
+        elif sub == "reset":
+            if clear_complexity():
+                print("✅ complexity 已清除")
+            else:
+                print("ℹ️  当前没有 complexity 文件")
+        else:
+            print(f"❌ 未知 complexity 子命令: {sub}")
+            print("   有效值: careful | quick | reset")
+            sys.exit(1)
+    elif args[0] == "batch":
+        # stage batch [<template>|reset]
+        if len(args) < 2:
+            show_batch()
+            sys.exit(0)
+        sub = args[1].lower()
+        if sub == "reset":
+            if clear_batch():
+                print("✅ batch 模板已清除")
+            else:
+                print("ℹ️  当前没有 batch 文件")
+        elif sub in VALID_PATTERNS:
+            set_batch(sub)
+        else:
+            print(f"❌ 未知 batch template: {sub}")
+            print(f"   有效值: {' | '.join(sorted(VALID_PATTERNS))} | reset")
+            sys.exit(1)
+    elif args[0] in VALID_STAGES:
+        set_stage(args[0])
+    elif args[0] in ("-h", "--help", "help"):
+        print_help()
+    else:
+        print(f"未知命令: {args[0]}")
+        print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
