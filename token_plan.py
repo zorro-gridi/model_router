@@ -27,9 +27,11 @@ MiniMax Token Plan 余量查询 + Provider Fallback 触发
     - remains_time: 剩余可用时间（毫秒）
 
 阈值策略：
-  - 默认阈值 98%（用量），可通过 STAGE_ROUTER_TOKEN_PLAN_THRESHOLD_PERCENT 调整
+  - 5h 窗口默认阈值 98%（用量），可通过 STAGE_ROUTER_TOKEN_PLAN_THRESHOLD_PERCENT 调整
+  - 周窗口默认阈值 99.5%（用量），可通过 STAGE_ROUTER_TOKEN_PLAN_WEEKLY_THRESHOLD_PERCENT 调整
+    （2026-06-19 调整：周配额重置周期长，保守起见只到接近耗尽才切走）
   - 任一窗口剩余百分比 < (100 - 阈值) → 触发 sticky fallback
-    例：阈值 98 → 剩余 < 2% 触发；阈值 90 → 剩余 < 10% 触发
+    例：5h 阈值 98 → 剩余 < 2% 触发；周阈值 99.5 → 剩余 < 0.5% 触发
   - 已耗尽（status=2）也直接触发（与 status=2 + percent=0 行为一致）
 
 调用方接口：
@@ -82,9 +84,15 @@ TOKEN_PLAN_API_URL = os.environ.get(
 )
 
 # 触发 fallback 的阈值：任一窗口余量 > 阈值 → 触发。
-# 用户指定 98%——意味着已几乎打满。调小会更激进，调大会更保守。
+# 5h 窗口阈值 98%——意味着已几乎打满。调小会更激进，调大会更保守。
 THRESHOLD_PERCENT = float(
     os.environ.get("STAGE_ROUTER_TOKEN_PLAN_THRESHOLD_PERCENT", "98")
+)
+
+# 周窗口阈值 99.5%——周配额重置周期长（一般 7 天），不到最后不切走。
+# 5h 阈值保持激进（剩余 < 2% 切走），周阈值放宽到剩余 < 0.5% 才切。
+WEEKLY_THRESHOLD_PERCENT = float(
+    os.environ.get("STAGE_ROUTER_TOKEN_PLAN_WEEKLY_THRESHOLD_PERCENT", "99.5")
 )
 
 # 缓存 TTL（秒）。in-process 内存缓存。
@@ -181,6 +189,7 @@ def set_external_payload(payload: Optional[dict], error: Optional[str] = None) -
 def peek_cached_status(
     *,
     threshold: float = THRESHOLD_PERCENT,
+    weekly_threshold: float = WEEKLY_THRESHOLD_PERCENT,
 ) -> Optional[dict]:
     """只读缓存，**绝不发起 API 请求**。给请求路径（proxy do_POST）专用。
 
@@ -206,7 +215,7 @@ def peek_cached_status(
     except (KeyError, TypeError):
         # 缓存结构异常（schema 变化 / 损坏）→ 当作 miss
         return None
-    triggered, judgment = _should_trigger_fallback(plan, threshold)
+    triggered, judgment = _should_trigger_fallback(plan, threshold, weekly_threshold)
     judgment["cache_hit"] = True
     return {"ok": True, "error": None, "plan": plan, "judgment": judgment}
 
@@ -290,18 +299,23 @@ def _extract_plan_data(payload: dict, plan_name: str = PLAN_NAME) -> dict:
     raise KeyError(f"response.model_remains 中未找到 model_name={plan_name!r} 的套餐")
 
 
-def _should_trigger_fallback(plan: dict, threshold: float = THRESHOLD_PERCENT) -> tuple[bool, dict]:
+def _should_trigger_fallback(
+    plan: dict,
+    threshold: float = THRESHOLD_PERCENT,
+    weekly_threshold: float = WEEKLY_THRESHOLD_PERCENT,
+) -> tuple[bool, dict]:
     """
     根据套餐余量数据判断是否触发 sticky fallback。
 
     触发条件（任一满足即触发）：
       1. 5h 窗口 current_interval_remaining_percent ≤ (100 - threshold)
-      2. 周窗口 current_weekly_remaining_percent ≤ (100 - threshold)
+      2. 周窗口 current_weekly_remaining_percent ≤ (100 - weekly_threshold)
       3. 任一窗口 status=2（已耗尽）—— 等价于 percent=0 但语义更明确
 
     Args:
         plan: _extract_plan_data() 返回的 dict。
-        threshold: 触发阈值（百分比），默认从 THRESHOLD_PERCENT 来。
+        threshold: 5h 窗口触发阈值（百分比），默认从 THRESHOLD_PERCENT 来。
+        weekly_threshold: 周窗口触发阈值（百分比），默认从 WEEKLY_THRESHOLD_PERCENT 来。
 
     Returns:
         (triggered, reason_dict)
@@ -320,15 +334,16 @@ def _should_trigger_fallback(plan: dict, threshold: float = THRESHOLD_PERCENT) -
     # 字段 current_interval_remaining_percent 是**剩余**百分比（0=耗尽, 100=满额）。
     # threshold 的语义是"用量阈值"（如 98 → 用量 >98% 即剩余 <2%），
     # 因此比较方向是 remaining < (100 - threshold)。
-    safe_remaining = 100.0 - threshold
-    if isinstance(interval_pct, (int, float)) and interval_pct <= safe_remaining:
+    safe_remaining_5h = 100.0 - threshold
+    if isinstance(interval_pct, (int, float)) and interval_pct <= safe_remaining_5h:
         triggered = True
-        reasons.append(f"5h_window_remaining={interval_pct}%≤{safe_remaining}%")
+        reasons.append(f"5h_window_remaining={interval_pct}%≤{safe_remaining_5h}%")
 
-    # 条件 2: 周窗口剩余不足
-    if isinstance(weekly_pct, (int, float)) and weekly_pct <= safe_remaining:
+    # 条件 2: 周窗口剩余不足（用单独的 weekly_threshold，更激进不切走）
+    safe_remaining_weekly = 100.0 - weekly_threshold
+    if isinstance(weekly_pct, (int, float)) and weekly_pct <= safe_remaining_weekly:
         triggered = True
-        reasons.append(f"weekly_remaining={weekly_pct}%≤{safe_remaining}%")
+        reasons.append(f"weekly_remaining={weekly_pct}%≤{safe_remaining_weekly}%")
 
     # 条件 3: 任一窗口状态=已耗尽（兜底——status=2 显式语义更稳）
     if interval_status == 2:
@@ -345,6 +360,7 @@ def _should_trigger_fallback(plan: dict, threshold: float = THRESHOLD_PERCENT) -
         "interval_status":        interval_status,
         "weekly_status":          weekly_status,
         "threshold":              threshold,
+        "weekly_threshold":       weekly_threshold,
         "triggered":              triggered,
         "reasons":                reasons,
     }
@@ -356,6 +372,7 @@ def get_token_plan_status(
     *,
     use_cache: bool = True,
     threshold: float = THRESHOLD_PERCENT,
+    weekly_threshold: float = WEEKLY_THRESHOLD_PERCENT,
 ) -> dict:
     """
     拉一次（可能命中缓存）token plan 状态，返回判定结果。
@@ -373,7 +390,7 @@ def get_token_plan_status(
         if cached is not None:
             try:
                 plan = _extract_plan_data(cached)
-                triggered, judgment = _should_trigger_fallback(plan, threshold)
+                triggered, judgment = _should_trigger_fallback(plan, threshold, weekly_threshold)
                 judgment["cache_hit"] = True
                 return {"ok": True, "error": None, "plan": plan, "judgment": judgment}
             except (KeyError, TypeError):
@@ -406,7 +423,7 @@ def get_token_plan_status(
             "judgment": {"triggered": False, "reasons": ["schema_error"]},
         }
 
-    triggered, judgment = _should_trigger_fallback(plan, threshold)
+    triggered, judgment = _should_trigger_fallback(plan, threshold, weekly_threshold)
     judgment["cache_hit"] = False
     return {"ok": True, "error": None, "plan": plan, "judgment": judgment}
 
@@ -511,6 +528,7 @@ __all__ = [
     "set_external_payload",
     "clear_cache",
     "THRESHOLD_PERCENT",
+    "WEEKLY_THRESHOLD_PERCENT",
     "CACHE_TTL_SECONDS",
     "PROVIDER_NAME",
     "PLAN_NAME",
