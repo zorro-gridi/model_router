@@ -2117,7 +2117,9 @@ def forward_request(
     #     （文档: /websites/api-docs_deepseek, "Message Fields"）
     #     但不支持 type='redacted_thinking'
     #     → 保留 thinking 块，仅剥 redacted_thinking
-    #     → pop 顶层 thinking / betas（DeepSeek 忽略这两个字段）
+    #     → 显式注入 thinking={"type": "enabled"}（DeepSeek 官方示例总是显式传
+    #       enabled；不传时不同 SDK 版本默认行为可能不一致，显式注入更稳）
+    #     → pop betas（DeepSeek 忽略此字段）
     #     → 清洗 anthropic-beta / anthropic-version 请求头
     #     → 响应端保留 thinking 块，仅剥 redacted_thinking
     #
@@ -2143,18 +2145,24 @@ def forward_request(
     #     thinking mode 却找不到 thinking 块 → 400
     #     "the content[].thinking in the thinking mode must be passed back"。
     #     正确做法是遵循文档要求保留 thinking 块并显式注入 thinking 参数。
+    #
+    #   2026-06-19 第二次修订：DeepSeek 也改为显式注入 thinking={"type":"enabled"}
+    #     而非 pop。原 pop 策略依赖"不传 thinking 时 DeepSeek 走默认行为"的隐式
+    #     假设，但 DeepSeek 官方示例全部显式传 enabled，显式注入更稳。两路
+    #     差异化处理现在统一通过 "thinking.type 字段值" 体现：DeepSeek=enabled,
+    #     MiniMax=adaptive——便于审计与回归测试。
     is_claude = target_model.startswith("claude-")
     is_deepseek = target_model.startswith("deepseek-")
     is_minimax = target_model.startswith("MiniMax-")
     if not is_claude:
         if is_deepseek or is_minimax:
             # DeepSeek / MiniMax：保留 thinking 块，仅剥 redacted_thinking
+            # 差异化：DeepSeek 注入 enabled，MiniMax 注入 adaptive
             _keep = True
-            if is_minimax:
-                # MiniMax 文档确认 thinking Fully Supported，显式进入 thinking mode
-                body_json["thinking"] = {"type": "adaptive"}
-            else:
-                body_json.pop("thinking", None)
+            body_json["thinking"] = (
+                {"type": "enabled"} if is_deepseek
+                else {"type": "adaptive"}
+            )
         else:
             # 未知模型保守策略：全剥
             body_json.pop("thinking", None)
@@ -2165,7 +2173,7 @@ def forward_request(
             log.info(
                 f"thinking降级: 剥离 thinking={_stripped} redacted={_redacted} "
                 f"目标={target_model} provider={target_base} "
-                f"策略={'MiniMax(保留thinking+adaptive)' if is_minimax else 'DeepSeek(保留thinking)' if _keep else '全剥'}"
+                f"策略={'DeepSeek(保留thinking+enabled)' if is_deepseek else 'MiniMax(保留thinking+adaptive)' if is_minimax else '全剥'}"
             )
 
     if protocol == "openai":

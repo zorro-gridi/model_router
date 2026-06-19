@@ -314,12 +314,13 @@ class TestForwardToDeepSeek(unittest.TestCase):
         self.assertNotIn("redacted_thinking", types_present,
                          "DeepSeek 应剥离 redacted_thinking 块")
 
-    def test_deepseek_pops_thinking_and_betas_top_level(self):
-        """DeepSeek：顶层 thinking/betas 字段仍被 pop（DeepSeek 忽略这些字段）。"""
+    def test_deepseek_injects_thinking_enabled_and_pops_betas(self):
+        """DeepSeek：显式注入 thinking={"type":"enabled"}（与 MiniMax adaptive 区分），
+        betas 仍被 pop（DeepSeek 忽略此字段）。"""
         cap = _capture_forward("deepseek-v4-pro",
                                env_override={"MINIMAX_API_KEY": "sk-deepseek-test"})
-        self.assertNotIn("thinking", cap.json,
-                        "DeepSeek 不应保留顶层 thinking（会被忽略）")
+        self.assertEqual(cap.json.get("thinking"), {"type": "enabled"},
+                         "DeepSeek 应显式注入 thinking={'type':'enabled'}")
         self.assertNotIn("betas", cap.json,
                         "DeepSeek 不应保留顶层 betas（会被忽略）")
 
@@ -750,10 +751,10 @@ class TestMidSessionModelSwitch(unittest.TestCase):
     def test_sticky_fallback_scenario(self):
         """模拟 sticky fallback：DeepSeek↔MiniMax 双向切换时 thinking 策略正确。
 
-        路线 B：两者都保留 thinking 块（仅剥 redacted），MiniMax 额外注入
-        thinking={"type": "adaptive"}。
+        路线 B：两者都保留 thinking 块（仅剥 redacted），差异化通过
+        thinking.type 字段值体现：DeepSeek=enabled, MiniMax=adaptive。
         """
-        # 场景 A：sticky 切到 DeepSeek（保留 thinking，剥 redacted，不注入顶层 thinking）
+        # 场景 A：sticky 切到 DeepSeek（保留 thinking，剥 redacted，注入 enabled）
         cap_ds = _capture_forward(
             "deepseek-v4-pro",
             env_override={"MINIMAX_API_KEY": "sk-deepseek-test"},
@@ -767,9 +768,9 @@ class TestMidSessionModelSwitch(unittest.TestCase):
             ds_counts["redacted_thinking"], 0,
             "sticky fallback→DeepSeek 应剥离 redacted_thinking"
         )
-        self.assertNotIn(
-            "thinking", cap_ds.json,
-            "sticky fallback→DeepSeek 不应注入顶层 thinking 字段（DeepSeek 忽略）"
+        self.assertEqual(
+            cap_ds.json.get("thinking"), {"type": "enabled"},
+            "sticky fallback→DeepSeek 应显式注入 thinking={'type': 'enabled'}"
         )
 
         # 场景 B：sticky 切到 MiniMax（保留 thinking + 注入 adaptive）
