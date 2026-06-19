@@ -50,7 +50,27 @@ from proxy import (  # noqa: E402
     MODEL_TO_PROVIDER,
     STAGE_CONFIG,
     forward_request,
+    try_write_fallback,
 )
+
+
+def _feed_token_plan_cache(payload, error=None):
+    """把 minimax API 结果喂给 token_plan 的 in-process cache（[2026-06-19] 引入）。
+
+    用途：让 health_checker 后台线程成为 token plan 状态的「单一事实源」。
+    请求路径上 proxy.do_POST 不再直接调 minimax API，而是调
+    token_plan.peek_cached_status()（纯内存读）。本函数确保请求线程
+    读到的总是后台线程最近一次 API 调用的结果。
+
+    注意：token_plan 在 health_checker 之后才被 import，且 token_plan 也
+    会 import proxy（try_write_fallback），所以这里用包裹函数 + 延迟 import
+    避免循环依赖 / 启动期失败。
+    """
+    try:
+        from token_plan import set_external_payload
+        set_external_payload(payload, error=error)
+    except Exception as e:
+        log.debug(f"feed token_plan cache 失败（已忽略，不影响主流程）: {e}")
 
 log = logging.getLogger("stage-router.health-checker")
 
@@ -376,11 +396,22 @@ def _quota_recovery_check() -> None:
         payload = json.loads(body)
     except Exception as e:
         log.debug(f"配额恢复检查 API 失败（已忽略）: {e}")
+        # [2026-06-19] 即使 API 失败也把失败状态喂给 token_plan cache，
+        # 让请求路径 peek_cached_status() 返回 None（与"无数据"等价），
+        # 而不是去触发另一次独立 IO（修复前架构的痛点）。
+        _feed_token_plan_cache(payload=None, error=str(e))
         return
 
     if not isinstance(payload, dict):
         log.debug("配额恢复检查: API 响应非 dict，跳过")
+        _feed_token_plan_cache(payload=None, error="non_dict_response")
         return
+
+    # [2026-06-19] 单一事实源：API 拿到 payload 后立即喂 token_plan cache。
+    # 请求路径上的 peek_cached_status() 就能零 IO 命中——这是修复
+    # 「轮询进程阻塞主 proxy」的关键。schema 校验放在喂缓存之后，
+    # 让 cache 总是反映「最近一次 API 调用结果」，便于日志/metrics 追溯。
+    _feed_token_plan_cache(payload=payload)
 
     # 提取 general 套餐数据（minimax LLM 路由只用 general 套餐）
     model_remains = payload.get("model_remains")
@@ -496,6 +527,25 @@ def _quota_recovery_check() -> None:
             f"weekly_status={weekly_status}, weekly_end_time={weekly_end_time}"
         )
     elif not routable:
+        # [2026-06-19] 主动写 sticky（替代修复前「请求路径 precheck 写 sticky」）。
+        # 修复前：每次请求都跑 precheck_and_fallback() → 同步 5s urllib +
+        #         try_write_fallback()。precheck 已删除，改由后台线程负责写。
+        # 行为：minimax 不可路由时，对当前 active session 写 sticky；O_EXCL
+        #       保证并发安全（多个 health_checker 实例也不会重复写）。
+        # 注意：try_write_fallback 走 _active_stage_path()，仅影响当前
+        #       active session；其他 session 走原始 429 → _is_retriable 链路。
+        #       这与修复前 precheck_and_fallback 的行为一致（修复前也是
+        #       每个 session 在自己的 do_POST 里调 precheck 才写自己的 sticky）。
+        try:
+            wrote = try_write_fallback("minimax")
+            if wrote:
+                log.info(
+                    f"配额耗尽 auto-pre-fallback: 已为 active session 写 minimax sticky，"
+                    f"后续请求自动走替代 provider（无需等 429）"
+                )
+        except Exception as e:
+            log.debug(f"配额耗尽 proactive sticky 写入失败（不影响主流程）: {e}")
+
         parts: list[str] = []
         if interval_status == 2:
             if isinstance(interval_remains_time, (int, float)) and interval_remains_time > 0:
