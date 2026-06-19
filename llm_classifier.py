@@ -218,6 +218,8 @@ ONLY when ALL of the following are true:
 
 3. The meaning depends on previous conversation context.
 
+4. Terminal CLI Command.
+
 Examples (INVALID):
 
 - continue
@@ -236,6 +238,9 @@ Examples (INVALID):
 - modify it
 - fix it
 - try again
+- Bash(*)
+- "~": ~model / ~provider command
+- "/": slashcommand
 
 Examples (VALID):
 
