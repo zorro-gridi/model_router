@@ -756,6 +756,11 @@ __all__ = [
     "_PLACEHOLDER_WEIGHTS",
     "load_yaml_weights",
     "get_weights",
+    # ── Model tier ranking (config/model_tiers.yaml) ──
+    "MODEL_TIERS",
+    "load_model_tiers",
+    "get_model_tier",
+    "model_tier",
 ]
 
 # ── Runtime Complexity Score 权重（V1.3 §7 硬编码兜底）────────────────────
@@ -868,3 +873,81 @@ def get_weights() -> dict[str, dict[str, int]]:
     if _YAML_WEIGHTS is None:
         _YAML_WEIGHTS = load_yaml_weights()
     return _YAML_WEIGHTS
+
+# ── Model Tier Ranking（config/model_tiers.yaml 配置化）────────────────
+
+# 硬编码兜底：YAML 缺失或损坏时使用。
+# 等级排序：deepseek-v4-pro(2) > MiniMax-M3(1) > deepseek-v4-flash(0)
+# 与 config/model_tiers.yaml 保持同步。
+_PLACEHOLDER_MODEL_TIERS: dict[str, int] = {
+    "deepseek-v4-flash": 0,
+    "MiniMax-M3":        1,
+    "deepseek-v4-pro":   2,
+}
+
+_MODEL_TIERS_YAML_PATH = _Path(__file__).resolve().parent / "config" / "model_tiers.yaml"
+
+
+def load_model_tiers() -> dict[str, int]:
+    """加载 config/model_tiers.yaml → 返回 {model_name: tier_int}。
+
+    启动时调用一次；YAML 缺失或损坏时降级为 _PLACEHOLDER_MODEL_TIERS 硬编码兜底。
+    """
+    try:
+        import yaml as _yaml
+    except ImportError:
+        return dict(_PLACEHOLDER_MODEL_TIERS)
+
+    if not _MODEL_TIERS_YAML_PATH.exists():
+        return dict(_PLACEHOLDER_MODEL_TIERS)
+
+    try:
+        raw = _MODEL_TIERS_YAML_PATH.read_text(encoding="utf-8")
+        data = _yaml.safe_load(raw)
+    except Exception:
+        return dict(_PLACEHOLDER_MODEL_TIERS)
+
+    if not isinstance(data, dict):
+        return dict(_PLACEHOLDER_MODEL_TIERS)
+
+    models = data.get("models")
+    if not isinstance(models, dict):
+        return dict(_PLACEHOLDER_MODEL_TIERS)
+
+    # 转换为 {model_name: int_tier}
+    return {str(k): int(v) for k, v in models.items()}
+
+
+# 模块级缓存：首次导入时加载一次
+_MODEL_TIERS_CACHE: dict[str, int] | None = None
+
+
+def _ensure_model_tiers() -> dict[str, int]:
+    """确保 MODEL_TIERS 已加载（延迟加载，避免循环导入）。"""
+    global _MODEL_TIERS_CACHE
+    if _MODEL_TIERS_CACHE is None:
+        _MODEL_TIERS_CACHE = load_model_tiers()
+    return _MODEL_TIERS_CACHE
+
+
+# 兼容属性访问：MODEL_TIERS 作为模块级"变量"（实际是函数调用）
+# 消费方可直接 `from stage_config import MODEL_TIERS`，但注意这是函数返回值而非真变量。
+# 推荐使用 get_model_tier() 或 model_tier() 函数。
+MODEL_TIERS: dict[str, int] = _PLACEHOLDER_MODEL_TIERS  # 启动时占位，首次调用后更新
+
+
+def get_model_tier(model_name: str) -> int:
+    """返回模型的 capability tier 值（YAML 优先，降级硬编码兜底）。
+
+    Args:
+        model_name: 模型名（如 "deepseek-v4-pro"、"MiniMax-M3"）。
+
+    Returns:
+        int: tier 值（越大越强），未知模型返回 1（baseline）。
+    """
+    tiers = _ensure_model_tiers()
+    return tiers.get(model_name, 1)  # 未知模型按 baseline (tier 1) 处理
+
+
+# 简洁别名，与 statusline.sh 的 _model_tier() 命名对齐
+model_tier = get_model_tier

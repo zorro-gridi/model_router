@@ -1,0 +1,27 @@
+# ── model_tiers.yaml — 模型能力等级排序配置 ─────────────────────────────
+#
+# 本文件是模型能力等级排序的**唯一数据源**。
+# Python 端（stage_config.py / decision_engine.py / proxy.py）和
+# Shell 端（statusline.sh）均以此为准。
+#
+# 排序规则：
+#   - tier 为整数，值越大表示模型能力越强
+#   - 新增模型时只需在此文件追加一条记录
+#   - statusline.sh 的 _model_tier() 函数 MUST 与此文件保持同步
+#
+# 等级排序：
+#   deepseek-v4-pro  (tier 2) — 最强推理模型，复杂任务首选
+#   MiniMax-M3       (tier 1) — 主力编码模型，大多数任务的基线
+#   deepseek-v4-flash (tier 0) — 低成本快速模型，简单/发散任务
+#
+# 消费方：
+#   - stage_config.py:  load_model_tiers() 加载 → get_model_tier() 查询
+#   - decision_engine.py: _COMPLEXITY_TO_MODEL 的 tier 派生
+#   - proxy.py:         写入 route_model_tier / stage_model_tier 到 state JSON
+#   - statusline.sh:    从 state JSON 读取 pre-computed tier，_model_tier() 兜底
+# ─────────────────────────────────────────────────────────────────────────
+
+models:
+  deepseek-v4-flash: 0
+  MiniMax-M3: 1
+  deepseek-v4-pro: 2

@@ -50,11 +50,18 @@ OPTIONAL_FIELDS = (
 )
 
 # v1.3 路由表：complexity label → 模型
-# 简化映射：complex=升级 deepseek-v4-pro；medium/simple=基线 MiniMax-M3
+# 简化映射：complex=升级 STRONG_MODEL；medium/simple=基线 NORMAL_MODEL。
+#
+# ── 模型能力等级与路由映射的关系 ──
+# config/model_tiers.yaml 是模型能力等级的权威数据源：
+#   deepseek-v4-pro (tier 2) > MiniMax-M3 (tier 1) > deepseek-v4-flash (tier 0)
+# 本表是"复杂度→模型"的路由策略（业务逻辑），而非单纯的 tier 映射。
+# 其值 MUST 与 stage_config.STRONG_MODEL / stage_config.NORMAL_MODEL 保持一致；
+# stage_config 又通过 get_model_tier() 从 model_tiers.yaml 读取 tier 信息。
 _COMPLEXITY_TO_MODEL: dict[str, str] = {
-    "complex": "deepseek-v4-pro",
-    "medium":  "MiniMax-M3",
-    "simple":  "MiniMax-M3",
+    "complex": "deepseek-v4-pro",   # = stage_config.STRONG_MODEL (tier 2)
+    "medium":  "MiniMax-M3",        # = stage_config.NORMAL_MODEL (tier 1)
+    "simple":  "MiniMax-M3",        # = stage_config.NORMAL_MODEL (tier 1)
 }
 
 # 模糊 prompt 关键词（v1.3 §8.3）：命中 → 强制 medium 偏置

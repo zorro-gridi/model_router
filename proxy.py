@@ -135,6 +135,7 @@ from stage_config import (
     DEFAULT_FALLBACK_PROVIDER,    # provider 级 fallback：失败 provider → 替代 provider
     PROVIDER_COMPLEXITY_MODELS,   # provider 级 fallback：provider → {complexity → model}
     KNOWN_PROVIDER_NAMES,         # provider 级 fallback：已知 provider 名集合
+    get_model_tier,               # model_tiers.yaml: 模型能力等级查询
 )
 
 # 模型覆盖指令解析（~model / ~m / 自然语言）
@@ -3197,6 +3198,13 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             if metric_session_id and metric_project_root:
                 try:
                     from state_persistence import SessionStateStore
+
+                    # ── 计算 model tier（供 statusline.sh upgrade/downgrade 显示）──
+                    # 从 model_tiers.yaml 读取能力等级，避免 statusline.sh 硬编码。
+                    _route_tier = get_model_tier(actual_route_model)
+                    # session_model 是 stage 默认或 model_override 解析后的原始模型
+                    _stage_tier = get_model_tier(session_model) if session_model else 1
+
                     SessionStateStore().write(
                         sid=metric_session_id,
                         project_root=metric_project_root,
@@ -3206,6 +3214,9 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                         # 2026-06-18 statusline v2：override→fallback 冲突显示
                         pre_fallback_route_model=pre_fallback_route_model,
                         override_degraded=override_degraded,
+                        # model_tiers.yaml: 模型能力等级（供 statusline.sh L3 显示）
+                        route_model_tier=_route_tier,
+                        stage_model_tier=_stage_tier,
                     )
                 except Exception as _state_exc:
                     log.warning(
