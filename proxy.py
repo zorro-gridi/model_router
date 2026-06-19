@@ -2430,10 +2430,25 @@ def _is_retriable(status: int) -> bool:
       0    — 网络超时 / 解析失败
 
     不纳入（"重试 body 不会变好" / "切备用也无效"）:
-      400  — 请求体格式错（client bug，body 不会因 provider 不同而变好）
+      400  — 请求体格式错（client bug，body 不会因 provider 不同而变好）。
+             **MiniMax 特有强化（2026-06-19 引入）**：MiniMax 偶发 400
+             （thinking block signature 不匹配 / 字段异常）是 client-side 问题，
+             切到其他 provider 不会让 body 变好，反而浪费 budget。
+             因此 400 在任何 provider 路径上都永不触发 fallback。
       404  — 资源不存在（主 provider 没有的模型/路径，备用大概率也没有，避免 fallback 死循环）
       422  — 参数错误（同 400）
+
+    行为契约：返回 False 的 status（如 400）不会被 _call_with_retry 重试、
+    也不会被 do_POST 触发 fallback——直接透传给 CC 客户端。
     """
+    # ── 显式剥离 MiniMax 400（2026-06-19 加固）────────────────────────
+    # MiniMax 偶发 400 是 thinking block signature 不匹配 / 字段异常等
+    # client-side 问题。切到其他 provider 不会让 body 变好，反而浪费 budget。
+    #
+    # 用 early-return 而非"集合排除"的隐式表达，让"400 永不触发 fallback"
+    # 的意图在代码层面可见，避免后续修改 retriable 集合时把 400 误纳。
+    if status == 400:
+        return False
     return status in (401, 402, 403, 429) or (500 <= status < 600) or status == 0
 
 
