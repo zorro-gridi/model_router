@@ -2106,8 +2106,8 @@ def forward_request(
 
     # ── 防御式：thinking 字段降级（按模型个性化）──
     #
-    # 策略（2026-06-18 三层个性化）：
-    #   判定以 target_model 前缀为准，三档处理：
+    # 策略（2026-06-18 初版 → 2026-06-19 修订，以 MiniMax 官方文档为准）：
+    #   判定以 target_model 前缀为准，四档处理：
     #
     #   ① claude-* — 原生 Anthropic 模型，全透传
     #     · 不修改 body、不剥任何 block（signature 校验依赖完整性）
@@ -2121,30 +2121,51 @@ def forward_request(
     #     → 清洗 anthropic-beta / anthropic-version 请求头
     #     → 响应端保留 thinking 块，仅剥 redacted_thinking
     #
-    #   ③ 其它（MiniMax-M3 等）— 不认识 thinking block
+    #   ③ MiniMax-M* — Anthropic 协议兼容，官方文档确认 thinking "Fully Supported"
+    #     （文档: platform.minimax.io, "Anthropic SDK ↔ MiniMax API 兼容性")
+    #     文档明确要求："preserve thinking blocks unchanged in later turns"
+    #     2026-06-19 路线 B 修订：不再剥离 thinking 块，而是正确回传
+    #     → 保留 thinking 块，仅剥 redacted_thinking（未知是否支持）
+    #     → 显式注入 thinking={"type": "adaptive"} 告知 MiniMax 进入 thinking mode
+    #       （M2.x 模型 thinking 始终开启，此参数不生效但无害）
+    #     → 移除 betas 参数
+    #     → 响应端保留 thinking 块，仅剥 redacted_thinking
+    #
+    #   ④ 其它（未知模型）— 保守策略
     #     → thinking + redacted_thinking 两者全剥
     #     → pop 顶层 thinking / betas
-    #     → 清洗 Anthropic 专属头
     #     → 响应端两者全剥
     #
-    #   根因：MiniMax 不认识 type: "thinking"，收到后进入 thinking mode
-    #     但顶层 thinking 已被移除 → 400
-    #     "the content[].thinking in the thinking mode must be passed back
-    #      to the API"。
-    #   DeepSeek 支持 thinking 块但不支持 redacted_thinking，保留 thinking
-    #     避免了"将 type=thinking 转为 text 破坏内部校验"的坑（历史记忆）。
+    #   修订根因：2026-06-18 初版将 MiniMax 归类为"不认识 thinking block"，
+    #     依赖 Context7 旧数据（误标 thinking 为 ignored）。
+    #     2026-06-19 核对 MiniMax 官网后发现 thinking 是 Fully Supported，
+    #     剥离 thinking 块 + 移除 thinking 参数 反而导致 MiniMax 进入
+    #     thinking mode 却找不到 thinking 块 → 400
+    #     "the content[].thinking in the thinking mode must be passed back"。
+    #     正确做法是遵循文档要求保留 thinking 块并显式注入 thinking 参数。
     is_claude = target_model.startswith("claude-")
     is_deepseek = target_model.startswith("deepseek-")
+    is_minimax = target_model.startswith("MiniMax-")
     if not is_claude:
-        body_json.pop("thinking", None)
+        if is_deepseek or is_minimax:
+            # DeepSeek / MiniMax：保留 thinking 块，仅剥 redacted_thinking
+            _keep = True
+            if is_minimax:
+                # MiniMax 文档确认 thinking Fully Supported，显式进入 thinking mode
+                body_json["thinking"] = {"type": "adaptive"}
+            else:
+                body_json.pop("thinking", None)
+        else:
+            # 未知模型保守策略：全剥
+            body_json.pop("thinking", None)
+            _keep = False
         body_json.pop("betas", None)
-        _keep = is_deepseek  # DeepSeek → 保留 thinking，仅剥 redacted
         _stripped, _redacted = _strip_thinking_blocks(body_json, keep_thinking=_keep)
         if _stripped or _redacted:
             log.info(
                 f"thinking降级: 剥离 thinking={_stripped} redacted={_redacted} "
                 f"目标={target_model} provider={target_base} "
-                f"策略={'DeepSeek(保留thinking)' if _keep else '全剥'}"
+                f"策略={'MiniMax(保留thinking+adaptive)' if is_minimax else 'DeepSeek(保留thinking)' if _keep else '全剥'}"
             )
 
     if protocol == "openai":
@@ -2220,9 +2241,13 @@ def forward_request(
             if protocol == "openai":
                 resp_body = _from_openai_response(resp_body)
             elif protocol == "anthropic" and not is_claude:
-                # 防御：剥离上游响应中的 thinking block（防止进入 CC 会话历史死循环）
-                # DeepSeek → 只剥 redacted_thinking；MiniMax 等 → 两者全剥
-                resp_body = _strip_thinking_from_response(resp_body, keep_thinking=is_deepseek)
+                # 防御：剥离上游响应中不支持的 thinking block 类型
+                # 2026-06-19 修订：MiniMax 文档确认 thinking Fully Supported，
+                #   保留 thinking 块以遵循"preserve unchanged"要求，
+                #   仅剥 redacted_thinking（未知是否支持）
+                # DeepSeek / MiniMax → 只剥 redacted_thinking；
+                # 其它 → 两者全剥
+                resp_body = _strip_thinking_from_response(resp_body, keep_thinking=(is_deepseek or is_minimax))
             _latency["total_ms"] = int((time.time() - _t0) * 1000)
             return resp.status, resp_headers, resp_body, _latency
     except urllib.error.HTTPError as e:

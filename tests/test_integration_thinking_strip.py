@@ -205,22 +205,33 @@ def _count_thinking_blocks(body: dict) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  第一部分：新方案核心验证 — 转发给非 Claude 模型时 thinking 被剥离
+#  第一部分：新方案核心验证 — 转发给非 Claude 模型时 thinking 的处理
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestForwardToMiniMax(unittest.TestCase):
-    """转发给 MiniMax（tier 3：全剥）→ thinking/redacted_thinking 全部剥离。"""
+    """转发给 MiniMax-M3（2026-06-19 路线 B 修订）。
 
-    def test_minimax_strips_all_thinking_blocks(self):
-        """MiniMax-M3：messages 中所有 thinking/redacted_thinking 块归零。"""
+    MiniMax 官方文档确认 thinking 为 "Fully Supported"，文档明确要求
+    "preserve thinking blocks unchanged in later turns"。
+    因此：
+      - type='thinking' 块保留（与 DeepSeek 一致）
+      - 仅剥 redacted_thinking（未知是否支持）
+      - 注入 thinking={"type": "adaptive"} 显式进入 thinking mode
+      - 移除 betas（MiniMax 不支持）
+    """
+
+    def test_minimax_preserves_thinking_strips_redacted(self):
+        """MiniMax-M3：保留 thinking 块，仅剥离 redacted_thinking。"""
         cap = _capture_forward("MiniMax-M3",
                                env_override={"MINIMAX_API_KEY": "sk-minimax-test"})
         counts = _count_thinking_blocks(cap.json)
-        self.assertEqual(counts["total"], 0,
-                        f"转发 MiniMax 的请求体仍含 {counts['total']} 个 thinking 块")
+        self.assertGreater(counts["thinking"], 0,
+                         f"MiniMax 应保留 thinking 块，实际 thinking={counts['thinking']}")
+        self.assertEqual(counts["redacted_thinking"], 0,
+                        f"MiniMax 应剥离 redacted_thinking，实际={counts['redacted_thinking']}")
 
-    def test_minimax_strips_tool_result_nested_thinking(self):
-        """MiniMax-M3：tool_result.content[] 内嵌的 thinking 块也被递归剥离。"""
+    def test_minimax_preserves_tool_result_nested_thinking(self):
+        """MiniMax-M3：tool_result.content[] 内嵌的 thinking 保留，redacted 剥离。"""
         cap = _capture_forward("MiniMax-M3",
                                env_override={"MINIMAX_API_KEY": "sk-minimax-test"})
         # 第三条消息是 user tool_result
@@ -228,20 +239,25 @@ class TestForwardToMiniMax(unittest.TestCase):
         self.assertEqual(tool_msg["role"], "user")
         tc = tool_msg["content"][0]
         self.assertEqual(tc["type"], "tool_result")
+        has_thinking = False
         for block in tc.get("content", []):
-            if isinstance(block, dict):
-                self.assertNotEqual(
-                    block.get("type"), "thinking",
-                    f"tool_result 内嵌 thinking 未被递归剥离: {block}")
+            if isinstance(block, dict) and block.get("type") == "redacted_thinking":
+                self.fail(f"tool_result 内嵌 redacted_thinking 未被剥离: {block}")
+            if isinstance(block, dict) and block.get("type") == "thinking":
+                has_thinking = True
+        self.assertTrue(has_thinking,
+                       "tool_result 内嵌 thinking 块应保留（MiniMax 文档要求）")
 
-    def test_minimax_pops_thinking_and_betas_top_level(self):
-        """MiniMax-M3：顶层 thinking / betas 字段被 pop。"""
+    def test_minimax_injects_thinking_adaptive_and_pops_betas(self):
+        """MiniMax-M3：注入 thinking={"type": "adaptive"}，移除 betas。"""
         cap = _capture_forward("MiniMax-M3",
                                env_override={"MINIMAX_API_KEY": "sk-minimax-test"})
-        self.assertNotIn("thinking", cap.json,
-                        "非 claude-* 模型不应保留顶层 thinking 字段")
+        self.assertIn("thinking", cap.json,
+                     "MiniMax 应注入顶层 thinking 字段（文档确认 Fully Supported）")
+        self.assertEqual(cap.json["thinking"], {"type": "adaptive"},
+                        f"MiniMax 应显式注入 adaptive，实际={cap.json.get('thinking')}")
         self.assertNotIn("betas", cap.json,
-                        "非 claude-* 模型不应保留顶层 betas 字段")
+                        "MiniMax 不应保留顶层 betas 字段")
 
     def test_minimax_headers_stripped(self):
         """MiniMax-M3：anthropic-beta 必剥；anthropic-version 补默认值保留。
@@ -360,12 +376,12 @@ class TestForwardToClaudeModel(unittest.TestCase):
 class Test400ErrorReproduction(unittest.TestCase):
     """模拟 MiniMax 上游对 thinking 块的拒绝，验证新旧方案的行为差异。"""
 
-    def test_new_code_avoids_400_by_stripping(self):
-        """新方案：thinking 块在转发前剥离 → upstream 不会拒绝 → 200。
+    def test_new_code_avoids_400_by_passing_thinking(self):
+        """路线 B 新方案：保留 thinking 块 + 注入 thinking={"type": "adaptive"} → 200。
 
-        urlopen mock 会检查请求体中是否有 thinking 块：
-        - 有 → 抛出 HTTPError 400（模拟真实 MiniMax 报错）
-        - 无 → 正常返回 200
+        模拟真实 MiniMax 行为：
+        - 请求体含 thinking 块 + 顶层 thinking=adaptive → 200（thinking mode 正常激活）
+        - 请求体含 thinking 块但缺顶层 thinking → 400（"must be passed back"）
         """
         import urllib.error
 
@@ -377,7 +393,8 @@ class Test400ErrorReproduction(unittest.TestCase):
                 for m in msgs
                 for b in (m.get("content") if isinstance(m.get("content"), list) else [])
             )
-            if has_thinking or "thinking" in body:
+            # 关键：含 thinking 块但缺顶层 thinking 参数 → 400
+            if has_thinking and not isinstance(body.get("thinking"), dict):
                 raise urllib.error.HTTPError(
                     url="https://api.minimaxi.com/v1/messages",
                     code=400,
@@ -415,7 +432,7 @@ class Test400ErrorReproduction(unittest.TestCase):
             )
 
         self.assertEqual(status, 200,
-                         f"新方案下 thinking 已剥离，应为 200，实际 status={status}")
+                         f"路线 B 下 thinking 已传回 + adaptive 参数已注入，应为 200，实际 status={status}")
 
     def test_old_code_would_get_400(self):
         """旧方案（绕过降级）：thinking 块未剥离 → upstream 拒绝 → 400。
@@ -530,12 +547,12 @@ class Test400ErrorReproduction(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestResponseSideThinkingStrip(unittest.TestCase):
-    """响应端 thinking 清洗：三层策略分别验证。"""
+    """响应端 thinking 清洗：四档策略分别验证。"""
 
-    # ── MiniMax（tier 3）全剥 ──
+    # ── MiniMax（2026-06-19 路线 B）保留 thinking，仅剥 redacted ──
 
-    def test_minimax_strips_all_thinking_from_response(self):
-        """MiniMax 响应：thinking + redacted_thinking 全剥。"""
+    def test_minimax_preserves_thinking_in_response(self):
+        """MiniMax 响应：保留 thinking 块，仅剥离 redacted_thinking。"""
         from proxy import _strip_thinking_from_response
 
         resp = {
@@ -551,13 +568,16 @@ class TestResponseSideThinkingStrip(unittest.TestCase):
         }
 
         cleaned = _strip_thinking_from_response(json.dumps(resp).encode(),
-                                                 keep_thinking=False)
+                                                 keep_thinking=True)
         parsed = json.loads(cleaned)
 
-        self.assertEqual(len(parsed["content"]), 1,
-                         "MiniMax 清洗后应只剩 text block")
-        self.assertEqual(parsed["content"][0]["type"], "text")
-        self.assertEqual(parsed["content"][0]["text"], "visible reply text")
+        # thinking + text 保留，redacted 剥离
+        self.assertEqual(len(parsed["content"]), 2)
+        types = [b["type"] for b in parsed["content"]]
+        self.assertIn("thinking", types, "MiniMax 响应应保留 thinking 块")
+        self.assertIn("text", types)
+        self.assertNotIn("redacted_thinking", types,
+                         "MiniMax 响应应剥离 redacted_thinking")
         self.assertEqual(parsed["stop_reason"], "end_turn")
         self.assertEqual(parsed["usage"]["input_tokens"], 500)
 
@@ -616,28 +636,37 @@ class TestMidSessionModelSwitch(unittest.TestCase):
     """
 
     def test_deepseek_to_minimax_strips_legacy_thinking(self):
-        """DeepSeek→MiniMax 切换：转发前剥离所有遗留 thinking 块。
+        """DeepSeek→MiniMax 切换：保留遗留 thinking 块 + 注入 thinking=adaptive。
 
         body 含有 DeepSeek 时代遗留的 thinking 块（含 tool_result 嵌套），
-        target_model=MiniMax-M3 → tier 3 全剥策略 → 发出的请求体中
-        thinking 块数应为 0。
+        target_model=MiniMax-M3 → 路线 B：保留 thinking 块，注入顶层
+        thinking={"type": "adaptive"} → 符合 MiniMax 文档"preserve unchanged"要求。
         """
         cap = _capture_forward("MiniMax-M3",
                                env_override={"MINIMAX_API_KEY": "sk-minimax-test"})
         counts = _count_thinking_blocks(cap.json)
 
+        # thinking 保留，redacted 剥离
+        self.assertGreater(
+            counts["thinking"], 0,
+            f"DeepSeek→MiniMax 应保留 thinking 块（路线 B），实际 thinking={counts['thinking']}"
+        )
         self.assertEqual(
-            counts["total"], 0,
-            f"DeepSeek→MiniMax 切换后遗留 thinking 块未剥离: "
-            f"thinking={counts['thinking']} redacted={counts['redacted_thinking']}"
+            counts["redacted_thinking"], 0,
+            f"redacted_thinking 应被剥离，实际={counts['redacted_thinking']}"
+        )
+        # 关键：顶层注入 thinking={"type": "adaptive"}
+        self.assertEqual(
+            cap.json.get("thinking"), {"type": "adaptive"},
+            "MiniMax 应显式注入顶层 thinking={'type': 'adaptive'} 参数"
         )
 
     def test_deepseek_to_minimax_with_real_routing_simulation(self):
-        """模拟完整路由：body 含遗留 thinking 块，forward_request 目标为 MiniMax。
+        """模拟完整路由：路线 B 应避免 400。
 
-        使用 strict_upstream mock 检查实际发出的请求体是否含 thinking 块。
-        含 thinking 块 → mock 返回 400（模拟真实 MiniMax 错误）；
-        无 thinking 块 → 返回 200。
+        strict_upstream 模拟真实 MiniMax 行为：
+        - 含 thinking 块 + 顶层 thinking=adaptive → 200（thinking mode 正常激活）
+        - 含 thinking 块但缺顶层 thinking → 400（"must be passed back"）
         """
         import urllib.error
 
@@ -649,7 +678,8 @@ class TestMidSessionModelSwitch(unittest.TestCase):
                 for m in msgs
                 for b in (m.get("content") if isinstance(m.get("content"), list) else [])
             )
-            if has_thinking or "thinking" in body:
+            # 关键：含 thinking 块但缺顶层 thinking 参数 → 400（"must be passed back"）
+            if has_thinking and not isinstance(body.get("thinking"), dict):
                 raise urllib.error.HTTPError(
                     url="https://api.minimaxi.com/v1/messages",
                     code=400,
@@ -687,7 +717,7 @@ class TestMidSessionModelSwitch(unittest.TestCase):
             )
 
         self.assertEqual(status, 200,
-                         f"模型切换后遗留 thinking 未剥离 → 400: "
+                         f"路线 B：thinking 块已传回 + adaptive 已注入 → 200，"
                          f"实际 status={status}")
 
     def test_minimax_to_deepseek_preserves_thinking(self):
@@ -718,13 +748,12 @@ class TestMidSessionModelSwitch(unittest.TestCase):
                         "MiniMax→DeepSeek 切换后不应引入额外的 thinking 块")
 
     def test_sticky_fallback_scenario(self):
-        """模拟 sticky fallback：provider 级别回退时 thinking 策略正确。
+        """模拟 sticky fallback：DeepSeek↔MiniMax 双向切换时 thinking 策略正确。
 
-        当 sticky 从 deepseek 回退到 minimax 时，body 中的 thinking 块
-        必须被完全剥离；反之，从 minimax 回退到 deepseek 时，thinking 块
-        应保留（仅剥 redacted_thinking）。
+        路线 B：两者都保留 thinking 块（仅剥 redacted），MiniMax 额外注入
+        thinking={"type": "adaptive"}。
         """
-        # 场景 A：sticky 切到 DeepSeek（类似 DeepSeek 曾是替代 provider）
+        # 场景 A：sticky 切到 DeepSeek（保留 thinking，剥 redacted，不注入顶层 thinking）
         cap_ds = _capture_forward(
             "deepseek-v4-pro",
             env_override={"MINIMAX_API_KEY": "sk-deepseek-test"},
@@ -738,16 +767,28 @@ class TestMidSessionModelSwitch(unittest.TestCase):
             ds_counts["redacted_thinking"], 0,
             "sticky fallback→DeepSeek 应剥离 redacted_thinking"
         )
+        self.assertNotIn(
+            "thinking", cap_ds.json,
+            "sticky fallback→DeepSeek 不应注入顶层 thinking 字段（DeepSeek 忽略）"
+        )
 
-        # 场景 B：sticky 切到 MiniMax → thinking 全剥
+        # 场景 B：sticky 切到 MiniMax（保留 thinking + 注入 adaptive）
         cap_mm = _capture_forward(
             "MiniMax-M3",
             env_override={"MINIMAX_API_KEY": "sk-minimax-test"},
         )
         mm_counts = _count_thinking_blocks(cap_mm.json)
+        self.assertGreater(
+            mm_counts["thinking"], 0,
+            "sticky fallback→MiniMax 应保留 thinking 块（路线 B）"
+        )
         self.assertEqual(
-            mm_counts["total"], 0,
-            "sticky fallback→MiniMax 应全剥 thinking 块"
+            mm_counts["redacted_thinking"], 0,
+            "sticky fallback→MiniMax 应剥离 redacted_thinking"
+        )
+        self.assertEqual(
+            cap_mm.json.get("thinking"), {"type": "adaptive"},
+            "sticky fallback→MiniMax 应注入顶层 thinking={'type': 'adaptive'}"
         )
 
 
