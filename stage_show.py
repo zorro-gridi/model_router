@@ -338,6 +338,48 @@ def read_complexity(event: dict | None = None) -> dict | None:
     return None
 
 
+def read_state(event: dict | None = None) -> dict | None:
+    """
+    读取 model_router_state_<sid>.json（proxy 端写盘的 session 状态）。
+
+    用于 statusline 读取 override_degraded / pre_fallback_route_model 等字段，
+    这些字段仅在 proxy 路由决策完成后写入 state JSON，不走 model_<sid>/fallback_<sid>
+    等独立文件。
+    """
+    def _load_from(stage_path: Path, sid: str) -> dict | None:
+        state_file = stage_path.parent / f"model_router_state_{sid}.json"
+        try:
+            content = state_file.read_text().strip()
+            if content:
+                return json.loads(content)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        return None
+
+    if event:
+        session_id: str | None = (event.get("session_id") or "").strip() or None
+        cwd: str | None = event.get("cwd")
+        if session_id and cwd:
+            result = _load_from(_stage_file_path(cwd, session_id), session_id)
+            if result is not None:
+                return result
+
+    try:
+        active_path = ACTIVE_SESSION_FILE.read_text().strip()
+        if active_path:
+            ap = Path(active_path)
+            # Derive session_id from filename: stage_<sid>
+            sid = ap.name.replace("stage_", "", 1)
+            if sid:
+                result = _load_from(ap, sid)
+                if result is not None:
+                    return result
+    except FileNotFoundError:
+        pass
+
+    return None
+
+
 def read_task_field(event: dict | None = None) -> dict | None:
     """
     读取当前 session 的 task_field 业务领域分类（V1.4）。
@@ -408,14 +450,24 @@ def main():
     # ── Build content lines ─────────────────────────────────────────
     lines: list[str] = []
 
-    # Provider sticky fallback (2026-06-16)
-    fallback_prov = read_fallback(event)
-    if fallback_prov:
-        lines.append(f"  {RED}{BLD}⚠️  fallback: {fallback_prov}{RST}")
-
-    # Model override (highest routing priority)
+    # Model override (highest routing priority) — 含 override→fallback 退化标记
+    # 需要在 fallback 行之前判断，因为 override_degraded 影响 fallback 的显示
+    override_degraded = False
     if model_override:
-        lines.append(f"  {YLW}{BLD}🎯 {model_override}{RST}")
+        state = read_state(event)
+        override_degraded = bool(state and state.get("override_degraded"))
+        if override_degraded:
+            pre_model = state.get("pre_fallback_route_model", model_override)
+            lines.append(f"  {YLW}{BLD}🎯 {model_override}{RST} {RED}{BLD}↘ fallback{RST}")
+            lines.append(f"  {DIM}{GRY}  (原想跑 {pre_model}，provider 不可用){RST}")
+        else:
+            lines.append(f"  {YLW}{BLD}🎯 {model_override}{RST}")
+
+    # Provider sticky fallback (2026-06-16) — override_degraded 时已合并显示，不重复
+    if not override_degraded:
+        fallback_prov = read_fallback(event)
+        if fallback_prov:
+            lines.append(f"  {RED}{BLD}⚠️  fallback: {fallback_prov}{RST}")
 
     # Stage
     s_color = _stage_color(stage)

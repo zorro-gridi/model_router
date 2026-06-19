@@ -2650,6 +2650,8 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
                             sid=_rst_sid,
                             project_root=_rst_root,
                             model_override=None,
+                            override_degraded=False,
+                            pre_fallback_route_model=None,
                         )
                         log.info("~model reset: 清 state JSON 的 model_override 字段")
             except Exception as _rst_e:
