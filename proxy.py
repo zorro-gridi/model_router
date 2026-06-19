@@ -3097,6 +3097,24 @@ class RouterHandler(http.server.BaseHTTPRequestHandler):
             if _sid:
                 resp_body = _inject_sid_to_response(resp_body, _sid)
 
+        # ── 2026-06-19：sticky fallback 自动恢复 ──
+        # sticky provider swap 成功后，清除 sticky marker，让下一次请求重试主
+        # provider。若主 provider 仍不可用 → 新请求会再次触发 _retriable 分支 →
+        # 重新写入 sticky → 走同样的 swap → 再清除。成本：每个恢复边沿 1 次
+        # 额外失败请求，可接受。用户 ~model reset / ~provider reset 时跳过。
+        #
+        # 条件：成功 + swap 路径 + 非 override + 非 internal_req
+        if (not _is_retriable(status)
+                and sticky_provider
+                and fallback_invoked
+                and not model_override
+                and not internal_req):
+            clear_fallback()
+            log.info(
+                f"[{routing_source}] sticky_provider={sticky_provider} swap 成功，"
+                f"已清除 sticky marker，下次请求恢复主路径"
+            )
+
         # ── 结构化指标落盘（设计文档 §15）──
         # 每条请求都写一条 JSONL 记录，含 pattern/complexity/score/confidence/
         # token_estimate/fallback_count，供 /metrics /trace 读取。
