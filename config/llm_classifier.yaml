@@ -1,5 +1,6 @@
 classifier:
   model: deepseek-v4-flash
+  fallback_model: MiniMax-M3
   max_tokens: 512
   temperature: 0.0
   timeout: 15

@@ -546,6 +546,10 @@ _PLACEHOLDER_LLM_CLASSIFIER_CONFIG: dict[str, object] = {
     "base_url":    "https://api.deepseek.com/anthropic",
     "api_key_env": "DEEPSEEK_API_KEY",
     "protocol":    "anthropic",
+    "fallback_model":       "MiniMax-M3",
+    "fallback_base_url":    "https://api.minimaxi.com/anthropic",
+    "fallback_api_key_env": "MINIMAX_API_KEY",
+    "fallback_protocol":    "anthropic",
     "max_tokens":  512,
     "temperature": 0.0,
     "timeout":     15,
@@ -790,11 +794,17 @@ def load_llm_classifier_config(model_registry: dict[str, dict[str, str]]) -> dic
     if model not in model_registry:
         return copy.deepcopy(_PLACEHOLDER_LLM_CLASSIFIER_CONFIG)
     route = model_registry[model]
+    fallback_model = classifier.get("fallback_model")
+    fallback_route = model_registry.get(fallback_model) if isinstance(fallback_model, str) else None
     return {
         "model": model,
         "base_url": route["base_url"],
         "api_key_env": route["api_key_env"],
         "protocol": route["protocol"],
+        "fallback_model": fallback_model if fallback_route else None,
+        "fallback_base_url": fallback_route["base_url"] if fallback_route else None,
+        "fallback_api_key_env": fallback_route["api_key_env"] if fallback_route else None,
+        "fallback_protocol": fallback_route["protocol"] if fallback_route else None,
         "max_tokens": int(classifier.get("max_tokens", 512)),
         "temperature": float(classifier.get("temperature", 0.0)),
         "timeout": int(classifier.get("timeout", 15)),

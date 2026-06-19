@@ -178,6 +178,10 @@ DEFAULT_CLASSIFIER_CONFIG: dict = {
     "base_url":    "https://api.deepseek.com/anthropic",
     "api_key_env": "DEEPSEEK_API_KEY",
     "protocol":    "anthropic",
+    "fallback_model":       "MiniMax-M3",
+    "fallback_base_url":    "https://api.minimaxi.com/anthropic",
+    "fallback_api_key_env": "MINIMAX_API_KEY",
+    "fallback_protocol":    "anthropic",
     "max_tokens":  512,      # 分类只需要很短的回答
     "temperature": 0.0,      # 零温度确保确定性
     "timeout":     15,       # 分类超时上限（秒），超时则回退 V1
@@ -373,6 +377,49 @@ def _load_config(override: Optional[dict] = None) -> dict:
     return cfg
 
 
+def _status_triggers_fallback(status_code: int, body) -> bool:
+    """是否应因 APIStatusError 触发 classifier fallback。"""
+    if status_code in (401, 402, 403, 429) or 500 <= status_code < 600:
+        return True
+    body_text = str(body or "").lower()
+    return "insufficient" in body_text
+
+
+def _invoke_classifier(
+    *,
+    model: str,
+    base_url: str,
+    api_key_env: str,
+    timeout: int,
+    proxy: Optional[str],
+    max_tokens: int,
+    temperature: float,
+    prompt: str,
+) -> object:
+    """执行一次分类器 LLM 调用，失败时抛原始 SDK 异常。"""
+    api_key = os.environ.get(api_key_env, "")
+    if not api_key:
+        raise RuntimeError(
+            f"LLM 分类器：环境变量 {api_key_env} 未设置，无法调用 {model}"
+        )
+
+    http_client = _build_http_client(proxy=proxy, timeout=timeout) if proxy else None
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=float(timeout),
+        max_retries=0,
+        http_client=http_client,
+    )
+    return client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        system=CLASSIFIER_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+
 def _load_current_goal_for_data(data: dict) -> str:
     """根据 data dict 解析并读取当前 session 的 task_goal，找不到返回 ''。
 
@@ -434,17 +481,14 @@ def classify(prompt: str, config_override: Optional[dict] = None) -> dict:
     model = cfg["model"]
     base_url = cfg["base_url"]
     api_key_env = cfg["api_key_env"]
+    fallback_model = cfg.get("fallback_model")
+    fallback_base_url = cfg.get("fallback_base_url")
+    fallback_api_key_env = cfg.get("fallback_api_key_env")
     max_tokens = cfg.get("max_tokens", 512)
     temperature = cfg.get("temperature", 0.0)
     timeout = cfg.get("timeout", 15)
     proxy = cfg.get("proxy", None)
     max_prompt_chars = int(cfg.get("max_prompt_chars", 8000))
-
-    api_key = os.environ.get(api_key_env, "")
-    if not api_key:
-        raise RuntimeError(
-            f"LLM 分类器：环境变量 {api_key_env} 未设置，无法调用 {model}"
-        )
 
     # ── §6 D6.1-2 长 prompt 截断 ──
     if len(prompt) > max_prompt_chars:
@@ -466,27 +510,16 @@ def classify(prompt: str, config_override: Optional[dict] = None) -> dict:
     Pleaes give your classification result by user's input
     '''
 
-    # ── 构造 Anthropic SDK 客户端 ──
-    # SDK 底层 httpx 会自动走 HTTPS_PROXY / ALL_PROXY 环境变量。
-    # 如果显式配置了 proxy 字段，则用自定义 httpx.Client 注入代理。
-    http_client = _build_http_client(proxy=proxy, timeout=timeout) if proxy else None
-
-    client = anthropic.Anthropic(
-        api_key=api_key,
-        base_url=base_url,
-        timeout=float(timeout),
-        max_retries=0,   # 分类器不重试，失败就回退 V1
-        http_client=http_client,
-    )
-
-    # ── 调用 LLM ──
     try:
-        message = client.messages.create(
+        message = _invoke_classifier(
             model=model,
+            base_url=base_url,
+            api_key_env=api_key_env,
+            timeout=timeout,
+            proxy=proxy,
             max_tokens=max_tokens,
             temperature=temperature,
-            system=CLASSIFIER_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
+            prompt=prompt,
         )
     except anthropic.APITimeoutError as e:
         _log_classify_failure("api_timeout", e)
@@ -494,10 +527,54 @@ def classify(prompt: str, config_override: Optional[dict] = None) -> dict:
             f"LLM 分类器超时（{timeout}s）: {e!r}"
         ) from e
     except anthropic.APIStatusError as e:
-        _log_classify_failure(f"api_status_{e.status_code}", e)
-        raise RuntimeError(
-            f"LLM 分类器 HTTP {e.status_code}: {e.body!r}"
-        ) from e
+        if (
+            fallback_model
+            and fallback_model != model
+            and fallback_base_url
+            and fallback_api_key_env
+            and _status_triggers_fallback(e.status_code, getattr(e, "body", None))
+        ):
+            _log.warning(
+                "[llm_classifier] primary model failed with status=%s, fallback to %s",
+                e.status_code,
+                fallback_model,
+            )
+            try:
+                message = _invoke_classifier(
+                    model=str(fallback_model),
+                    base_url=str(fallback_base_url),
+                    api_key_env=str(fallback_api_key_env),
+                    timeout=timeout,
+                    proxy=proxy,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    prompt=prompt,
+                )
+            except anthropic.APITimeoutError as fb_e:
+                _log_classify_failure("fallback_api_timeout", fb_e)
+                raise RuntimeError(
+                    f"LLM 分类器 fallback 超时（{timeout}s）: {fb_e!r}"
+                ) from fb_e
+            except anthropic.APIStatusError as fb_e:
+                _log_classify_failure(f"fallback_api_status_{fb_e.status_code}", fb_e)
+                raise RuntimeError(
+                    f"LLM 分类器 fallback HTTP {fb_e.status_code}: {fb_e.body!r}"
+                ) from fb_e
+            except anthropic.APIConnectionError as fb_e:
+                _log_classify_failure("fallback_api_connect", fb_e)
+                raise RuntimeError(
+                    f"LLM 分类器 fallback 连接失败: {fb_e!r}"
+                ) from fb_e
+            except Exception as fb_e:
+                _log_classify_failure(f"fallback_api_unknown({type(fb_e).__name__})", fb_e)
+                raise RuntimeError(
+                    f"LLM 分类器 fallback 未知错误: {type(fb_e).__name__}: {fb_e!r}"
+                ) from fb_e
+        else:
+            _log_classify_failure(f"api_status_{e.status_code}", e)
+            raise RuntimeError(
+                f"LLM 分类器 HTTP {e.status_code}: {e.body!r}"
+            ) from e
     except anthropic.APIConnectionError as e:
         _log_classify_failure("api_connect", e)
         raise RuntimeError(
