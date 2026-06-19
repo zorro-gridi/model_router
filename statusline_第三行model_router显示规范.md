@@ -9,12 +9,13 @@
     - fallback: 原 route model 的 provide 接口错误、model token 余额不足等导致无法使用
     - upgrade/downgrade：表示任务复杂度升级、或降级，proxy 路由动态调整了当前 session 的 route model
     - override：表示用户自定义指定了当前 session 的 model
-* route model 显示的注意事项：
-  - fallback 与 upgrade/downgrade 的区别：
+* fallback 与 upgrade/downgrade 的区别：
     - fallback 是因为上游 provider 不可用（例如：接口超时、token账户用量超阈值）导致的 model 切换，是被动选择，必须满足上游 provider 不可用的条件才叫 fallback！
     - upgrade/downgrade 是因为任务复杂度的的动态变化主动进行 model 路由的结果，是主动调整！
-* override 和 fallback 的显示冲突
-    - 当用户指定的 override model 变得不可用时，需要显示 override -> fallback 相关提示信息，用于提示用户 override model 不可达，系统自动执行了 fallback 机制
+* fallback 与 override 的显示逻辑
+    - fallback 是 model router 因为原 provider/model 不可用时自适应被动调整的结果
+    - override 是用户的主动选择
+    - fallback 可以覆盖 override。当用户指定的 override model 也变得不可用时，此时也必须发生 fallback，同时，需要显示 override -> fallback 相关提示信息，用于提示用户 override model 不可达，系统自动执行了 fallback 机制
 
 ## 显示样式设计
 1. statusline 第三行保证按序显示信息
