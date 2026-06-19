@@ -30,7 +30,6 @@ V1.3 §4.3 / §9.3：is_first_todo_write 跟踪
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -38,6 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from runtime_tracker import RuntimeTracker
+from state_persistence import SessionStateStore
 from todowrite_analyzer import TodoWriteAnalyzer
 
 
@@ -67,6 +67,7 @@ def _extract_todos(payload):
 # 模块级单例（避免每次 dispatch 都创建实例）
 _tracker = RuntimeTracker()
 _analyzer = TodoWriteAnalyzer()
+_store = SessionStateStore()
 
 # 触发 analyzer 写入 todowrite_signal 的工具名集合
 # v2026-06: 兼容旧 TodoWrite + 新 Task* 系列
@@ -133,12 +134,8 @@ def _read_latest_signals(sid: str, project_root: str) -> tuple[int, dict | None]
         (runtime_score, todowrite_signal)；文件缺失/字段缺失时
         返回 (0, None)。
     """
-    path = Path(project_root) / ".claude" / f"model_router_state_{sid}.json"
-    if not path.exists():
-        return 0, None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    data = _store.read_new(sid, project_root)
+    if not data:
         return 0, None
 
     rs = data.get("runtime_score") or {}
@@ -162,10 +159,7 @@ def _should_skip_post_tool(sid: str, project_root: str) -> bool:
         True 表示应跳过 PostToolUse 分析，False 表示正常处理。
     """
     try:
-        path = Path(project_root) / ".claude" / f"model_router_state_{sid}.json"
-        if not path.exists():
-            return False
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = _store.read_new(sid, project_root) or {}
         return data.get("skip_post_tool_analysis", False)
     except Exception:
         return False
@@ -229,45 +223,13 @@ def _extract_tasks(raw_event: dict):
 
 def _has_existing_todowrite_signal(sid: str, project_root: str) -> bool:
     """检查 session_state 中是否已存在 todowrite_signal 记录。"""
-    path = Path(project_root) / ".claude" / f"model_router_state_{sid}.json"
-    if not path.exists():
-        return False
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return False
+    data = _store.read_new(sid, project_root) or {}
     return "todowrite_signal" in data and isinstance(data["todowrite_signal"], dict)
 
 
 def _write_todowrite_signal(sid: str, project_root: str, signal: dict) -> None:
-    """将 todowrite_signal 合并写入 session_state 文件。"""
-    claude_dir = Path(project_root) / ".claude"
-    claude_dir.mkdir(parents=True, exist_ok=True)
-    path = claude_dir / f"model_router_state_{sid}.json"
-
-    # 读取现有数据（保留其他字段如 runtime_score）
-    existing: dict = {}
-    if path.exists():
-        try:
-            existing = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            existing = {}
-
-    existing["todowrite_signal"] = signal
-
-    # 原子写入
-    import threading
-    suffix = f".{os.getpid()}.{id(threading.current_thread())}.tmp"
-    tmp_path = path.with_suffix(suffix)
-    try:
-        tmp_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(str(tmp_path), str(path))
-    finally:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except TypeError:
-            if tmp_path.exists():
-                tmp_path.unlink()
+    """将 todowrite_signal 通过 SessionStateStore 合并写入 session_state。"""
+    _store.update_fields(sid, project_root, {"todowrite_signal": signal})
 
 
 # ── CLI Entry Point ───────────────────────────────────────────────────────

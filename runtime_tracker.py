@@ -21,26 +21,20 @@ V1.3 §4.2 新增：
 
 from __future__ import annotations
 
-import json
-import os
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from runtime_score import RuntimeScore
-
-
-# 已知问题（不在此次修改范围）：
-# RuntimeTracker._save() 与 SessionStateStore.write() 各自独立读写
-# model_router_state_<sid>.json，存在 race condition：
-# 同时读取 → 各自修改 → 后写覆盖先写。
-# 长期方案：统一所有 state 写操作走 SessionStateStore。
+from state_persistence import SessionStateStore
 
 
 class RuntimeTracker:
     """PostToolUse hook 的 RuntimeScore 跟踪器（Stage 4 / V1.3 §4.2）。"""
+
+    def __init__(self) -> None:
+        self._store = SessionStateStore()
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -218,10 +212,6 @@ class RuntimeTracker:
 
     # ── Persistence ───────────────────────────────────────────────────────
 
-    def _state_path(self, sid: str, project_root: str) -> Path:
-        """model_router_state_<sid>.json 的路径。"""
-        return Path(project_root) / ".claude" / f"model_router_state_{sid}.json"
-
     def _load(self, sid: str, project_root: str) -> RuntimeScore:
         """从 session_state 文件加载 RuntimeScore。文件缺失/损坏 → 返回空实例。"""
         rs, _ = self._load_with_state(sid, project_root)
@@ -236,74 +226,43 @@ class RuntimeTracker:
             (RuntimeScore, current_prompt_id)。
             文件缺失/损坏时返回 (空 RuntimeScore, "")。
         """
-        path = self._state_path(sid, project_root)
-        if not path.exists():
+        data = self._store.read_new(sid, project_root)
+        if not data:
             return RuntimeScore(), ""
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
             rs_data = data.get("runtime_score", {})
             prompt_id = str(data.get("current_prompt_id", ""))
             if rs_data:
                 return RuntimeScore.from_dict(rs_data), prompt_id
-        except (json.JSONDecodeError, OSError, ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             pass
         return RuntimeScore(), ""
 
     def _save(self, sid: str, project_root: str, rs: RuntimeScore) -> None:
         """将 RuntimeScore 写回 session_state 文件。
 
-        仅更新 runtime_score 字段，保留文件中已有的其他字段。
+        仅通过 SessionStateStore 更新 runtime_score / current_prompt_id，
+        不再直接写 JSON 文件。
         """
-        claude_dir = Path(project_root) / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        path = claude_dir / f"model_router_state_{sid}.json"
-
-        # 读取现有数据（保留其他字段）
-        existing: dict = {}
-        if path.exists():
-            try:
-                existing = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                existing = {}
-
-        # 更新 runtime_score
-        existing["runtime_score"] = rs.to_dict()
-
-        # V1.3 §4.2：同步把 current_prompt_id 写到顶层字段，
-        # 这样后续 track() 调 _load_with_state() 拿到的 prompt_id
-        # 才会与 rs.current_prompt_id 对齐。
+        updates = {"runtime_score": rs.to_dict()}
         if rs.current_prompt_id:
-            existing["current_prompt_id"] = rs.current_prompt_id
-
-        # 原子写入
-        import threading
-        suffix = f".{os.getpid()}.{id(threading.current_thread())}.tmp"
-        tmp_path = path.with_suffix(suffix)
-        try:
-            tmp_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
-            os.replace(str(tmp_path), str(path))
-        finally:
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except TypeError:
-                if tmp_path.exists():
-                    tmp_path.unlink()
+            updates["current_prompt_id"] = rs.current_prompt_id
+        self._store.update_fields(sid, project_root, updates)
 
     def _clear_skip_flag(self, sid: str, project_root: str) -> None:
         """清除 state 文件中的 skip_post_tool_analysis 标记。
 
         由 init_prompt() 在下一个有效 prompt 到达时调用，
         恢复 PostToolUse 运行时分析。
-        注意：此操作有意独立于 _save()，避免影响 track() 路径。
         """
-        path = self._state_path(sid, project_root)
-        if not path.exists():
-            return
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if data.pop("skip_post_tool_analysis", None) is not None:
-                path.write_text(
-                    json.dumps(data, ensure_ascii=False, indent=2),
-                    encoding="utf-8")
+            data = self._store.read_new(sid, project_root) or {}
+            if "skip_post_tool_analysis" in data:
+                self._store.update_fields(
+                    sid,
+                    project_root,
+                    updates={},
+                    remove_keys=["skip_post_tool_analysis"],
+                )
         except Exception:
             pass

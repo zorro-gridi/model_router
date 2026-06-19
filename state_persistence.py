@@ -173,6 +173,56 @@ class SessionStateStore:
 
         self._atomic_write(new_path, json.dumps(new_data, ensure_ascii=False, indent=2))
 
+    def update_fields(
+        self,
+        sid: str,
+        project_root: str,
+        updates: Dict[str, Any],
+        *,
+        remove_keys: Optional[list[str]] = None,
+    ) -> None:
+        """合并更新任意顶层字段，作为非 decision 写路径的统一入口。
+
+        适用场景：
+          - runtime_score / todowrite_signal 等 worker 字段
+          - skip_post_tool_analysis 这类临时控制标记
+          - current_prompt_id 等辅助状态
+
+        Args:
+            sid: Session ID。
+            project_root: 项目根目录。
+            updates: 需要写入/覆盖的顶层字段。
+            remove_keys: 需要显式删除的字段名列表。
+        """
+        claude_dir = self._ensure_claude_dir(project_root)
+        path = claude_dir / f"model_router_state_{sid}.json"
+
+        existing: Dict[str, Any] = {}
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                existing = {}
+
+        merged: Dict[str, Any] = {
+            "version": existing.get("version", self.VERSION),
+            "session_id": existing.get("session_id", sid),
+            "decision": existing.get("decision", {}) or {},
+            "last_update": int(time.time()),
+        }
+
+        for key, value in existing.items():
+            if key not in merged:
+                merged[key] = value
+
+        for key, value in updates.items():
+            merged[key] = value
+
+        for key in remove_keys or []:
+            merged.pop(key, None)
+
+        self._atomic_write(path, json.dumps(merged, ensure_ascii=False, indent=2))
+
     # ── Read ──────────────────────────────────────────────────────────────
 
     def read_new(self, sid: str, project_root: str) -> Optional[Dict[str, Any]]:

@@ -229,19 +229,12 @@ def _write_skip_signal(sid: str, project_root: str) -> None:
     下一个有效 prompt 的 RuntimeTracker.init_prompt() 会清除此标记。
     """
     try:
-        import json as _json
-        claude_dir = Path(project_root) / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        path = claude_dir / f"model_router_state_{sid}.json"
-        data: dict = {}
-        if path.exists():
-            try:
-                data = _json.loads(path.read_text(encoding="utf-8"))
-            except (_json.JSONDecodeError, OSError):
-                pass
-        data["skip_post_tool_analysis"] = True
-        path.write_text(_json.dumps(data, ensure_ascii=False, indent=2),
-                        encoding="utf-8")
+        from state_persistence import SessionStateStore
+        SessionStateStore().update_fields(
+            sid,
+            project_root,
+            {"skip_post_tool_analysis": True},
+        )
     except Exception:
         pass  # 静默吞错，不阻塞 UserPromptSubmit hook
 
