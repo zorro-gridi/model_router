@@ -144,6 +144,13 @@ class SessionStateStore:
             #   bool。True = model_override 非空 + 本轮 fallback 被激活，
             #   即"用户指定的 override model 不可用、proxy 已切到备用 provider"。
             #   statusline 用来叠加 override + fallback 提示（规范 v2 §4）。
+            # ── 2026-06-19 model tier：pre-computed tier for statusline ──
+            "route_model_tier",
+            #   int。route_model 的能力 tier（从 config/model_tiers.yaml 加载）。
+            #   proxy 在每次请求时写入，statusline.sh 直接读取。
+            "stage_model_tier",
+            #   int。session 默认 model 的能力 tier（从 config/model_tiers.yaml 加载）。
+            #   proxy 在每次请求时写入，statusline.sh 直接读取。
         )
         for key in optional_fields:
             if key in kwargs:
