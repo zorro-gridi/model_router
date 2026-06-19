@@ -35,6 +35,7 @@ Model-override 路由（2026-06-13 引入，最高优先级）：
 from __future__ import annotations
 
 import argparse
+import functools
 import http.server
 import json
 import logging
@@ -192,6 +193,11 @@ _routing_state = threading.local()
 # _routing_state.sid         — 本请求绑定的 session_id（UUID），用于响应注入
 
 _STATE_STORE_SINGLETON = None
+_STATE_INDEX_CACHE = {
+    "mtime_ns": None,
+    "size": None,
+    "data": {},
+}
 
 _SID_SUFFIX_RE = re.compile(
     r'_s([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$'
@@ -418,6 +424,7 @@ def read_stage() -> str:
     return "default"
 
 
+@functools.lru_cache(maxsize=256)
 def _find_project_root_for_stage_path(stage_path: Path) -> Path:
     """从 stage_<sid> 路径反推 project_root。
 
@@ -447,11 +454,7 @@ def _read_state_index_for_project(project_root: str) -> dict | None:
     设计文档 §13 Level 1: Project Binding。
     缺失/损坏/无匹配时返回 None（让调用方走下一级）。
     """
-    try:
-        content = STATE_INDEX_FILE.read_text(encoding="utf-8")
-        data = json.loads(content)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
+    data = _read_state_index_all()
     if not isinstance(data, dict):
         return None
     return data.get(project_root)
@@ -463,12 +466,31 @@ def _read_state_index_all() -> dict[str, dict]:
     返回 {project_root: entry}；缺失/损坏时返回空 dict。
     """
     try:
+        st = STATE_INDEX_FILE.stat()
+    except FileNotFoundError:
+        _STATE_INDEX_CACHE["mtime_ns"] = None
+        _STATE_INDEX_CACHE["size"] = None
+        _STATE_INDEX_CACHE["data"] = {}
+        return {}
+    cached_mtime = _STATE_INDEX_CACHE.get("mtime_ns")
+    cached_size = _STATE_INDEX_CACHE.get("size")
+    if cached_mtime == st.st_mtime_ns and cached_size == st.st_size:
+        cached_data = _STATE_INDEX_CACHE.get("data")
+        if isinstance(cached_data, dict):
+            return cached_data
+    try:
         content = STATE_INDEX_FILE.read_text(encoding="utf-8")
         data = json.loads(content)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):
+        _STATE_INDEX_CACHE["mtime_ns"] = st.st_mtime_ns
+        _STATE_INDEX_CACHE["size"] = st.st_size
+        _STATE_INDEX_CACHE["data"] = {}
         return {}
     if not isinstance(data, dict):
-        return {}
+        data = {}
+    _STATE_INDEX_CACHE["mtime_ns"] = st.st_mtime_ns
+    _STATE_INDEX_CACHE["size"] = st.st_size
+    _STATE_INDEX_CACHE["data"] = data
     return data
 
 
